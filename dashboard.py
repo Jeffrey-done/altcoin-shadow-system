@@ -61,7 +61,7 @@ def get_dashboard_data() -> dict:
     open_low_risk = [t for t in low_risk_trades if t.get('status') == 'open']
     closed_low_risk = [t for t in low_risk_trades if t.get('status') == 'closed']
 
-    # 今日盈亏
+    # 今日盈亏（包含TP1已锁定但未完全平仓的利润）
     today = today_str()
     today_closed_short = [
         t for t in closed_short if t.get('closed_at', '').startswith(today)
@@ -81,7 +81,19 @@ def get_dashboard_data() -> dict:
     )
     today_pnl_lr = sum(t.get('pnl', 0) for t in today_closed_lr)
 
-    # 累计盈亏
+    # 加入今日TP1已锁定但未平仓的利润（open状态但tp1已触发）
+    today_tp1_locked_short = sum(
+        t.get('tp1_locked_pnl', 0) for t in open_short
+        if t.get('tp1_triggered') and t.get('opened_at', '').startswith(today)
+    )
+    today_tp1_locked_long = sum(
+        t.get('tp1_locked_pnl', 0) for t in open_long
+        if t.get('tp1_triggered') and t.get('opened_at', '').startswith(today)
+    )
+    today_pnl_short += today_tp1_locked_short
+    today_pnl_long += today_tp1_locked_long
+
+    # 累计盈亏（包含TP1已锁定的利润）
     total_pnl_short = sum(
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_short
     )
@@ -89,6 +101,14 @@ def get_dashboard_data() -> dict:
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_long
     )
     total_pnl_lr = sum(t.get('pnl', 0) for t in closed_low_risk)
+
+    # 加入TP1已锁定但未完全平仓的累计利润
+    total_pnl_short += sum(
+        t.get('tp1_locked_pnl', 0) for t in open_short if t.get('tp1_triggered')
+    )
+    total_pnl_long += sum(
+        t.get('tp1_locked_pnl', 0) for t in open_long if t.get('tp1_triggered')
+    )
 
     # 费率套利统计
     funding_open = [t for t in funding_trades if t.get('status') == 'open']
@@ -99,10 +119,15 @@ def get_dashboard_data() -> dict:
     )
     funding_total_pnl = sum(t.get('total_pnl', 0) for t in funding_closed)
 
-    # 胜率（所有策略）
+    # 胜率（已平仓 + TP1已触发的算"进行中盈利"）
     all_closed = closed_short + closed_long
-    wins = sum(1 for t in all_closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
-    win_rate = (wins / len(all_closed) * 100) if all_closed else 0
+    # TP1已触发的open交易也算入胜率统计（已锁定利润 = 部分已实现）
+    tp1_triggered_trades = [
+        t for t in open_short + open_long if t.get('tp1_triggered')
+    ]
+    all_for_winrate = all_closed + tp1_triggered_trades
+    wins = sum(1 for t in all_for_winrate if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
+    win_rate = (wins / len(all_for_winrate) * 100) if all_for_winrate else 0
 
     # PnL 历史
     pnl_history = {}
@@ -169,7 +194,7 @@ def get_dashboard_data() -> dict:
             'today_pnl': round(today_pnl_short + today_pnl_long + today_pnl_lr, 2),
             'total_pnl': round(total_pnl_short + total_pnl_long + total_pnl_lr, 2),
             'win_rate': round(win_rate, 1),
-            'total_trades': len(all_closed),
+            'total_trades': len(all_for_winrate),
         },
         'short_trades': {
             'open': open_short,
