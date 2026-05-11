@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir ccxt python-dotenv requests flask flask-socketio
+RUN pip install --no-cache-dir ccxt python-dotenv requests flask flask-socketio websocket-client
 
 # Copy project files
 COPY . .

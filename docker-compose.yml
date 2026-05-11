@@ -22,3 +22,14 @@ services:
     command: python3 scheduler.py
     depends_on:
       - dashboard
+
+  # 实时止盈止损监控器（Binance WebSocket 7×24）
+  realtime-monitor:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    command: python3 realtime_monitor.py
+    depends_on:
+      - dashboard
