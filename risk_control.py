@@ -17,6 +17,7 @@ from common import (
     RISK_FILE, TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     utcnow_iso, today_str, parse_iso, utcnow,
+    get_dynamic_balance,
 )
 
 logger = setup_logger("risk_control")
@@ -65,9 +66,13 @@ def save_risk_state(state: RiskState) -> None:
     atomic_write_json(RISK_FILE, state.to_dict())
 
 
-def can_open_trade(stake: float = config.DEFAULT_STAKE) -> tuple:
+def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short') -> tuple:
     """
     检查是否允许开仓。
+
+    参数:
+      stake: 本次开仓保证金
+      strategy: 策略类型 ('short', 'funding_arb', 'low_risk')
 
     返回: (allowed: bool, reason: str)
     """
@@ -99,12 +104,19 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE) -> tuple:
         logger.warning(f"🚫 {reason}")
         return False, reason
 
-    # 4. 检查最大持仓占比
-    max_position = config.ACCOUNT_BALANCE * config.RISK_MAX_POSITION_PCT
+    # 4. 检查最大持仓占比（基于资金池隔离）
+    dynamic_bal = get_dynamic_balance()
+    pool_pct_map = {
+        'short': config.SHORT_STRATEGY_POOL_PCT,
+        'funding_arb': config.FUNDING_ARB_POOL_PCT,
+        'low_risk': config.LOW_RISK_POOL_PCT,
+    }
+    pool_pct = pool_pct_map.get(strategy, config.SHORT_STRATEGY_POOL_PCT)
+    max_position = dynamic_bal * (pool_pct / 100) * config.RISK_MAX_POSITION_PCT
     if state.total_open_stake + stake > max_position:
         reason = (
             f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
-            f"> 上限{max_position:.0f}U）"
+            f"> 上限{max_position:.0f}U [{strategy}池]）"
         )
         logger.warning(f"🚫 {reason}")
         return False, reason
@@ -112,7 +124,7 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE) -> tuple:
     return True, "OK"
 
 
-def record_trade_opened(stake: float = config.DEFAULT_STAKE) -> None:
+def record_trade_opened(stake: float = config.DEFAULT_STAKE, strategy: str = 'short') -> None:
     """记录开仓事件"""
     state = load_risk_state()
     state.daily_trades_opened += 1

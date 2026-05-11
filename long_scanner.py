@@ -30,35 +30,14 @@ from common import (
 )
 from models import Trade
 from risk_control import can_open_trade, record_trade_opened
-from signal_score import check_btc_filter
+from signal_score import check_btc_filter, calculate_long_signal_score
 
 logger = setup_logger("long_scanner")
 
 
 # ══════════════════════════════════════════════════════════════════
-#  配置（做多专用参数）
+#  配置（做多专用参数，从 config.py 读取）
 # ══════════════════════════════════════════════════════════════════
-
-# 突破回踩
-BREAKOUT_LOOKBACK = 48         # 回溯48根1H K线找前高
-PULLBACK_DEPTH_MAX = 0.03     # 回踩深度不超过突破幅度的3%（浅回踩）
-PULLBACK_RSI_MIN = 35         # 回踩时RSI不能太低（不是反转）
-PULLBACK_RSI_MAX = 60         # 也不能太高（确实回调了）
-PULLBACK_VOL_SHRINK = 0.6    # 回踩成交量 < 突破时的60%（缩量回踩）
-
-# 插针抄底
-PIN_SHADOW_RATIO = 3.0        # 下影线 >= 实体 × 3
-PIN_RSI_MAX = 25              # RSI 极度超卖
-PIN_OI_INCREASE_MIN = 0.10   # OI 至少增加10%（主力建仓）
-PIN_VOL_MIN = 1_000_000      # 成交量门槛
-
-# 做多仓位
-LONG_STAKE = 50               # 做多保证金（比做空小，因为逆趋势）
-LONG_LEVERAGE = 10            # 做多杠杆
-LONG_TP1_PCT = 0.05          # 止盈1：+5%
-LONG_TP2_PCT = 0.10          # 止盈2：+10%
-LONG_STOP_LOSS_PCT = 3.0     # 止损：-3%
-LONG_MAX_HOLD_HOURS = 24     # 最大持仓24小时
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -74,8 +53,8 @@ def detect_breakout_pullback(exchange, symbol: str) -> dict:
     4. RSI 在健康区间（35~60）
     """
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=BREAKOUT_LOOKBACK + 10)
-        if len(ohlcv) < BREAKOUT_LOOKBACK:
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=config.LONG_BREAKOUT_LOOKBACK + 10)
+        if len(ohlcv) < config.LONG_BREAKOUT_LOOKBACK:
             return {"signal": False, "reason": "数据不足"}
 
         highs = [c[2] for c in ohlcv]
@@ -108,7 +87,7 @@ def detect_breakout_pullback(exchange, symbol: str) -> dict:
         pullback_from_high = (breakout_high - current_price) / breakout_high
         if pullback_from_high < 0.01:  # 还没回踩（还在高位）
             return {"signal": False, "reason": "还未回踩"}
-        if pullback_from_high > PULLBACK_DEPTH_MAX + 0.02:  # 回踩太深
+        if pullback_from_high > config.LONG_PULLBACK_DEPTH_MAX + 0.02:  # 回踩太深
             return {"signal": False, "reason": f"回踩过深({pullback_from_high*100:.1f}%)"}
 
         # 关键：价格不能跌破前高（支撑位确认）
@@ -117,13 +96,13 @@ def detect_breakout_pullback(exchange, symbol: str) -> dict:
 
         # 缩量回踩
         breakout_vol = max(volumes[-5:])  # 突破时的最大量
-        if current_vol > breakout_vol * PULLBACK_VOL_SHRINK:
+        if current_vol > breakout_vol * config.LONG_PULLBACK_VOL_SHRINK:
             return {"signal": False, "reason": "回踩未缩量"}
 
         # RSI 健康区间
         from altcoin_scanner import calc_rsi_wilder
         rsi = calc_rsi_wilder(closes)
-        if rsi < PULLBACK_RSI_MIN or rsi > PULLBACK_RSI_MAX:
+        if rsi < config.LONG_PULLBACK_RSI_MIN or rsi > config.LONG_PULLBACK_RSI_MAX:
             return {"signal": False, "reason": f"RSI={rsi}不在回踩区间"}
 
         return {
@@ -147,8 +126,8 @@ def detect_breakout_pullback(exchange, symbol: str) -> dict:
 def detect_pin_bar_bottom(exchange, symbol: str) -> dict:
     """
     检测插针抄底信号：
-    1. 最近1~2根1H K线出现长下影线（下影 >= 实体 × PIN_SHADOW_RATIO）
-    2. RSI < PIN_RSI_MAX（极度超卖）
+    1. 最近1~2根1H K线出现长下影线（下影 >= 实体 × config.LONG_PIN_SHADOW_RATIO）
+    2. RSI < config.LONG_PIN_RSI_MAX（极度超卖）
     3. OI 增加（主力在低位建仓，不是恐慌抛售）
     """
     try:
@@ -170,7 +149,7 @@ def detect_pin_bar_bottom(exchange, symbol: str) -> dict:
             upper_shadow = high - max(open_p, close_p)
 
             # 长下影线：下影 >= 实体 × N 且 下影 > 上影 × 2
-            if lower_shadow >= body * PIN_SHADOW_RATIO and lower_shadow > upper_shadow * 2:
+            if lower_shadow >= body * config.LONG_PIN_SHADOW_RATIO and lower_shadow > upper_shadow * 2:
                 pin_found = True
                 pin_candle = candle
                 break
@@ -183,12 +162,12 @@ def detect_pin_bar_bottom(exchange, symbol: str) -> dict:
         # RSI 超卖
         from altcoin_scanner import calc_rsi_wilder
         rsi = calc_rsi_wilder(closes)
-        if rsi > PIN_RSI_MAX:
-            return {"signal": False, "reason": f"RSI={rsi}>超卖阈值{PIN_RSI_MAX}"}
+        if rsi > config.LONG_PIN_RSI_MAX:
+            return {"signal": False, "reason": f"RSI={rsi}>超卖阈值{config.LONG_PIN_RSI_MAX}"}
 
         # 成交量门槛
         current_vol = ohlcv[-1][5] * closes[-1]  # 估算USDT成交量
-        if current_vol < PIN_VOL_MIN:
+        if current_vol < config.LONG_PIN_VOL_MIN:
             return {"signal": False, "reason": "成交量不足"}
 
         # OI 增加检查
@@ -207,7 +186,7 @@ def detect_pin_bar_bottom(exchange, symbol: str) -> dict:
                     oi_prev = float(oi_hist[-2]['sumOpenInterest'])
                     if oi_prev > 0:
                         oi_change = (oi_recent - oi_prev) / oi_prev
-                        oi_increasing = oi_change >= PIN_OI_INCREASE_MIN
+                        oi_increasing = oi_change >= config.LONG_PIN_OI_INCREASE_MIN
         except Exception as e:
             logger.debug(f"插针OI检测异常: {e}")
 
@@ -246,18 +225,18 @@ def create_long_trade(symbol: str, price: float, reason: str,
         symbol=symbol,
         direction='LONG',
         entry_price=price,
-        stake=LONG_STAKE,
-        leverage=LONG_LEVERAGE,
-        notional=LONG_STAKE * LONG_LEVERAGE,
-        shares=round((LONG_STAKE * LONG_LEVERAGE) / price, 4) if price > 0 else 0,
+        stake=config.LONG_STAKE,
+        leverage=config.LONG_LEVERAGE,
+        notional=config.LONG_STAKE * config.LONG_LEVERAGE,
+        shares=round((config.LONG_STAKE * config.LONG_LEVERAGE) / price, 4) if price > 0 else 0,
         reason=reason,
         strategy=strategy,
         # 做多：止盈价 = entry * (1 + tp_pct)
-        take_profit_1=round(price * (1 + LONG_TP1_PCT), 6),
-        take_profit_2=round(price * (1 + LONG_TP2_PCT), 6),
+        take_profit_1=round(price * (1 + config.LONG_TP1_PCT), 6),
+        take_profit_2=round(price * (1 + config.LONG_TP2_PCT), 6),
         # 做多：止损价 = entry * (1 - stop_pct/100)
-        hard_stop_price=round(price * (1 - LONG_STOP_LOSS_PCT / 100), 6),
-        stake_remaining=LONG_STAKE,
+        hard_stop_price=round(price * (1 - config.LONG_STOP_LOSS_PCT / 100), 6),
+        stake_remaining=config.LONG_STAKE,
         max_hold_days=1,  # 24小时
     )
     return trade
@@ -291,7 +270,7 @@ def scan_long_signals():
     open_symbols = {t['symbol'] for t in trades_list if t.get('status') == 'open'}
 
     # 风控检查
-    allowed, risk_reason = can_open_trade(LONG_STAKE)
+    allowed, risk_reason = can_open_trade(config.LONG_STAKE)
     if not allowed:
         logger.warning(f"  🚫 风控拒绝: {risk_reason}")
         return
@@ -339,23 +318,39 @@ def scan_long_signals():
         if 5 <= cand['pct24h'] <= 30:
             result = detect_breakout_pullback(exchange, symbol)
             if result['signal']:
+                # 信号评分
+                score_result = calculate_long_signal_score(
+                    rsi=result.get('rsi', 50),
+                    strategy_type='breakout_pullback',
+                    pullback_pct=result.get('pullback_pct', 0),
+                    btc_24h_pct=btc_pct,
+                )
+                if score_result['grade'] == 'SKIP':
+                    logger.info(f"  ⏭️ {symbol} 评分不足({score_result['score']}分)，跳过")
+                    continue
+
                 price = exchange.fetch_ticker(symbol)['last']
                 trade = create_long_trade(symbol, price, result['reason'], 'breakout_pullback')
+                # 根据评分调整仓位
+                if score_result['grade'] == 'B':
+                    trade.stake = round(config.LONG_STAKE * 0.5)
+                    trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(LONG_STAKE)
+                record_trade_opened(config.LONG_STAKE)
                 opened += 1
 
-                logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']}")
+                logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
                 send_tg(
                     f"🟢 <b>做多开仓：突破回踩</b>\n\n"
                     f"📌 <b>{symbol}</b>\n"
                     f"入场价：{price:.6f}\n"
-                    f"仓位：{LONG_STAKE}U × {LONG_LEVERAGE}x = {trade.notional}U\n"
+                    f"仓位：{config.LONG_STAKE}U × {config.LONG_LEVERAGE}x = {trade.notional}U\n"
                     f"止盈：+5%/{trade.take_profit_1:.6f} | +10%/{trade.take_profit_2:.6f}\n"
                     f"止损：-3%/{trade.hard_stop_price:.6f}\n\n"
                     f"📊 {result['reason']}\n"
-                    f"RSI={result.get('rsi',0):.0f} | 回踩{result.get('pullback_pct',0):.1f}%"
+                    f"RSI={result.get('rsi',0):.0f} | 回踩{result.get('pullback_pct',0):.1f}%\n"
+                    f"评分={score_result['score']} [{score_result['grade']}] {score_result['reason']}"
                 )
                 continue
 
@@ -363,23 +358,40 @@ def scan_long_signals():
         if cand['pct24h'] <= -10:
             result = detect_pin_bar_bottom(exchange, symbol)
             if result['signal']:
+                # 信号评分
+                score_result = calculate_long_signal_score(
+                    rsi=result.get('rsi', 50),
+                    strategy_type='pin_bar_bottom',
+                    shadow_pct=result.get('shadow_pct', 0),
+                    oi_increasing=True,  # 已通过OI检查
+                    btc_24h_pct=btc_pct,
+                )
+                if score_result['grade'] == 'SKIP':
+                    logger.info(f"  ⏭️ {symbol} 评分不足({score_result['score']}分)，跳过")
+                    continue
+
                 price = exchange.fetch_ticker(symbol)['last']
                 trade = create_long_trade(symbol, price, result['reason'], 'pin_bar_bottom')
+                # 根据评分调整仓位
+                if score_result['grade'] == 'B':
+                    trade.stake = round(config.LONG_STAKE * 0.5)
+                    trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(LONG_STAKE)
+                record_trade_opened(config.LONG_STAKE)
                 opened += 1
 
-                logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']}")
+                logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
                 send_tg(
                     f"🟢 <b>做多开仓：插针抄底</b>\n\n"
                     f"📌 <b>{symbol}</b>\n"
                     f"入场价：{price:.6f}\n"
-                    f"仓位：{LONG_STAKE}U × {LONG_LEVERAGE}x = {trade.notional}U\n"
+                    f"仓位：{config.LONG_STAKE}U × {config.LONG_LEVERAGE}x = {trade.notional}U\n"
                     f"止盈：+5%/{trade.take_profit_1:.6f} | +10%/{trade.take_profit_2:.6f}\n"
                     f"止损：-3%/{trade.hard_stop_price:.6f}\n\n"
                     f"📊 {result['reason']}\n"
-                    f"下影线={result.get('shadow_pct',0):.1f}% | RSI={result.get('rsi',0):.0f}"
+                    f"下影线={result.get('shadow_pct',0):.1f}% | RSI={result.get('rsi',0):.0f}\n"
+                    f"评分={score_result['score']} [{score_result['grade']}] {score_result['reason']}"
                 )
                 continue
 

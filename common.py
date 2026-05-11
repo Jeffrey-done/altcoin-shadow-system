@@ -4,6 +4,7 @@
 提供：日志配置、TG推送、原子写JSON、环境变量加载、符号转换、时间工具
 """
 
+import fcntl
 import json
 import logging
 import os
@@ -82,10 +83,17 @@ def send_tg(msg: str) -> bool:
 def atomic_write_json(filepath: str, data: Any) -> None:
     """
     原子写入 JSON 文件：先写临时文件再 rename，防止崩溃时数据损坏。
+    使用 fcntl.flock 排他锁保证并发安全。
     """
     dir_name = os.path.dirname(filepath)
+    lockfile = filepath + '.lock'
     fd, tmp_path = tempfile.mkstemp(suffix='.tmp', dir=dir_name)
+    lock_fd = None
     try:
+        # 获取排他锁
+        lock_fd = open(lockfile, 'w')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         os.replace(tmp_path, filepath)
@@ -94,18 +102,31 @@ def atomic_write_json(filepath: str, data: Any) -> None:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 def load_json(filepath: str, default: Any = None) -> Any:
-    """安全加载 JSON 文件，不存在或损坏返回 default"""
+    """安全加载 JSON 文件，不存在或损坏返回 default。使用 fcntl.flock 共享锁。"""
     if not os.path.exists(filepath):
         return default if default is not None else []
+    lockfile = filepath + '.lock'
+    lock_fd = None
     try:
+        lock_fd = open(lockfile, 'w')
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError) as e:
         logging.warning(f"JSON 加载失败 ({filepath}): {e}，返回默认值")
         return default if default is not None else []
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 # ── 符号转换 ─────────────────────────────────────────────────────
@@ -186,3 +207,27 @@ def get_compound_stake() -> float:
     stake = min(stake, config.COMPOUND_MAX_STAKE)
 
     return stake
+
+
+def get_dynamic_balance() -> float:
+    """计算动态账户余额 = 初始本金 + 所有策略已实现盈亏"""
+    import config
+    trades = load_json(TRADES_FILE, [])
+    funding_trades = load_json(FUNDING_TRADES_FILE, [])
+    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
+
+    total_pnl = 0.0
+    # 做空交易
+    for t in trades:
+        if t.get('status') == 'closed':
+            total_pnl += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+    # 资金费率套利交易
+    for t in funding_trades:
+        if t.get('status') == 'closed':
+            total_pnl += t.get('total_pnl', 0)
+    # 低风险策略交易
+    for t in low_risk_trades:
+        if t.get('status') == 'closed':
+            total_pnl += t.get('pnl', 0)
+
+    return config.ACCOUNT_BALANCE + total_pnl

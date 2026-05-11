@@ -51,6 +51,8 @@ class BacktestParams:
     max_hold_bars: int = 24  # 24根1h K线 = 24小时
     leverage: int = config.LEVERAGE
     stake: float = config.DEFAULT_STAKE
+    slippage_pct: float = config.BACKTEST_SLIPPAGE_PCT
+    fee_pct: float = config.BACKTEST_FEE_PCT
 
 
 @dataclass
@@ -227,6 +229,10 @@ def detect_entry_signals(klines_1h: List[dict], params: BacktestParams) -> List[
     last_signal_idx = -min_gap  # 初始化
 
     for i in range(lookback + params.rsi_period, len(rsi_series)):
+        # 不在最后一根K线发信号（需要下一根bar作为入场价）
+        if i + 1 >= len(rsi_series):
+            continue
+
         current_rsi = rsi_series[i]
 
         # 当前 RSI 需低于进入阈值
@@ -265,12 +271,18 @@ def simulate_trade(klines: List[dict], entry_idx: int,
                    params: BacktestParams) -> BacktestTrade:
     """
     从 entry_idx 开始模拟一笔做空交易。
+    用 entry_idx+1 的开盘价作为入场价（避免未来数据偏差）。
     用后续 K 线的 high/low 判断是否触发止盈/止损。
+    应用滑点和手续费模拟真实执行环境。
 
     优先级：硬止损 > TP1 > TP2 > 移动止损 > 时间止损
     """
-    entry_price = klines[entry_idx]['close']
-    entry_time = klines[entry_idx]['time']
+    # 使用下一根K线的开盘价作为入场价（修复 look-ahead bias）
+    entry_price = klines[entry_idx + 1]['open']
+    entry_time = klines[entry_idx + 1]['time']
+
+    # 做空滑点：实际成交价更低（worse fill = higher entry for short）
+    entry_price = entry_price * (1 + params.slippage_pct / 100)
 
     trade = BacktestTrade(
         symbol='',
@@ -278,7 +290,7 @@ def simulate_trade(klines: List[dict], entry_idx: int,
         entry_time=entry_time,
     )
 
-    # 计算关键价位
+    # 计算关键价位（基于滑点后的入场价）
     tp1_price = entry_price * (1 - params.tp1_pct / 100)
     tp2_price = entry_price * (1 - params.tp2_pct / 100)
     hard_stop_price = entry_price * (1 + params.hard_stop_pct / 100)
@@ -292,7 +304,7 @@ def simulate_trade(klines: List[dict], entry_idx: int,
     notional = params.stake * params.leverage
 
     for bar_offset in range(1, params.max_hold_bars + 1):
-        bar_idx = entry_idx + bar_offset
+        bar_idx = entry_idx + 1 + bar_offset
         if bar_idx >= len(klines):
             break
 
@@ -307,16 +319,20 @@ def simulate_trade(klines: List[dict], entry_idx: int,
         # ── 1. 硬止损检查（价格涨到 hard_stop）──
         if high >= hard_stop_price:
             exit_price = hard_stop_price
+            # 做空平仓（买入覆盖）滑点：worse = higher exit
+            exit_price = exit_price * (1 + params.slippage_pct / 100)
             pnl_pct = (entry_price - exit_price) / entry_price * 100
             # 如果 TP1 已触发，只算剩余仓位
             remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
             tp1_pnl = 0
             if tp1_triggered:
                 tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
+            # 扣除手续费（开仓+平仓双边）
+            fee = notional * params.fee_pct / 100 * 2
             trade.exit_price = exit_price
             trade.exit_time = bar['time']
             trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl, 2)
+            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
             trade.exit_reason = 'hard_stop'
             trade.hold_bars = bar_offset
             trade.tp1_hit = tp1_triggered
@@ -332,13 +348,16 @@ def simulate_trade(klines: List[dict], entry_idx: int,
         # ── 3. TP2 检查（价格跌到 tp2）──
         if tp1_triggered and low <= tp2_price:
             exit_price = tp2_price
+            # 做空平仓（买入覆盖）滑点：worse = higher exit
+            exit_price = exit_price * (1 + params.slippage_pct / 100)
             pnl_pct = (entry_price - exit_price) / entry_price * 100
             tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
             remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
+            fee = notional * params.fee_pct / 100 * 2
             trade.exit_price = exit_price
             trade.exit_time = bar['time']
             trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl, 2)
+            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
             trade.exit_reason = 'tp2'
             trade.hold_bars = bar_offset
             return trade
@@ -353,33 +372,39 @@ def simulate_trade(klines: List[dict], entry_idx: int,
         # ── 5. 移动止损触发 ──
         if trail_stop_price and high >= trail_stop_price and best_pnl_pct >= params.trail_activate_pct:
             exit_price = trail_stop_price
+            # 做空平仓（买入覆盖）滑点：worse = higher exit
+            exit_price = exit_price * (1 + params.slippage_pct / 100)
             pnl_pct = (entry_price - exit_price) / entry_price * 100
             tp1_pnl = 0
             if tp1_triggered:
                 tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
             remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
+            fee = notional * params.fee_pct / 100 * 2
             trade.exit_price = exit_price
             trade.exit_time = bar['time']
             trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl, 2)
+            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
             trade.exit_reason = 'trail_stop'
             trade.hold_bars = bar_offset
             trade.tp1_hit = tp1_triggered
             return trade
 
     # ── 6. 时间止损（超时按收盘价平仓）──
-    last_idx = min(entry_idx + params.max_hold_bars, len(klines) - 1)
+    last_idx = min(entry_idx + 1 + params.max_hold_bars, len(klines) - 1)
     exit_price = klines[last_idx]['close']
+    # 做空平仓（买入覆盖）滑点
+    exit_price = exit_price * (1 + params.slippage_pct / 100)
     pnl_pct = (entry_price - exit_price) / entry_price * 100
     tp1_pnl = 0
     if tp1_triggered:
         tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
     remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
+    fee = notional * params.fee_pct / 100 * 2
 
     trade.exit_price = exit_price
     trade.exit_time = klines[last_idx]['time']
     trade.pnl_pct = pnl_pct
-    trade.pnl_usd = round(tp1_pnl + remaining_pnl, 2)
+    trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
     trade.exit_reason = 'time_stop'
     trade.hold_bars = params.max_hold_bars
     trade.tp1_hit = tp1_triggered
@@ -476,6 +501,8 @@ def run_backtest(symbol: str, days: int = 90,
 
     # 检测信号
     signals = detect_entry_signals(klines, params)
+    # 过滤：确保 entry_idx+1 存在（需要下一根bar的open作为入场价）
+    signals = [s for s in signals if s + 1 < len(klines)]
     logger.info(f"检测到 {len(signals)} 个入场信号")
 
     # 模拟每笔交易

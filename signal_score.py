@@ -207,3 +207,161 @@ def calculate_signal_score(
     )
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════════
+#  做多信号评分
+# ══════════════════════════════════════════════════════════════════
+
+def calculate_long_signal_score(
+    rsi: float,
+    strategy_type: str,  # 'breakout_pullback' | 'pin_bar_bottom'
+    pullback_pct: float = 0.0,
+    shadow_pct: float = 0.0,
+    oi_increasing: bool = False,
+    vol_ratio: float = 1.0,  # current_vol / avg_vol
+    btc_24h_pct: float = 0.0,
+) -> dict:
+    """
+    做多信号评分 0~100。
+
+    评分维度：
+      1. RSI 强度（0~25）：插针时 RSI 越低越强，突破时 RSI 40~50 健康回调
+      2. 形态质量（0~25）：插针下影线长度 / 突破回踩深度
+      3. OI/成交量确认（0~25）：OI 增加 + 成交量放大
+      4. 市场环境（0~25）：BTC 趋势对做多的支持度
+
+    返回:
+      {
+        "score": 0~100,
+        "grade": "A" / "B" / "SKIP",
+        "stake": 实际保证金,
+        "details": {各维度分数},
+        "reason": 评分说明
+      }
+    """
+    # ── 维度1：RSI 强度（0~25）──
+    rsi_score = 0.0
+    if strategy_type == 'pin_bar_bottom':
+        # 插针抄底：RSI 越低越好
+        if rsi < 15:
+            rsi_score = 25
+        elif rsi < 20:
+            rsi_score = 18
+        elif rsi < 25:
+            rsi_score = 12
+        else:
+            rsi_score = 5
+    else:
+        # 突破回踩：RSI 40~50 最健康
+        if 40 <= rsi <= 50:
+            rsi_score = 20
+        elif 35 <= rsi < 40 or 50 < rsi <= 55:
+            rsi_score = 15
+        elif 30 <= rsi < 35 or 55 < rsi <= 60:
+            rsi_score = 10
+        else:
+            rsi_score = 5
+
+    # ── 维度2：形态质量（0~25）──
+    pattern_score = 0.0
+    if strategy_type == 'pin_bar_bottom':
+        # 下影线越长越好
+        if shadow_pct > 5:
+            pattern_score = 25
+        elif shadow_pct > 3:
+            pattern_score = 18
+        elif shadow_pct > 2:
+            pattern_score = 12
+        else:
+            pattern_score = 5
+    else:
+        # 突破回踩：浅回踩（1~3%）最佳
+        if 1 <= pullback_pct <= 3:
+            pattern_score = 25
+        elif 3 < pullback_pct <= 5:
+            pattern_score = 15
+        elif pullback_pct < 1:
+            pattern_score = 8
+        else:
+            pattern_score = 5
+
+    # ── 维度3：OI/成交量确认（0~25）──
+    oi_vol_score = 0.0
+    if oi_increasing:
+        oi_vol_score += 15
+    if vol_ratio > 1.5:
+        oi_vol_score += 10
+    elif vol_ratio > 1.0:
+        oi_vol_score += 5
+    oi_vol_score = min(25, oi_vol_score)
+
+    # ── 维度4：市场环境（0~25）──
+    market_score = 0.0
+    if 3 <= btc_24h_pct <= 8:
+        # BTC 温和上涨，做多环境好
+        market_score = 25
+    elif 0 <= btc_24h_pct < 3:
+        # BTC 稳定
+        market_score = 15
+    elif btc_24h_pct > 8:
+        # BTC 暴涨，山寨可能跟涨
+        market_score = 20
+    elif -5 <= btc_24h_pct < 0:
+        # BTC 小跌
+        market_score = 10
+    else:
+        # BTC 暴跌 >5%，做多风险大
+        market_score = 5
+
+    # ── 总分 ──
+    total_score = round(rsi_score + pattern_score + oi_vol_score + market_score)
+    total_score = max(0, min(100, total_score))
+
+    # ── 评级 & 仓位 ──
+    if total_score >= config.SCORE_FULL_THRESHOLD:
+        grade = "A"
+        stake = config.LONG_STAKE
+    elif total_score >= config.SCORE_HALF_THRESHOLD:
+        grade = "B"
+        stake = round(config.LONG_STAKE * 0.5)
+    else:
+        grade = "SKIP"
+        stake = 0
+
+    # 构建说明
+    details = {
+        "rsi": round(rsi_score, 1),
+        "pattern": round(pattern_score, 1),
+        "oi_vol": round(oi_vol_score, 1),
+        "market": round(market_score, 1),
+    }
+
+    reason_parts = []
+    if rsi_score >= 18:
+        reason_parts.append(f"RSI极端({rsi:.0f})")
+    if pattern_score >= 18:
+        reason_parts.append("形态优秀")
+    if oi_vol_score >= 15:
+        reason_parts.append("OI/量确认")
+    if market_score >= 20:
+        reason_parts.append("市场环境好")
+
+    reason = " + ".join(reason_parts) if reason_parts else "信号一般"
+
+    result = {
+        "score": total_score,
+        "grade": grade,
+        "stake": stake,
+        "details": details,
+        "reason": reason,
+    }
+
+    logger.info(
+        f"  📊 做多评分={total_score} [{grade}] | "
+        f"RSI={rsi_score:.0f} 形态={pattern_score:.0f} "
+        f"OI量={oi_vol_score:.0f} 市场={market_score:.0f} | "
+        f"仓位={stake}U | {reason}"
+    )
+
+    return result

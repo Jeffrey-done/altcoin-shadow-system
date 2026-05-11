@@ -175,6 +175,19 @@ LOW_RISK_FUNDING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP
 CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清理）
 
 # ══════════════════════════════════════════════════════════════════
+#  回测滑点 & 手续费
+# ══════════════════════════════════════════════════════════════════
+BACKTEST_SLIPPAGE_PCT = 0.1    # 滑点模拟（每笔交易 %）
+BACKTEST_FEE_PCT = 0.04        # taker 手续费（每边 %）
+
+# ══════════════════════════════════════════════════════════════════
+#  资金池分配
+# ══════════════════════════════════════════════════════════════════
+SHORT_STRATEGY_POOL_PCT = 60   # 60% 用于做空策略
+FUNDING_ARB_POOL_PCT = 20     # 20% 用于资金费率套利
+LOW_RISK_POOL_PCT = 20        # 20% 用于低风险策略
+
+# ══════════════════════════════════════════════════════════════════
 #  批量回测
 # ══════════════════════════════════════════════════════════════════
 BATCH_BACKTEST_SYMBOLS = [
@@ -199,3 +212,22 @@ WEEKLY_REPORT_ENABLED = True   # 是否开启周报
 WEEKLY_ROI_GRADE_A = 15        # 周ROI >= 15% 评级 A
 WEEKLY_ROI_GRADE_B = 5         # 周ROI >= 5%  评级 B
 WEEKLY_ROI_GRADE_C = 0         # 周ROI >= 0%  评级 C（< 0% 为 F）
+
+# ══════════════════════════════════════════════════════════════════
+#  做多扫描器参数
+# ══════════════════════════════════════════════════════════════════
+LONG_BREAKOUT_LOOKBACK = 48
+LONG_PULLBACK_DEPTH_MAX = 0.03
+LONG_PULLBACK_RSI_MIN = 35
+LONG_PULLBACK_RSI_MAX = 60
+LONG_PULLBACK_VOL_SHRINK = 0.6
+LONG_PIN_SHADOW_RATIO = 3.0
+LONG_PIN_RSI_MAX = 25
+LONG_PIN_OI_INCREASE_MIN = 0.10
+LONG_PIN_VOL_MIN = 1_000_000
+LONG_STAKE = 50
+LONG_LEVERAGE = 10
+LONG_TP1_PCT = 0.05
+LONG_TP2_PCT = 0.10
+LONG_STOP_LOSS_PCT = 3.0
+LONG_MAX_HOLD_HOURS = 24
