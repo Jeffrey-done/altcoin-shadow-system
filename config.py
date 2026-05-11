@@ -158,3 +158,11 @@ BATCH_BACKTEST_SYMBOLS = [
 ]
 BATCH_BACKTEST_DAYS = 90       # 批量回测默认天数
 BATCH_CORRELATION_THRESHOLD = 0.7  # 相关性阈值（高于此值的币对避免同时开仓）
+
+# ══════════════════════════════════════════════════════════════════
+#  周报配置
+# ══════════════════════════════════════════════════════════════════
+WEEKLY_REPORT_ENABLED = True   # 是否开启周报
+WEEKLY_ROI_GRADE_A = 15        # 周ROI >= 15% 评级 A
+WEEKLY_ROI_GRADE_B = 5         # 周ROI >= 5%  评级 B
+WEEKLY_ROI_GRADE_C = 0         # 周ROI >= 0%  评级 C（< 0% 为 F）
