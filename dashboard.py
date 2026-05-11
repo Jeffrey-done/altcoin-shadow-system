@@ -216,12 +216,100 @@ def get_dashboard_data() -> dict:
 #  后台推送线程
 # ══════════════════════════════════════════════════════════════════
 
+# 实时价格缓存（由后台线程定期更新）
+_live_prices = {}  # {symbol: price}
+_price_lock = threading.Lock()
+
+
+def _fetch_live_prices(symbols: list) -> dict:
+    """
+    从 Binance 获取多个币种的实时价格。
+    使用 /api/v3/ticker/price 批量接口，单次请求获取所有价格。
+    """
+    import requests as _requests
+    prices = {}
+    if not symbols:
+        return prices
+    try:
+        r = _requests.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            all_prices = {item['symbol']: float(item['price']) for item in r.json()}
+            for sym in symbols:
+                # 转换 ccxt 格式 (BTC/USDT) -> Binance 格式 (BTCUSDT)
+                binance_sym = sym.replace('/USDT', 'USDT').replace('/', '')
+                if binance_sym in all_prices:
+                    prices[sym] = all_prices[binance_sym]
+    except Exception as e:
+        print(f"[Dashboard] 获取实时价格异常: {e}")
+    return prices
+
+
+def _inject_live_prices(data: dict) -> dict:
+    """将实时价格注入到 dashboard 数据的持仓中"""
+    with _price_lock:
+        prices = _live_prices.copy()
+
+    if not prices:
+        return data
+
+    # 更新做空持仓价格
+    for trade in data.get('short_trades', {}).get('open', []):
+        sym = trade.get('symbol', '')
+        if sym in prices:
+            trade['current_price'] = prices[sym]
+
+    # 更新做多持仓价格
+    for trade in data.get('long_trades', {}).get('open', []):
+        sym = trade.get('symbol', '')
+        if sym in prices:
+            trade['current_price'] = prices[sym]
+
+    # 更新低风险持仓价格
+    for trade in data.get('low_risk', {}).get('open', []):
+        sym = trade.get('symbol', '')
+        if sym in prices:
+            trade['current_price'] = prices[sym]
+
+    # 更新费率套利持仓价格
+    for trade in data.get('funding', {}).get('open', []):
+        sym = trade.get('symbol', '')
+        if sym in prices:
+            trade['current_price'] = prices[sym]
+
+    return data
+
+
 def background_push():
-    """每10秒推送最新数据到所有连接的客户端"""
+    """每10秒推送最新数据到所有连接的客户端，并更新实时价格"""
     while True:
         time.sleep(10)
         try:
             data = get_dashboard_data()
+
+            # 收集所有持仓中的币种
+            open_symbols = set()
+            for trade in data.get('short_trades', {}).get('open', []):
+                open_symbols.add(trade.get('symbol', ''))
+            for trade in data.get('long_trades', {}).get('open', []):
+                open_symbols.add(trade.get('symbol', ''))
+            for trade in data.get('low_risk', {}).get('open', []):
+                open_symbols.add(trade.get('symbol', ''))
+            for trade in data.get('funding', {}).get('open', []):
+                open_symbols.add(trade.get('symbol', ''))
+            open_symbols.discard('')
+
+            # 获取实时价格
+            if open_symbols:
+                prices = _fetch_live_prices(list(open_symbols))
+                if prices:
+                    with _price_lock:
+                        _live_prices.update(prices)
+
+            # 注入实时价格到数据
+            data = _inject_live_prices(data)
             socketio.emit('update', data)
         except Exception as e:
             print(f"[Dashboard] 推送异常: {e}")
@@ -238,7 +326,9 @@ def index():
 
 @app.route('/api/data')
 def api_data():
-    return jsonify(get_dashboard_data())
+    data = get_dashboard_data()
+    data = _inject_live_prices(data)
+    return jsonify(data)
 
 
 @app.route('/api/backtest')
@@ -355,8 +445,9 @@ def signal_scores_page():
 
 @socketio.on('connect')
 def handle_connect():
-    """新连接时立即推送一次数据"""
+    """新连接时立即推送一次数据（含实时价格）"""
     data = get_dashboard_data()
+    data = _inject_live_prices(data)
     socketio.emit('update', data)
 
 
