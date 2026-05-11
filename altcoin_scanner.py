@@ -23,7 +23,7 @@ from common import (
 )
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened
-from signal_score import calculate_signal_score, check_btc_filter
+from signal_score import calculate_signal_score, check_btc_filter, get_ma2560_trend
 
 logger = setup_logger("altcoin_scanner")
 
@@ -374,6 +374,18 @@ def check_candidates():
 
         # ── 信号评分 ──
         abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
+
+        # ── 获取均线趋势（改良2560系统）──
+        ma2560_trend = get_ma2560_trend(exchange, c.symbol)
+        if ma2560_trend["available"]:
+            logger.info(
+                f"  📈 MA2560: {c.symbol} | "
+                f"EMA{config.MA2560_FAST_PERIOD}={ma2560_trend['ema_fast']:.6f} "
+                f"EMA{config.MA2560_SLOW_PERIOD}={ma2560_trend['ema_slow']:.6f} | "
+                f"间距={ma2560_trend['gap_pct']:+.2f}% | "
+                f"排列={ma2560_trend['alignment']} | 交叉={ma2560_trend['cross_signal']}"
+            )
+
         score_result = calculate_signal_score(
             rsi_1d=c.rsi_1d,
             rsi_4h=rsi_4h,
@@ -385,6 +397,7 @@ def check_candidates():
             trigger_type='abandon' if trigger_abandon else '4h_rsi',
             abandon_oi_declining=abandon_oi,
             btc_24h_pct=btc_pct,
+            ma2560_trend=ma2560_trend,
         )
 
         # 评分太低跳过
@@ -459,7 +472,8 @@ def check_candidates():
             f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
             f"妖={score_result['details'].get('yao',0):.0f} "
             f"触发={score_result['details'].get('trigger',0):.0f} "
-            f"热度={score_result['details'].get('heat',0):.0f}\n\n"
+            f"热度={score_result['details'].get('heat',0):.0f} "
+            f"MA={score_result['details'].get('ma2560',0):+d}\n\n"
             f"入场价：{price:.6f} U\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
             f"止盈一档：{trade.take_profit_1:.6f}（-5%，+{trade.notional*0.05*0.5:.1f}U）\n"
@@ -470,7 +484,8 @@ def check_candidates():
             f"日线RSI：{c.rsi_1d}（超买）\n"
             f"24h涨幅：{c.pct24h:+.1f}% | 成交量：{c.vol24h:,}U\n"
             f"OI变化：{c.oi_change:+.0f}% | 资金费率：{c.funding_rate:.4f}%/8h\n"
-            f"妖币评分：{c.yao_score}/3 | BTC 24h：{btc_pct:+.1f}%"
+            f"妖币评分：{c.yao_score}/3 | BTC 24h：{btc_pct:+.1f}%\n"
+            f"📈 均线趋势：{ma2560_trend['alignment']}（间距{ma2560_trend['gap_pct']:+.2f}%）"
         )
         send_tg(msg)
 

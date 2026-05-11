@@ -30,7 +30,7 @@ from common import (
 )
 from models import Trade
 from risk_control import can_open_trade, record_trade_opened
-from signal_score import check_btc_filter, calculate_long_signal_score
+from signal_score import check_btc_filter, calculate_long_signal_score, get_ma2560_trend
 
 logger = setup_logger("long_scanner")
 
@@ -318,12 +318,15 @@ def scan_long_signals():
         if 5 <= cand['pct24h'] <= 30:
             result = detect_breakout_pullback(exchange, symbol)
             if result['signal']:
+                # 获取均线趋势（改良2560系统）
+                ma2560_trend = get_ma2560_trend(exchange, symbol)
                 # 信号评分
                 score_result = calculate_long_signal_score(
                     rsi=result.get('rsi', 50),
                     strategy_type='breakout_pullback',
                     pullback_pct=result.get('pullback_pct', 0),
                     btc_24h_pct=btc_pct,
+                    ma2560_trend=ma2560_trend,
                 )
                 if score_result['grade'] == 'SKIP':
                     logger.info(f"  ⏭️ {symbol} 评分不足({score_result['score']}分)，跳过")
@@ -358,6 +361,8 @@ def scan_long_signals():
         if cand['pct24h'] <= -10:
             result = detect_pin_bar_bottom(exchange, symbol)
             if result['signal']:
+                # 获取均线趋势（改良2560系统）
+                ma2560_trend = get_ma2560_trend(exchange, symbol)
                 # 信号评分
                 score_result = calculate_long_signal_score(
                     rsi=result.get('rsi', 50),
@@ -365,6 +370,7 @@ def scan_long_signals():
                     shadow_pct=result.get('shadow_pct', 0),
                     oi_increasing=True,  # 已通过OI检查
                     btc_24h_pct=btc_pct,
+                    ma2560_trend=ma2560_trend,
                 )
                 if score_result['grade'] == 'SKIP':
                     logger.info(f"  ⏭️ {symbol} 评分不足({score_result['score']}分)，跳过")
