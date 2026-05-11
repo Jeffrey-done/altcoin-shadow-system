@@ -45,7 +45,7 @@ from common import (
     setup_logger, send_tg, atomic_write_json, load_json,
     to_binance_symbol, utcnow_iso, utcnow, today_str, hold_hours,
 )
-from risk_control import can_open_trade, record_trade_opened, record_trade_closed
+
 
 logger = setup_logger("low_risk")
 # ══════════════════════════════════════════════════════════════════
@@ -116,7 +116,7 @@ class LowRiskTrade:
             notional=notional,
             target_price=target_price,
             stop_price=stop_price,
-            max_hold_hours=config.LOW_RISK_MEAN_REVERSION_LOOKBACK,
+            max_hold_hours=config.LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS,
         )
 
     @classmethod
@@ -461,13 +461,7 @@ def execute_low_risk_scan(mode: str = 'all'):
     if not can_trade:
         return
 
-    # 2. 检查风控
-    allowed, reason = can_open_trade(config.LOW_RISK_GRID_STAKE)
-    if not allowed:
-        logger.warning(f"风控拒绝：{reason}")
-        return
-
-    # 3. 检查当前持仓数
+    # 2. 检查当前持仓数
     trades_data = load_json(LOW_RISK_TRADES_FILE, [])
     trades = [LowRiskTrade.from_dict(t) for t in trades_data]
     open_count = sum(1 for t in trades if t.status == 'open')
@@ -475,12 +469,12 @@ def execute_low_risk_scan(mode: str = 'all'):
         logger.info(f"持仓已满（{open_count}/{config.LOW_RISK_MAX_POSITIONS}），跳过扫描")
         return
 
-    # 4. 创建交易所连接
+    # 3. 创建交易所连接
     exchange = ccxt.binance({'enableRateLimit': True})
 
     new_trades = []
 
-    # 5. 执行对应模式的扫描
+    # 4. 执行对应模式的扫描
     if mode in ('all', 'grid'):
         logger.info("--- 网格交易扫描 ---")
         grid_opps = scan_grid_opportunities(exchange)
@@ -534,11 +528,10 @@ def execute_low_risk_scan(mode: str = 'all'):
             new_trades.append(trade)
             open_count += 1
 
-    # 6. 保存新交易
+    # 5. 保存新交易
     if new_trades:
         for trade in new_trades:
             trades.append(trade)
-            record_trade_opened(trade.stake)
             logger.info(
                 f"  ✅ 开仓: {trade.symbol} | 策略={trade.strategy} | "
                 f"方向={trade.direction} | 入场={trade.entry_price:.6f} | "
@@ -628,9 +621,6 @@ def check_low_risk_positions():
             trade.close_reason = close_reason
             trade.pnl = round(pnl_usd, 4)
             any_updated = True
-
-            # 风控记录
-            record_trade_closed(trade.pnl, trade.stake)
 
             emoji = "✅" if trade.pnl >= 0 else "❌"
             logger.info(
