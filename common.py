@@ -91,7 +91,7 @@ def atomic_write_json(filepath: str, data: Any) -> None:
     lock_fd = None
     try:
         # 获取排他锁
-        lock_fd = open(lockfile, 'w')
+        lock_fd = open(lockfile, 'a')
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -115,7 +115,7 @@ def load_json(filepath: str, default: Any = None) -> Any:
     lockfile = filepath + '.lock'
     lock_fd = None
     try:
-        lock_fd = open(lockfile, 'w')
+        lock_fd = open(lockfile, 'a')
         fcntl.flock(lock_fd, fcntl.LOCK_SH)
 
         with open(filepath, 'r', encoding='utf-8') as f:

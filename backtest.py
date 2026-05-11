@@ -281,7 +281,7 @@ def simulate_trade(klines: List[dict], entry_idx: int,
     entry_price = klines[entry_idx + 1]['open']
     entry_time = klines[entry_idx + 1]['time']
 
-    # 做空滑点：实际成交价更低（worse fill = higher entry for short）
+    # 做空滑点：worse fill = higher entry for short（当前符号约定仅适用于做空交易）
     entry_price = entry_price * (1 + params.slippage_pct / 100)
 
     trade = BacktestTrade(

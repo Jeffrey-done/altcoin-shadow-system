@@ -337,7 +337,7 @@ def scan_long_signals():
                     trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(config.LONG_STAKE)
+                record_trade_opened(trade.stake)
                 opened += 1
 
                 logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
@@ -378,7 +378,7 @@ def scan_long_signals():
                     trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(config.LONG_STAKE)
+                record_trade_opened(trade.stake)
                 opened += 1
 
                 logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
