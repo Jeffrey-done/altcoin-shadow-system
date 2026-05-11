@@ -137,6 +137,38 @@ COMPOUND_MAX_STAKE = 300       # 单笔保证金上限（防止过度集中）
 #        但不超过 COMPOUND_MAX_STAKE
 
 # ══════════════════════════════════════════════════════════════════
+#  低风险日收策略
+# ══════════════════════════════════════════════════════════════════
+# Low-risk: general
+LOW_RISK_ENABLED = True
+LOW_RISK_DAILY_TARGET_PCT = 2.0    # daily profit target (% of account)
+LOW_RISK_MAX_DAILY_DRAWDOWN_PCT = 1.0  # max daily drawdown (% of account)
+LOW_RISK_MAX_POSITIONS = 5         # max simultaneous positions
+LOW_RISK_KELLY_FRACTION = 0.25     # quarter Kelly for safety
+
+# Low-risk: grid trading
+LOW_RISK_GRID_LEVELS = 5           # number of grid levels
+LOW_RISK_GRID_SPACING_PCT = 0.5    # spacing between grid levels (%)
+LOW_RISK_GRID_STAKE = 20           # per-grid-level stake (USDT)
+LOW_RISK_GRID_LEVERAGE = 5         # grid leverage
+LOW_RISK_GRID_MAX_HOLD_HOURS = 4   # max hold time per grid order
+
+# Low-risk: mean reversion
+LOW_RISK_MEAN_REVERSION_LOOKBACK = 24  # lookback hours
+LOW_RISK_MEAN_REVERSION_THRESHOLD = 1.5  # std devs from mean to trigger
+LOW_RISK_MEAN_REVERSION_STAKE = 30     # stake per mean reversion trade
+LOW_RISK_MEAN_REVERSION_LEVERAGE = 5
+LOW_RISK_MEAN_REVERSION_TARGET_PCT = 1.0  # target profit %
+LOW_RISK_MEAN_REVERSION_STOP_PCT = 1.5    # stop loss %
+
+# Low-risk: multi-coin funding
+LOW_RISK_FUNDING_MAX_COINS = 3     # max coins for simultaneous funding collection
+
+# Low-risk: symbol lists
+LOW_RISK_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT']
+LOW_RISK_FUNDING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT']
+
+# ══════════════════════════════════════════════════════════════════
 #  候选池管理
 # ══════════════════════════════════════════════════════════════════
 CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清理）
