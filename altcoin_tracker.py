@@ -63,8 +63,11 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     entry = trade.entry_price
     leverage = trade.leverage
 
-    # 做空盈亏（价格下跌=盈利）
-    pnl_pct = (entry - current_price) / entry * 100
+    # 方向盈亏
+    if trade.direction == 'LONG':
+        pnl_pct = (current_price - entry) / entry * 100  # 做多：涨=赚
+    else:
+        pnl_pct = (entry - current_price) / entry * 100  # 做空：跌=赚
 
     # 杠杆后的名义仓位盈亏
     notional_remaining = trade.stake_remaining * leverage
@@ -77,7 +80,14 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     )
 
     # ══ 硬止损（最高优先级） ══
-    if trade.hard_stop_price and current_price >= trade.hard_stop_price:
+    hard_stop_hit = False
+    if trade.hard_stop_price:
+        if trade.direction == 'LONG' and current_price <= trade.hard_stop_price:
+            hard_stop_hit = True
+        elif trade.direction == 'SHORT' and current_price >= trade.hard_stop_price:
+            hard_stop_hit = True
+
+    if hard_stop_hit:
         remaining_pnl = notional_remaining * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         trade.pnl = round(total_pnl, 2)
@@ -104,14 +114,26 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     if pnl_pct > trade.best_pnl_pct:
         trade.best_pnl_pct = round(pnl_pct, 2)
         trail_pct = config.TRAIL_STOP_DRAWDOWN_PCT
-        trade.trail_stop_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
+        if trade.direction == 'LONG':
+            # 做多：止损价在下方
+            trade.trail_stop_price = round(entry * (1 + pnl_pct / 100 - trail_pct), 6)
+        else:
+            # 做空：止损价在上方
+            trade.trail_stop_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
         result.updated = True
 
     # ── 分批止盈 / 止损判断 ──
     days = hold_days(trade.opened_at)
 
-    # TP1：第一档止盈 -5%
-    if not trade.tp1_triggered and trade.take_profit_1 and current_price <= trade.take_profit_1:
+    # TP1：第一档止盈
+    tp1_hit = False
+    if not trade.tp1_triggered and trade.take_profit_1:
+        if trade.direction == 'LONG' and current_price >= trade.take_profit_1:
+            tp1_hit = True
+        elif trade.direction == 'SHORT' and current_price <= trade.take_profit_1:
+            tp1_hit = True
+
+    if tp1_hit:
         trade.tp1_triggered = True
         # 锁定 50% 仓位的利润（杠杆后）
         locked_notional = trade.stake * config.TP1_CLOSE_RATIO * leverage
@@ -132,8 +154,15 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U")
 
-    # TP2：第二档止盈 -10%
-    elif trade.tp1_triggered and trade.take_profit_2 and current_price <= trade.take_profit_2:
+    # TP2：第二档止盈
+    tp2_hit = False
+    if trade.tp1_triggered and trade.take_profit_2:
+        if trade.direction == 'LONG' and current_price >= trade.take_profit_2:
+            tp2_hit = True
+        elif trade.direction == 'SHORT' and current_price <= trade.take_profit_2:
+            tp2_hit = True
+
+    if tp2_hit:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
@@ -157,9 +186,15 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         logger.info(f"[TP2] {trade.symbol} @ {current_price}, 总盈亏 {total_pnl:+.2f}U")
 
     # 移动止损
-    elif (trade.trail_stop_price
-          and trade.best_pnl_pct >= config.TRAIL_STOP_ACTIVATE_PCT
-          and current_price >= trade.trail_stop_price):
+    trail_triggered = False
+    if (trade.trail_stop_price
+          and trade.best_pnl_pct >= config.TRAIL_STOP_ACTIVATE_PCT):
+        if trade.direction == 'LONG' and current_price <= trade.trail_stop_price:
+            trail_triggered = True
+        elif trade.direction == 'SHORT' and current_price >= trade.trail_stop_price:
+            trail_triggered = True
+
+    if trail_triggered:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
