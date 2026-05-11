@@ -155,6 +155,7 @@ LOW_RISK_GRID_MAX_HOLD_HOURS = 4   # max hold time per grid order
 
 # Low-risk: mean reversion
 LOW_RISK_MEAN_REVERSION_LOOKBACK = 24  # lookback hours
+LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS = 8  # max hold time for mean reversion trades
 LOW_RISK_MEAN_REVERSION_THRESHOLD = 1.5  # std devs from mean to trigger
 LOW_RISK_MEAN_REVERSION_STAKE = 30     # stake per mean reversion trade
 LOW_RISK_MEAN_REVERSION_LEVERAGE = 5
