@@ -210,17 +210,27 @@ def get_compound_stake() -> float:
 
 
 def get_dynamic_balance() -> float:
-    """计算动态账户余额 = 初始本金 + 所有策略已实现盈亏"""
+    """
+    计算动态账户余额 = 初始本金 + 所有策略已实现盈亏 + TP1已锁定利润。
+    
+    TP1锁定利润说明：
+      当 TP1 触发时，50%仓位已平仓并锁定利润（tp1_locked_pnl），
+      但交易 status 仍为 'open'（剩余50%等TP2）。
+      这部分利润已经是"已实现"的，应计入余额。
+    """
     import config
     trades = load_json(TRADES_FILE, [])
     funding_trades = load_json(FUNDING_TRADES_FILE, [])
     low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
 
     total_pnl = 0.0
-    # 做空交易
+    # 做空/做多交易
     for t in trades:
         if t.get('status') == 'closed':
             total_pnl += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        elif t.get('status') == 'open' and t.get('tp1_locked_pnl', 0) > 0:
+            # TP1已触发但交易未完全平仓：锁定利润计入余额
+            total_pnl += t.get('tp1_locked_pnl', 0)
     # 资金费率套利交易
     for t in funding_trades:
         if t.get('status') == 'closed':
