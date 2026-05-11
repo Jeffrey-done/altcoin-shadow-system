@@ -23,6 +23,7 @@ from common import (
 )
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened
+from signal_score import calculate_signal_score, check_btc_filter
 
 logger = setup_logger("altcoin_scanner")
 
@@ -328,9 +329,16 @@ def check_candidates():
         logger.info("候选池为空，跳过")
         return
 
+    # ── BTC 趋势过滤（全局开关）──
+    btc_allowed, btc_pct, btc_reason = check_btc_filter()
+    if not btc_allowed:
+        logger.warning(f"  🚫 {btc_reason}")
+        send_tg(f"🚫 <b>BTC过滤：暂停做空</b>\n\n{btc_reason}")
+        return
+
     candidates = [Candidate.from_dict(c) for c in candidates_list]
     exchange = ccxt.binance({'enableRateLimit': True})
-    logger.info(f"=== 检查候选池（{len(candidates)}个）===")
+    logger.info(f"=== 检查候选池（{len(candidates)}个）| BTC 24h={btc_pct:+.1f}% ===")
 
     # 已有持仓的币不重复开仓
     trades_list = load_json(TRADES_FILE, [])
@@ -364,8 +372,32 @@ def check_candidates():
             time.sleep(0.1)
             continue
 
+        # ── 信号评分 ──
+        abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
+        score_result = calculate_signal_score(
+            rsi_1d=c.rsi_1d,
+            rsi_4h=rsi_4h,
+            rsi_4h_peak=rsi_4h_peak,
+            pct_24h=c.pct24h,
+            oi_change=c.oi_change,
+            funding_rate=c.funding_rate,
+            yao_score=c.yao_score,
+            trigger_type='abandon' if trigger_abandon else '4h_rsi',
+            abandon_oi_declining=abandon_oi,
+            btc_24h_pct=btc_pct,
+        )
+
+        # 评分太低跳过
+        if score_result["grade"] == "SKIP":
+            logger.info(f"  ⏭️ 跳过 {c.symbol}: 评分{score_result['score']}分 < {config.SCORE_SKIP_THRESHOLD}分")
+            time.sleep(0.1)
+            continue
+
+        # 根据评分决定仓位
+        actual_stake = score_result["stake"]
+
         # ── 风控检查 ──
-        allowed, risk_reason = can_open_trade(config.DEFAULT_STAKE)
+        allowed, risk_reason = can_open_trade(actual_stake)
         if not allowed:
             logger.warning(f"  🚫 风控拒绝 {c.symbol}: {risk_reason}")
             continue
@@ -390,16 +422,17 @@ def check_candidates():
 
         logger.info(f"  🚨 触发信号: {c.symbol} @ {price} [{trigger_reason}]")
 
-        # 创建影子空单（带杠杆 + 硬止损）
-        trade = Trade.create_short(c.symbol, price, reason=trigger_reason)
+        # 创建影子空单（带杠杆 + 硬止损 + 评分仓位）
+        trade = Trade.create_short(c.symbol, price, reason=trigger_reason, stake=actual_stake)
         trades_list.append(trade.to_dict())
         atomic_write_json(TRADES_FILE, trades_list)
 
         # 记录风控
-        record_trade_opened(config.DEFAULT_STAKE)
+        record_trade_opened(actual_stake)
 
         logger.info(
             f"  ✅ 已开空单: {c.symbol} @ {price} | "
+            f"评分={score_result['score']}[{score_result['grade']}] | "
             f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
             f"硬止损={trade.hard_stop_price}"
         )
@@ -417,6 +450,11 @@ def check_candidates():
         msg = (
             f"🔴 <b>影子空单已开仓</b> {yao_tag}\n\n"
             f"📌 <b>{c.symbol}</b>\n"
+            f"📊 信号评分：<b>{score_result['score']}分 [{score_result['grade']}]</b>\n"
+            f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
+            f"妖={score_result['details'].get('yao',0):.0f} "
+            f"触发={score_result['details'].get('trigger',0):.0f} "
+            f"热度={score_result['details'].get('heat',0):.0f}\n\n"
             f"入场价：{price:.6f} U\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
             f"止盈一档：{trade.take_profit_1:.6f}（-5%，+{trade.notional*0.05*0.5:.1f}U）\n"
@@ -427,7 +465,7 @@ def check_candidates():
             f"日线RSI：{c.rsi_1d}（超买）\n"
             f"24h涨幅：{c.pct24h:+.1f}% | 成交量：{c.vol24h:,}U\n"
             f"OI变化：{c.oi_change:+.0f}% | 资金费率：{c.funding_rate:.4f}%/8h\n"
-            f"妖币评分：{c.yao_score}/3"
+            f"妖币评分：{c.yao_score}/3 | BTC 24h：{btc_pct:+.1f}%"
         )
         send_tg(msg)
 
