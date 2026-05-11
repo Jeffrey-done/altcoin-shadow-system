@@ -114,7 +114,8 @@ def get_dashboard_data() -> dict:
 
     return {
         'account': {
-            'balance': config.ACCOUNT_BALANCE,
+            'balance': round(config.ACCOUNT_BALANCE + total_pnl + funding_total_pnl, 2),
+            'initial_balance': config.ACCOUNT_BALANCE,
             'leverage': config.LEVERAGE,
             'today_pnl': round(today_pnl, 2),
             'total_pnl': round(total_pnl, 2),
@@ -346,7 +347,7 @@ tr:hover td { background: #1c2128; }
             <div class="card-sub">总交易 <span id="total-trades">0</span> 单</div>
         </div>
         <div class="card">
-            <div class="card-header">持仓浮盈</div>
+            <div class="card-header">账户余额</div>
             <div class="card-value" id="open-pnl">--</div>
             <div class="card-sub" id="leverage-info">--</div>
         </div>
@@ -465,11 +466,11 @@ function updateDashboard(data) {
     document.getElementById('total-pnl').innerHTML = fmtPnl(totalAll);
     document.getElementById('total-pnl').className = 'card-value ' + pnlColor(totalAll);
 
-    document.getElementById('open-pnl').innerHTML = fmtPnl(a.open_pnl);
-    document.getElementById('open-pnl').className = 'card-value ' + pnlColor(a.open_pnl);
+    document.getElementById('open-pnl').innerHTML = fmtPnl(a.balance, 'U');
+    document.getElementById('open-pnl').className = 'card-value ' + (a.balance >= a.initial_balance ? 'green' : 'red');
 
     document.getElementById('total-trades').textContent = a.total_trades;
-    document.getElementById('leverage-info').textContent = `${a.balance}U × ${a.leverage}x`;
+    document.getElementById('leverage-info').textContent = `余额 ${a.balance}U（初始${a.initial_balance}U）`;
     document.getElementById('win-rate').textContent = a.win_rate + '%';
     document.getElementById('win-rate').className = 'card-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
 
