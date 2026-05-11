@@ -124,6 +124,8 @@ SCORE_SKIP_THRESHOLD = 40      # <40分：跳过不开仓
 BTC_FILTER_ENABLED = True      # 是否启用 BTC 趋势过滤
 BTC_CRASH_THRESHOLD = -5.0     # BTC 24h 跌幅超过此值时暂停做空山寨（%）
 # 原因：BTC暴跌时山寨超跌严重，但反弹也猛，此时做空容易被反弹打止损
+BTC_LONG_CRASH_THRESHOLD = -8.0  # BTC 24h 跌幅超过此值时暂停做多抄底（%）
+# 原因：BTC暴跌>8%时山寨可能继续跌，不适合抄底
 BTC_PUMP_THRESHOLD = 8.0       # BTC 24h 涨幅超过此值时信号加分（牛市山寨更容易冲高回落）
 
 # ══════════════════════════════════════════════════════════════════

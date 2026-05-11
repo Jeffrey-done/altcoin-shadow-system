@@ -115,7 +115,7 @@ def check_main_trades(symbol: str, price: float):
         if result.closed:
             any_updated = True
             # 记录风控
-            record_trade_closed(result.pnl_usd)
+            record_trade_closed(result.pnl_usd, trade.stake_remaining)
             # TG推送
             if result.alert_msg:
                 send_tg(result.alert_msg)

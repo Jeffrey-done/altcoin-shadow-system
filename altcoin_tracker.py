@@ -21,7 +21,7 @@ import config
 from common import (
     TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
-    utcnow_iso, hold_days,
+    utcnow_iso, hold_days, hold_hours,
 )
 from models import Trade
 from risk_control import record_trade_closed, get_risk_summary
@@ -123,7 +123,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.updated = True
 
     # ── 分批止盈 / 止损判断 ──
-    days = hold_days(trade.opened_at)
+    hours_held = hold_hours(trade.opened_at)
 
     # TP1：第一档止盈
     tp1_hit = False
@@ -217,25 +217,25 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         logger.info(f"[移动止损] {trade.symbol} @ {current_price}")
 
     # 时间止损
-    elif days >= trade.max_hold_days and pnl_pct < config.TIME_STOP_MIN_PROFIT_PCT:
+    elif hours_held >= trade.max_hold_days * 24 and pnl_pct < config.TIME_STOP_MIN_PROFIT_PCT:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
-        trade.close_reason = f"时间止损（{days}天，{pnl_pct:.1f}%）"
+        trade.close_reason = f"时间止损（{hours_held:.1f}h，{pnl_pct:.1f}%）"
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = f"⏰ 时间止损（持仓{days}天，{pnl_pct:.1f}%）"
+        result.close_reason = f"⏰ 时间止损（持仓{hours_held:.1f}h，{pnl_pct:.1f}%）"
         result.alert_msg = (
             f"⏰ <b>时间止损触发</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
-            f"持仓{days}天，盈利仅{pnl_pct:.1f}%，强制平仓\n"
+            f"持仓{hours_held:.1f}小时，盈利仅{pnl_pct:.1f}%，强制平仓\n"
             f"盈亏：<b>{total_pnl:+.2f}U</b> ✅"
         )
-        logger.info(f"[时间止损] {trade.symbol} 持仓{days}天")
+        logger.info(f"[时间止损] {trade.symbol} 持仓{hours_held:.1f}h")
 
     # 无触发：更新浮盈
     else:
@@ -292,7 +292,7 @@ def run(check_only: bool = False):
 
         # 平仓时记录风控
         if result.closed:
-            record_trade_closed(result.pnl_usd, trade.stake)
+            record_trade_closed(result.pnl_usd, trade.stake_remaining)
 
         # 触发推送
         if result.alert_msg:

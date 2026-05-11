@@ -252,9 +252,9 @@ def scan_long_signals():
 
     # BTC 过滤（做多时 BTC 暴跌不适合抄底）
     btc_allowed, btc_pct, btc_reason = check_btc_filter()
-    # 做多的BTC过滤逻辑相反：BTC暴跌>8%时不抄底（可能继续跌）
-    if btc_pct < -8:
-        logger.warning(f"  🚫 BTC暴跌{btc_pct:.1f}%，暂停做多抄底")
+    # 做多的BTC过滤逻辑相反：BTC暴跌超阈值时不抄底（可能继续跌）
+    if btc_pct < config.BTC_LONG_CRASH_THRESHOLD:
+        logger.warning(f"  🚫 BTC暴跌{btc_pct:.1f}%（阈值{config.BTC_LONG_CRASH_THRESHOLD}%），暂停做多抄底")
         return
 
     exchange = ccxt.binance({'enableRateLimit': True})
