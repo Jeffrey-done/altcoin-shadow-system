@@ -393,8 +393,13 @@ def check_candidates():
             time.sleep(0.1)
             continue
 
-        # 根据评分决定仓位
-        actual_stake = score_result["stake"]
+        # 根据评分决定仓位（结合自动复利）
+        from common import get_compound_stake
+        base_stake = get_compound_stake()
+        if score_result["grade"] == "A":
+            actual_stake = base_stake
+        else:  # grade B
+            actual_stake = round(base_stake * 0.5)
 
         # ── 风控检查 ──
         allowed, risk_reason = can_open_trade(actual_stake)

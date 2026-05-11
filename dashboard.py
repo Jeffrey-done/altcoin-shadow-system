@@ -84,6 +84,34 @@ def get_dashboard_data() -> dict:
     wins = sum(1 for t in closed_trades if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
     win_rate = (wins / len(closed_trades) * 100) if closed_trades else 0
 
+    # PnL 历史（按日汇总）
+    pnl_history = {}
+    for t in closed_trades:
+        closed_at = t.get('closed_at', '')
+        if not closed_at:
+            continue
+        day = closed_at[:10]  # YYYY-MM-DD
+        pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        pnl_history[day] = pnl_history.get(day, 0) + pnl
+    # 加入费率套利
+    for t in funding_closed:
+        closed_at = t.get('closed_at', '')
+        if not closed_at:
+            continue
+        day = closed_at[:10]
+        pnl_history[day] = pnl_history.get(day, 0) + t.get('total_pnl', 0)
+    # 排序
+    sorted_days = sorted(pnl_history.keys())
+    pnl_chart_data = {
+        'dates': sorted_days,
+        'daily_pnl': [round(pnl_history[d], 2) for d in sorted_days],
+        'cumulative': [],
+    }
+    cum = 0
+    for d in sorted_days:
+        cum += pnl_history[d]
+        pnl_chart_data['cumulative'].append(round(cum, 2))
+
     return {
         'account': {
             'balance': config.ACCOUNT_BALANCE,
@@ -95,7 +123,7 @@ def get_dashboard_data() -> dict:
             'total_trades': len(closed_trades),
         },
         'open_trades': open_trades,
-        'closed_trades': closed_trades[-20:],  # 最近20条
+        'closed_trades': closed_trades[-20:],
         'candidates': candidates,
         'funding': {
             'open': funding_open,
@@ -104,6 +132,7 @@ def get_dashboard_data() -> dict:
             'total_pnl': round(funding_total_pnl, 4),
         },
         'risk': risk_state,
+        'pnl_chart': pnl_chart_data,
         'config': {
             'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 1),
             'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 1),
@@ -376,6 +405,18 @@ tr:hover td { background: #1c2128; }
         </div>
     </div>
 
+    <!-- PnL Chart -->
+    <div class="card" style="margin-top:12px;">
+        <div class="section-title">📈 历史盈亏曲线</div>
+        <div style="height:220px;position:relative;">
+            <canvas id="pnl-chart"></canvas>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:16px;font-size:0.75rem;color:#8b949e;">
+            <span>🟢 累计盈亏</span>
+            <span>🔵 每日盈亏</span>
+        </div>
+    </div>
+
     <!-- Closed Trades -->
     <div class="card" style="margin-top:12px;">
         <div class="section-title">✅ 最近平仓记录</div>
@@ -549,13 +590,96 @@ function updateDashboard(data) {
     }).join('');
 }
 
-socket.on('update', updateDashboard);
+socket.on('update', function(data) {
+    updateDashboard(data);
+    drawPnlChart(data.pnl_chart);
+});
 socket.on('connect', () => {
     document.getElementById('timestamp').textContent = '已连接，等待数据...';
 });
 socket.on('disconnect', () => {
     document.getElementById('timestamp').textContent = '⚠️ 连接断开，重连中...';
 });
+
+function drawPnlChart(chartData) {
+    if (!chartData || !chartData.dates || chartData.dates.length < 2) return;
+    const canvas = document.getElementById('pnl-chart');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    const w = canvas.parentElement.clientWidth;
+    const h = 220;
+    canvas.width = w;
+    canvas.height = h;
+
+    const dates = chartData.dates;
+    const daily = chartData.daily_pnl;
+    const cum = chartData.cumulative;
+    const n = dates.length;
+
+    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    // 背景
+    ctx.fillStyle = '#161b22';
+    ctx.fillRect(0, 0, w, h);
+
+    // 累计曲线范围
+    const allVals = [...cum, ...daily];
+    const minVal = Math.min(...allVals, 0);
+    const maxVal = Math.max(...allVals, 0);
+    const range = (maxVal - minVal) || 1;
+
+    // 零线
+    const zeroY = padding.top + chartH - ((0 - minVal) / range) * chartH;
+    ctx.strokeStyle = '#30363d';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padding.left, zeroY);
+    ctx.lineTo(w - padding.right, zeroY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 每日盈亏柱状
+    const barWidth = Math.max(2, (chartW / n) * 0.6);
+    for (let i = 0; i < n; i++) {
+        const x = padding.left + (i / (n - 1)) * chartW;
+        const val = daily[i];
+        const barH = Math.abs(val / range) * chartH;
+        const y = val >= 0 ? zeroY - barH : zeroY;
+        ctx.fillStyle = val >= 0 ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)';
+        ctx.fillRect(x - barWidth/2, y, barWidth, barH);
+    }
+
+    // 累计曲线
+    ctx.strokeStyle = '#3fb950';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+        const x = padding.left + (i / (n - 1)) * chartW;
+        const y = padding.top + chartH - ((cum[i] - minVal) / range) * chartH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // 标注
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(maxVal.toFixed(0) + 'U', 4, padding.top + 10);
+    ctx.fillText(minVal.toFixed(0) + 'U', 4, h - padding.bottom - 4);
+    if (dates.length > 0) {
+        ctx.fillText(dates[0], padding.left, h - 6);
+        ctx.fillText(dates[dates.length-1], w - padding.right - 60, h - 6);
+    }
+
+    // 最终累计值
+    const finalCum = cum[cum.length - 1];
+    ctx.fillStyle = finalCum >= 0 ? '#3fb950' : '#f85149';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(`${finalCum >= 0 ? '+' : ''}${finalCum.toFixed(1)}U`, w - padding.right - 55, padding.top + 12);
+}
 </script>
 </body>
 </html>'''

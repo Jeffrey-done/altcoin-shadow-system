@@ -117,6 +117,16 @@ BTC_CRASH_THRESHOLD = -5.0     # BTC 24h 跌幅超过此值时暂停做空山寨
 BTC_PUMP_THRESHOLD = 8.0       # BTC 24h 涨幅超过此值时信号加分（牛市山寨更容易冲高回落）
 
 # ══════════════════════════════════════════════════════════════════
+#  自动复利
+# ══════════════════════════════════════════════════════════════════
+AUTO_COMPOUND_ENABLED = True   # 是否开启自动复利
+COMPOUND_STEP = 50             # 每累计盈利 50U，保证金加 25U
+COMPOUND_INCREASE = 25         # 每步增加的保证金
+COMPOUND_MAX_STAKE = 300       # 单笔保证金上限（防止过度集中）
+# 逻辑：effective_stake = DEFAULT_STAKE + (total_realized_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
+#        但不超过 COMPOUND_MAX_STAKE
+
+# ══════════════════════════════════════════════════════════════════
 #  候选池管理
 # ══════════════════════════════════════════════════════════════════
 CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清理）

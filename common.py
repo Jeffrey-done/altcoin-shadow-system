@@ -157,3 +157,30 @@ def hold_hours(opened_at: str) -> float:
 def today_str() -> str:
     """返回今日日期字符串 YYYY-MM-DD（UTC）"""
     return utcnow().strftime('%Y-%m-%d')
+
+
+
+def get_compound_stake() -> float:
+    """
+    自动复利：根据累计已实现盈亏动态调整单笔保证金。
+    公式：stake = DEFAULT_STAKE + (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
+    上限：COMPOUND_MAX_STAKE
+    """
+    import config
+    if not config.AUTO_COMPOUND_ENABLED:
+        return config.DEFAULT_STAKE
+
+    trades = load_json(TRADES_FILE, [])
+    total_pnl = sum(
+        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        for t in trades if t.get('status') == 'closed'
+    )
+
+    if total_pnl <= 0:
+        return config.DEFAULT_STAKE
+
+    steps = int(total_pnl // config.COMPOUND_STEP)
+    stake = config.DEFAULT_STAKE + steps * config.COMPOUND_INCREASE
+    stake = min(stake, config.COMPOUND_MAX_STAKE)
+
+    return stake
