@@ -892,9 +892,136 @@ function updateDashboard(data) {
     }).join('');
 }
 
-socket.on('update', function(data) { updateDashboard(data); drawPnlChart(data.pnl_chart); });
+socket.on('update', function(data) {
+    updateDashboard(data);
+    drawPnlChart(data.pnl_chart);
+    binanceWS._lastData = data;  // 存储最新数据供实时盈亏计算
+    // 收集持仓币种，启动 Binance WebSocket
+    const symbols = new Set();
+    (data.short_trades?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.long_trades?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.low_risk?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.funding?.open || []).forEach(t => symbols.add(t.symbol));
+    symbols.delete('');
+    binanceWS.updateSymbols([...symbols]);
+});
 socket.on('connect', () => { document.getElementById('timestamp').textContent = '已连接，等待数据...'; });
 socket.on('disconnect', () => { document.getElementById('timestamp').textContent = '⚠️ 连接断开，重连中...'; });
+
+// ═══════════════════════════════════════════════════════════════
+//  Binance WebSocket 实时价格推送
+// ═══════════════════════════════════════════════════════════════
+const binanceWS = {
+    ws: null,
+    currentSymbols: [],
+    prices: {},  // { 'PEPE/USDT': 0.00001234 }
+    reconnectTimer: null,
+
+    updateSymbols(symbols) {
+        // 检查是否需要重连（币种列表变化时）
+        const sorted = [...symbols].sort().join(',');
+        const current = this.currentSymbols.sort().join(',');
+        if (sorted === current && this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        this.currentSymbols = [...symbols];
+        this.connect();
+    },
+
+    connect() {
+        // 关闭旧连接
+        if (this.ws) {
+            this.ws.onclose = null;  // 防止触发重连
+            this.ws.close();
+            this.ws = null;
+        }
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        if (this.currentSymbols.length === 0) return;
+
+        // 构建 stream 名称: pepeusdt@trade / dogeusdt@trade
+        const streams = this.currentSymbols.map(sym => {
+            const binSym = sym.replace('/USDT', 'usdt').replace('/', '').toLowerCase();
+            return binSym + '@miniTicker';
+        });
+
+        const url = 'wss://stream.binance.com:9443/stream?streams=' + streams.join('/');
+        try {
+            this.ws = new WebSocket(url);
+        } catch(e) { console.warn('[BinanceWS] 连接失败:', e); return; }
+
+        this.ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                const data = msg.data;
+                if (!data || !data.s || !data.c) return;
+                // data.s = "PEPEUSDT", data.c = 最新价（字符串）
+                const binSym = data.s;
+                const price = parseFloat(data.c);
+                // 转回 ccxt 格式
+                const ccxtSym = this.currentSymbols.find(s =>
+                    s.replace('/USDT', 'USDT').replace('/', '') === binSym
+                );
+                if (ccxtSym && price > 0) {
+                    this.prices[ccxtSym] = price;
+                    this.updateUI(ccxtSym, price);
+                }
+            } catch(e) {}
+        };
+
+        this.ws.onclose = () => {
+            // 5秒后自动重连
+            this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+        };
+
+        this.ws.onerror = () => { /* onclose 会处理 */ };
+    },
+
+    updateUI(symbol, price) {
+        // 实时更新所有持仓表格中该币种的现价和盈亏
+        document.querySelectorAll('#short-trades tr, #long-trades tr').forEach(row => {
+            const firstCell = row.querySelector('td:first-child b');
+            if (!firstCell || firstCell.textContent !== symbol) return;
+
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 5) return;
+
+            const entryPrice = parseFloat(cells[1].textContent);
+            if (!entryPrice || entryPrice <= 0) return;
+
+            // 更新现价（闪烁效果）
+            cells[2].textContent = price.toFixed(6);
+            cells[2].style.transition = 'color 0.3s';
+            cells[2].style.color = '#58a6ff';
+            setTimeout(() => { cells[2].style.color = ''; }, 500);
+
+            // 判断方向
+            const isShort = row.closest('#short-trades') !== null;
+            let pnlPct;
+            if (isShort) {
+                pnlPct = (entryPrice - price) / entryPrice * 100;
+            } else {
+                pnlPct = (price - entryPrice) / entryPrice * 100;
+            }
+
+            // 更新盈亏%
+            const sign = pnlPct >= 0 ? '+' : '';
+            const cls = pnlPct > 0 ? 'green' : pnlPct < 0 ? 'red' : '';
+            cells[3].innerHTML = `<span class="${cls}">${sign}${pnlPct.toFixed(1)}%</span>`;
+
+            // 从 _lastData 获取准确仓位信息
+            const tradeList = isShort
+                ? (this._lastData?.short_trades?.open || [])
+                : (this._lastData?.long_trades?.open || []);
+            const trade = tradeList.find(t => t.symbol === symbol);
+            const stake = trade ? (trade.stake_remaining || trade.stake || 100) : 100;
+            const leverage = trade ? (trade.leverage || 10) : 10;
+            const pnlU = stake * leverage * pnlPct / 100;
+            const uSign = pnlU >= 0 ? '+' : '';
+            const uCls = pnlU > 0 ? 'green' : pnlU < 0 ? 'red' : '';
+            cells[4].innerHTML = `<span class="${uCls}">${uSign}${pnlU.toFixed(2)}U</span>`;
+        });
+    },
+
+    _lastData: null
+};
 
 function drawPnlChart(chartData) {
     if (!chartData || !chartData.dates || chartData.dates.length < 2) return;
