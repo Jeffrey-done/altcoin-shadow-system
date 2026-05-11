@@ -22,6 +22,7 @@ TRADES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_shadow_trades.json')
 RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
 FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
 WEEKLY_REPORT_FILE = os.path.join(SCRIPT_DIR, 'weekly_report.json')
+LOW_RISK_TRADES_FILE = os.path.join(SCRIPT_DIR, 'low_risk_trades.json')
 
 
 # ── 环境变量 ─────────────────────────────────────────────────────
