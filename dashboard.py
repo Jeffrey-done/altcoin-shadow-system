@@ -146,6 +146,19 @@ def api_data():
     return jsonify(get_dashboard_data())
 
 
+@app.route('/api/backtest')
+def api_backtest():
+    """返回最近一次回测结果"""
+    bt_file = os.path.join(SCRIPT_DIR, 'backtest_results.json')
+    data = load_json(bt_file, {})
+    return jsonify(data)
+
+
+@app.route('/backtest')
+def backtest_page():
+    return render_template_string(BACKTEST_HTML)
+
+
 @socketio.on('connect')
 def handle_connect():
     """新连接时立即推送一次数据"""
@@ -289,7 +302,7 @@ tr:hover td { background: #1c2128; }
 <body>
 <div class="container">
     <h1><span class="live-dot"></span>Shadow Trading System</h1>
-    <div class="subtitle" id="timestamp">连接中...</div>
+    <div class="subtitle"><span id="timestamp">连接中...</span> | <a href="/backtest" style="color:#58a6ff;text-decoration:none;">📈 回测结果</a></div>
 
     <!-- Summary Cards -->
     <div class="grid grid-4">
@@ -543,6 +556,340 @@ socket.on('connect', () => {
 socket.on('disconnect', () => {
     document.getElementById('timestamp').textContent = '⚠️ 连接断开，重连中...';
 });
+</script>
+</body>
+</html>'''
+
+
+# ══════════════════════════════════════════════════════════════════
+#  回测结果页面 HTML
+# ══════════════════════════════════════════════════════════════════
+
+BACKTEST_HTML = '''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtest Results</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    min-height: 100vh;
+    padding: 16px;
+}
+.container { max-width: 1200px; margin: 0 auto; }
+h1 { font-size: 1.5rem; color: #58a6ff; margin-bottom: 4px; }
+.subtitle { color: #8b949e; font-size: 0.85rem; margin-bottom: 16px; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.grid { display: grid; gap: 12px; margin-bottom: 12px; }
+.grid-5 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+
+.card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px;
+}
+.card-header { font-size: 0.8rem; color: #8b949e; margin-bottom: 6px; }
+.card-value { font-size: 1.6rem; font-weight: 700; }
+
+.green { color: #3fb950; }
+.red { color: #f85149; }
+.yellow { color: #d29922; }
+.blue { color: #58a6ff; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #30363d; color: #8b949e; }
+td { padding: 8px 6px; border-bottom: 1px solid #21262d; }
+tr:hover td { background: #1c2128; }
+
+.section-title { font-size: 1rem; font-weight: 600; margin: 16px 0 8px; }
+
+.chart-container {
+    width: 100%;
+    height: 200px;
+    position: relative;
+    margin-top: 12px;
+}
+canvas { width: 100% !important; height: 100% !important; }
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.badge-pass { background: #1f3d2b; color: #3fb950; }
+.badge-fail { background: #3d1f1f; color: #f85149; }
+.badge-warn { background: #3d2f1f; color: #d29922; }
+
+.empty-state { text-align: center; padding: 40px; color: #8b949e; }
+
+@media (max-width: 768px) {
+    .grid-5 { grid-template-columns: repeat(2, 1fr); }
+    .grid-2 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>📈 回测结果</h1>
+    <div class="subtitle">
+        <a href="/">← 返回主面板</a> |
+        <span id="bt-meta">加载中...</span>
+    </div>
+
+    <div id="content">
+        <div class="empty-state">
+            <p>正在加载回测数据...</p>
+            <p style="margin-top:8px;font-size:0.8rem;">如果没有数据，请先运行：<code>python3 backtest.py --symbol PEPE/USDT --days 90</code></p>
+        </div>
+    </div>
+</div>
+
+<script>
+function pnlColor(val) { return val > 0 ? 'green' : val < 0 ? 'red' : ''; }
+
+function renderResult(data) {
+    const content = document.getElementById('content');
+
+    if (!data || (!data.results && !data.top_results)) {
+        content.innerHTML = `<div class="empty-state">
+            <p>暂无回测数据</p>
+            <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT</code></p>
+        </div>`;
+        return;
+    }
+
+    const meta = document.getElementById('bt-meta');
+    meta.textContent = `${data.symbol || (data.symbols||[]).join(', ')} | ${data.days}天 | ${(data.timestamp||'').slice(0,16)}`;
+
+    // Grid search results
+    if (data.top_results) {
+        renderGridResults(content, data.top_results);
+        return;
+    }
+
+    // Single/multi backtest
+    const results = data.results || [];
+    if (results.length === 0) {
+        content.innerHTML = '<div class="empty-state">无结果</div>';
+        return;
+    }
+
+    let html = '';
+    for (const r of results) {
+        html += renderSingleResult(r);
+    }
+    content.innerHTML = html;
+}
+
+function renderSingleResult(r) {
+    const p = r.params || {};
+    const passBadge = (r.win_rate >= 50 && r.profit_loss_ratio >= 1.5)
+        ? '<span class="badge badge-pass">达标</span>'
+        : (r.win_rate >= 40 ? '<span class="badge badge-warn">需优化</span>' : '<span class="badge badge-fail">不佳</span>');
+
+    let html = `
+    <div class="grid grid-5">
+        <div class="card">
+            <div class="card-header">总盈亏</div>
+            <div class="card-value ${pnlColor(r.total_pnl)}">${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}U</div>
+            <div style="font-size:0.75rem;color:#8b949e;margin-top:4px;">${r.total_trades} 笔交易</div>
+        </div>
+        <div class="card">
+            <div class="card-header">胜率</div>
+            <div class="card-value ${r.win_rate >= 50 ? 'green' : 'yellow'}">${r.win_rate}%</div>
+            <div style="font-size:0.75rem;color:#8b949e;margin-top:4px;">${r.wins}胜 / ${r.losses}负</div>
+        </div>
+        <div class="card">
+            <div class="card-header">盈亏比</div>
+            <div class="card-value ${r.profit_loss_ratio >= 1.5 ? 'green' : 'yellow'}">${r.profit_loss_ratio.toFixed(2)}x</div>
+            <div style="font-size:0.75rem;color:#8b949e;margin-top:4px;">赢${r.avg_win.toFixed(1)} / 亏${r.avg_loss.toFixed(1)}</div>
+        </div>
+        <div class="card">
+            <div class="card-header">最大回撤</div>
+            <div class="card-value red">${r.max_drawdown.toFixed(1)}%</div>
+            <div style="font-size:0.75rem;color:#8b949e;margin-top:4px;">连亏${r.max_consecutive_losses}次</div>
+        </div>
+        <div class="card">
+            <div class="card-header">评级 ${passBadge}</div>
+            <div class="card-value blue">${r.sharpe_ratio.toFixed(2)}</div>
+            <div style="font-size:0.75rem;color:#8b949e;margin-top:4px;">夏普率</div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+        <div class="section-title">📊 权益曲线</div>
+        <div class="chart-container"><canvas id="equity-chart"></canvas></div>
+    </div>
+
+    <div class="grid grid-2" style="margin-top:12px;">
+        <div class="card">
+            <div class="section-title">📝 交易明细</div>
+            <table>
+                <thead><tr><th>入场时间</th><th>盈亏</th><th>原因</th><th>持仓</th><th>TP1</th></tr></thead>
+                <tbody>`;
+
+    const trades = (r.trades || []).slice(-20);
+    for (const t of trades) {
+        const cls = t.pnl_usd > 0 ? 'green' : 'red';
+        const tp1 = t.tp1_hit ? '✓' : '';
+        html += `<tr>
+            <td>${(t.entry_time||'').slice(0,16)}</td>
+            <td class="${cls}">${t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}U</td>
+            <td>${t.exit_reason}</td>
+            <td>${t.hold_bars}h</td>
+            <td>${tp1}</td>
+        </tr>`;
+    }
+
+    html += `</tbody></table></div>
+        <div class="card">
+            <div class="section-title">⚙️ 参数</div>
+            <table>
+                <tbody>
+                    <tr><td>RSI 阈值</td><td><b>${p.daily_rsi_min || '--'}</b></td></tr>
+                    <tr><td>RSI 回落</td><td><b>${p.h4_rsi_drop || '--'} 点</b></td></tr>
+                    <tr><td>TP1</td><td><b>-${p.tp1_pct || '--'}%</b></td></tr>
+                    <tr><td>TP2</td><td><b>-${p.tp2_pct || '--'}%</b></td></tr>
+                    <tr><td>硬止损</td><td><b>+${p.hard_stop_pct || '--'}%</b></td></tr>
+                    <tr><td>移动止损激活</td><td><b>${p.trail_activate_pct || '--'}%</b></td></tr>
+                    <tr><td>移动止损回撤</td><td><b>${((p.trail_drawdown_pct||0)*100).toFixed(0)}%</b></td></tr>
+                    <tr><td>最大持仓</td><td><b>${p.max_hold_bars || '--'}h</b></td></tr>
+                    <tr><td>杠杆</td><td><b>${p.leverage || '--'}x</b></td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>`;
+
+    return html;
+}
+
+function renderGridResults(container, topResults) {
+    let html = `<div class="card"><div class="section-title">🏆 参数网格搜索 Top ${topResults.length}</div>
+    <table>
+        <thead><tr>
+            <th>#</th><th>PnL</th><th>胜率</th><th>盈亏比</th><th>回撤</th><th>连亏</th>
+            <th>TP1</th><th>TP2</th><th>止损</th><th>RSI</th><th>Drop</th><th>单数</th>
+        </tr></thead><tbody>`;
+
+    topResults.slice(0, 20).forEach((r, i) => {
+        const p = r.params || {};
+        const cls = r.total_pnl > 0 ? 'green' : 'red';
+        html += `<tr>
+            <td>${i+1}</td>
+            <td class="${cls}"><b>${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}</b></td>
+            <td>${r.win_rate}%</td>
+            <td>${r.profit_loss_ratio.toFixed(2)}x</td>
+            <td>${r.max_drawdown.toFixed(1)}%</td>
+            <td>${r.max_consecutive_losses}</td>
+            <td>${p.tp1_pct}%</td>
+            <td>${p.tp2_pct}%</td>
+            <td>${p.hard_stop_pct}%</td>
+            <td>${p.daily_rsi_min}</td>
+            <td>${p.h4_rsi_drop}</td>
+            <td>${r.total_trades}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+
+    // 最优参数详情
+    if (topResults.length > 0) {
+        html += renderSingleResult(topResults[0]);
+    }
+
+    container.innerHTML = html;
+    drawEquityChart(topResults[0]);
+}
+
+function drawEquityChart(result) {
+    if (!result || !result.equity_curve || result.equity_curve.length < 2) return;
+    const canvas = document.getElementById('equity-chart');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    const data = result.equity_curve;
+    const w = canvas.parentElement.clientWidth;
+    const h = 200;
+    canvas.width = w;
+    canvas.height = h;
+
+    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    const minVal = Math.min(...data);
+    const maxVal = Math.max(...data);
+    const range = maxVal - minVal || 1;
+
+    // 背景
+    ctx.fillStyle = '#161b22';
+    ctx.fillRect(0, 0, w, h);
+
+    // 基线（初始资金）
+    const baseY = padding.top + chartH - ((data[0] - minVal) / range) * chartH;
+    ctx.strokeStyle = '#30363d';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padding.left, baseY);
+    ctx.lineTo(w - padding.right, baseY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 权益曲线
+    ctx.strokeStyle = data[data.length - 1] >= data[0] ? '#3fb950' : '#f85149';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+        const x = padding.left + (i / (data.length - 1)) * chartW;
+        const y = padding.top + chartH - ((data[i] - minVal) / range) * chartH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // 标注
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(maxVal.toFixed(0) + 'U', 4, padding.top + 10);
+    ctx.fillText(minVal.toFixed(0) + 'U', 4, h - padding.bottom - 4);
+    ctx.fillText('Start', padding.left, h - 8);
+    ctx.fillText('End', w - padding.right - 20, h - 8);
+
+    // 最终值
+    const finalVal = data[data.length - 1];
+    const finalColor = finalVal >= data[0] ? '#3fb950' : '#f85149';
+    ctx.fillStyle = finalColor;
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(`${finalVal.toFixed(1)}U`, w - padding.right - 50, padding.top + 10);
+}
+
+// 加载数据
+fetch('/api/backtest')
+    .then(r => r.json())
+    .then(data => {
+        renderResult(data);
+        // 绘制图表（延迟以确保 DOM 就绪）
+        setTimeout(() => {
+            const results = data.results || data.top_results;
+            if (results && results.length > 0) {
+                drawEquityChart(results[0]);
+            }
+        }, 100);
+    })
+    .catch(err => {
+        document.getElementById('content').innerHTML =
+            `<div class="empty-state"><p>加载失败: ${err.message}</p></div>`;
+    });
 </script>
 </body>
 </html>'''
