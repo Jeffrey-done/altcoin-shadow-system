@@ -623,13 +623,232 @@ def print_grid_results(results: List[BacktestResult], top_n: int = 10):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  入口
+#  批量回测 & 相关性分析
 # ══════════════════════════════════════════════════════════════════
+
+def run_batch_backtest(symbols: List[str], days: int = 90,
+                       params: Optional[BacktestParams] = None) -> List[BacktestResult]:
+    """对多个币种执行批量回测，返回每个币种的 BacktestResult"""
+    if params is None:
+        params = BacktestParams()
+
+    results = []
+    for symbol in symbols:
+        logger.info(f"批量回测: {symbol} / {days}天")
+        result = run_backtest(symbol, days, params)
+        results.append(result)
+
+    return results
+
+
+def calculate_correlation_matrix(results: List[BacktestResult]) -> dict:
+    """
+    计算币种间权益曲线的 Pearson 相关系数。
+    返回 dict: {(symbol_a, symbol_b): correlation_value}
+    仅使用标准库 statistics 模块。
+    """
+    import statistics
+
+    # 提取每个币种的权益曲线及对应 symbol
+    curves = []
+    for r in results:
+        if r.trades and r.equity_curve:
+            symbol = r.trades[0].symbol if r.trades else 'UNKNOWN'
+            curves.append((symbol, r.equity_curve))
+
+    correlation = {}
+
+    for i in range(len(curves)):
+        for j in range(i + 1, len(curves)):
+            sym_a, curve_a = curves[i]
+            sym_b, curve_b = curves[j]
+
+            # 对齐长度（取较短的）
+            min_len = min(len(curve_a), len(curve_b))
+            if min_len < 3:
+                correlation[(sym_a, sym_b)] = 0.0
+                continue
+
+            x = curve_a[:min_len]
+            y = curve_b[:min_len]
+
+            # Pearson 相关系数计算
+            n = min_len
+            mean_x = statistics.mean(x)
+            mean_y = statistics.mean(y)
+
+            numerator = sum((x[k] - mean_x) * (y[k] - mean_y) for k in range(n))
+            denom_x = sum((x[k] - mean_x) ** 2 for k in range(n)) ** 0.5
+            denom_y = sum((y[k] - mean_y) ** 2 for k in range(n)) ** 0.5
+
+            if denom_x == 0 or denom_y == 0:
+                correlation[(sym_a, sym_b)] = 0.0
+            else:
+                corr = numerator / (denom_x * denom_y)
+                correlation[(sym_a, sym_b)] = round(corr, 4)
+
+    return correlation
+
+
+def rank_coins(results: List[BacktestResult]) -> List[dict]:
+    """
+    按复合评分对币种排名。
+    评分公式: 0.4*win_rate/100 + 0.3*profit_loss_ratio/5 + 0.2*(1-max_drawdown/100) + 0.1*sharpe_ratio/3
+    返回排序后的 list of dicts。
+    """
+    rankings = []
+    for r in results:
+        symbol = r.trades[0].symbol if r.trades else 'UNKNOWN'
+        score = (
+            0.4 * (r.win_rate / 100)
+            + 0.3 * (min(r.profit_loss_ratio, 5) / 5)
+            + 0.2 * (1 - r.max_drawdown / 100)
+            + 0.1 * (min(r.sharpe_ratio, 3) / 3)
+        )
+        rankings.append({
+            'symbol': symbol,
+            'score': round(score, 4),
+            'win_rate': r.win_rate,
+            'profit_loss_ratio': r.profit_loss_ratio,
+            'max_drawdown': r.max_drawdown,
+            'sharpe_ratio': r.sharpe_ratio,
+            'total_pnl': r.total_pnl,
+            'total_trades': r.total_trades,
+        })
+
+    rankings.sort(key=lambda x: x['score'], reverse=True)
+    return rankings
+
+
+def generate_batch_report(results: List[BacktestResult], correlation: dict,
+                          rankings: List[dict]) -> dict:
+    """
+    生成批量回测综合报告。
+    返回包含 summary, per_coin_results, correlation_matrix, rankings,
+    recommended_portfolio 的 dict。
+    """
+    # 汇总统计
+    total_trades = sum(r.total_trades for r in results)
+    total_wins = sum(r.wins for r in results)
+    total_pnl = round(sum(r.total_pnl for r in results), 2)
+    overall_win_rate = round(total_wins / total_trades * 100, 1) if total_trades else 0
+
+    summary = {
+        'total_coins': len(results),
+        'total_trades': total_trades,
+        'overall_win_rate': overall_win_rate,
+        'total_pnl': total_pnl,
+    }
+
+    # 每币结果
+    per_coin_results = []
+    for r in results:
+        symbol = r.trades[0].symbol if r.trades else 'UNKNOWN'
+        per_coin_results.append({
+            'symbol': symbol,
+            'total_trades': r.total_trades,
+            'win_rate': r.win_rate,
+            'profit_loss_ratio': r.profit_loss_ratio,
+            'total_pnl': r.total_pnl,
+            'max_drawdown': r.max_drawdown,
+            'sharpe_ratio': r.sharpe_ratio,
+        })
+
+    # 相关性矩阵（仅高于阈值的对）
+    threshold = config.BATCH_CORRELATION_THRESHOLD
+    corr_serializable = {}
+    high_corr_pairs = {}
+    for (sym_a, sym_b), val in correlation.items():
+        corr_serializable[f"{sym_a}|{sym_b}"] = val
+        if abs(val) >= threshold:
+            high_corr_pairs[f"{sym_a}|{sym_b}"] = val
+
+    # 推荐组合：选前N名且彼此相关性低于阈值的币
+    recommended = []
+    for coin in rankings:
+        symbol = coin['symbol']
+        # 检查与已选币的相关性
+        conflict = False
+        for selected in recommended:
+            pair_key_1 = (symbol, selected['symbol'])
+            pair_key_2 = (selected['symbol'], symbol)
+            corr_val = correlation.get(pair_key_1, correlation.get(pair_key_2, 0))
+            if abs(corr_val) >= threshold:
+                conflict = True
+                break
+        if not conflict:
+            recommended.append(coin)
+        if len(recommended) >= 5:
+            break
+
+    report = {
+        'summary': summary,
+        'per_coin_results': per_coin_results,
+        'correlation_matrix': corr_serializable,
+        'high_correlation_pairs': high_corr_pairs,
+        'rankings': rankings,
+        'recommended_portfolio': recommended,
+    }
+
+    return report
+
+
+def print_batch_report(report: dict):
+    """打印批量回测报告"""
+    summary = report['summary']
+    per_coin = report['per_coin_results']
+    high_corr = report.get('high_correlation_pairs', {})
+    rankings = report['rankings']
+    recommended = report['recommended_portfolio']
+
+    print("\n" + "=" * 70)
+    print("  📊 批量回测报告")
+    print("=" * 70)
+    print(f"  币种数量: {summary['total_coins']}")
+    print(f"  总交易数: {summary['total_trades']}")
+    print(f"  整体胜率: {summary['overall_win_rate']}%")
+    print(f"  总盈亏: {summary['total_pnl']:+.2f}U")
+    print("-" * 70)
+
+    # 每币明细表
+    print("\n  📋 各币种表现:")
+    print(f"  {'币种':<14} {'交易数':>6} {'胜率':>6} {'盈亏比':>6} {'盈亏':>9} {'回撤':>6} {'排名':>4}")
+    print("  " + "-" * 58)
+    for coin in per_coin:
+        # 找到排名
+        rank_idx = next((i for i, r in enumerate(rankings) if r['symbol'] == coin['symbol']), -1)
+        rank_str = str(rank_idx + 1) if rank_idx >= 0 else '-'
+        print(f"  {coin['symbol']:<14} {coin['total_trades']:>5} "
+              f"{coin['win_rate']:>5.1f}% {coin['profit_loss_ratio']:>5.2f}x "
+              f"{coin['total_pnl']:>+8.2f}U {coin['max_drawdown']:>5.1f}% {rank_str:>4}")
+
+    # 高相关性警告
+    if high_corr:
+        print(f"\n  ⚠️  高相关性币对 (>{config.BATCH_CORRELATION_THRESHOLD}):")
+        for pair, val in high_corr.items():
+            sym_a, sym_b = pair.split('|')
+            print(f"    {sym_a} <-> {sym_b}: {val:.4f}")
+
+    # 推荐组合
+    print(f"\n  🏆 推荐组合 (低相关性 Top 币种):")
+    for i, coin in enumerate(recommended, 1):
+        print(f"    {i}. {coin['symbol']} (评分: {coin['score']:.4f}, "
+              f"胜率: {coin['win_rate']}%, 盈亏比: {coin['profit_loss_ratio']:.2f})")
+
+    print("\n" + "=" * 70 + "\n")
 
 BACKTEST_RESULTS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'backtest_results.json'
 )
 
+BATCH_BACKTEST_RESULTS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'batch_backtest_results.json'
+)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  入口
+# ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
     import argparse
@@ -638,13 +857,37 @@ if __name__ == '__main__':
     parser.add_argument('--symbol', default='PEPE/USDT', help='回测币种 (默认: PEPE/USDT)')
     parser.add_argument('--days', type=int, default=90, help='回测天数 (默认: 90)')
     parser.add_argument('--grid', action='store_true', help='启用参数网格搜索')
+    parser.add_argument('--batch', action='store_true', help='批量回测所有配置币种')
     parser.add_argument('--symbols', nargs='+', help='多币种回测')
 
     args = parser.parse_args()
 
     symbols = args.symbols or [args.symbol]
 
-    if args.grid:
+    if args.batch:
+        # 批量回测
+        batch_symbols = config.BATCH_BACKTEST_SYMBOLS
+        batch_days = args.days if args.days != 90 else config.BATCH_BACKTEST_DAYS
+        print(f"\n🚀 批量回测: {len(batch_symbols)} 个币种 / {batch_days}天")
+
+        results = run_batch_backtest(batch_symbols, batch_days)
+        correlation = calculate_correlation_matrix(results)
+        rankings = rank_coins(results)
+        report = generate_batch_report(results, correlation, rankings)
+
+        # 打印报告
+        print_batch_report(report)
+
+        # 保存结果
+        save_data = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'days': batch_days,
+            'report': report,
+        }
+        atomic_write_json(BATCH_BACKTEST_RESULTS_FILE, save_data)
+        logger.info(f"批量回测结果已保存到 {BATCH_BACKTEST_RESULTS_FILE}")
+
+    elif args.grid:
         # 网格搜索
         print(f"\n🔍 参数网格搜索: {symbols[0]} / {args.days}天")
         results = grid_search(symbols[0], args.days)

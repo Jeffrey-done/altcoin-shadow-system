@@ -140,3 +140,21 @@ COMPOUND_MAX_STAKE = 300       # 单笔保证金上限（防止过度集中）
 #  候选池管理
 # ══════════════════════════════════════════════════════════════════
 CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清理）
+
+# ══════════════════════════════════════════════════════════════════
+#  批量回测
+# ══════════════════════════════════════════════════════════════════
+BATCH_BACKTEST_SYMBOLS = [
+    'PEPE/USDT',
+    'DOGE/USDT',
+    'SHIB/USDT',
+    'FLOKI/USDT',
+    '1000SATS/USDT',
+    'BONK/USDT',
+    'WIF/USDT',
+    'PEOPLE/USDT',
+    'LUNC/USDT',
+    'ORDI/USDT',
+]
+BATCH_BACKTEST_DAYS = 90       # 批量回测默认天数
+BATCH_CORRELATION_THRESHOLD = 0.7  # 相关性阈值（高于此值的币对避免同时开仓）
