@@ -19,6 +19,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(SCRIPT_DIR, '.env')
 CANDIDATES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_candidates.json')
 TRADES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_shadow_trades.json')
+RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
+FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
 
 
 # ── 环境变量 ─────────────────────────────────────────────────────
@@ -127,7 +129,6 @@ def parse_iso(dt_str: str) -> datetime:
     """
     解析 ISO 时间字符串，兼容 naive（当作 UTC）和 aware 两种格式
     """
-    # 去掉可能的微秒以外的尾巴
     dt_str = dt_str.strip()
     try:
         dt = datetime.fromisoformat(dt_str)
@@ -144,3 +145,15 @@ def hold_days(opened_at: str) -> int:
     """计算持仓天数"""
     opened = parse_iso(opened_at)
     return (utcnow() - opened).days
+
+
+def hold_hours(opened_at: str) -> float:
+    """计算持仓小时数"""
+    opened = parse_iso(opened_at)
+    delta = utcnow() - opened
+    return delta.total_seconds() / 3600
+
+
+def today_str() -> str:
+    """返回今日日期字符串 YYYY-MM-DD（UTC）"""
+    return utcnow().strftime('%Y-%m-%d')

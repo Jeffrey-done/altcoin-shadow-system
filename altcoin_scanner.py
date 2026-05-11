@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-小币种超买做空扫描器 v3.0
+小币种超买做空扫描器 v4.0
 多时间框架策略：
   - 每4小时扫描全市场，筛选日线 RSI>78 的候选池
   - 每1小时检查候选池，确认 4h RSI 回落 或 1H 弃盘点 触发信号
   - 过滤条件：成交量>50万U、价格<1U、24h涨幅>10%
+新增：
+  - 杠杆仓位计算（10x）
+  - 硬止损价格
+  - 风控检查（开仓前必须通过）
 """
 
 import time
@@ -18,6 +22,7 @@ from common import (
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
 )
 from models import Candidate, Trade
+from risk_control import can_open_trade, record_trade_opened
 
 logger = setup_logger("altcoin_scanner")
 
@@ -82,7 +87,6 @@ def get_rsi_peak(exchange, symbol: str, timeframe: str = '4h',
         avg_loss = sum(losses[:period]) / period
 
         rsi_series = []
-        # 第一个 RSI
         if avg_loss == 0:
             rsi_series.append(100.0)
         else:
@@ -110,7 +114,6 @@ def get_oi_change(symbol: str) -> float:
     """获取合约 OI 24h 变化率，无合约返回 0"""
     try:
         sym = to_binance_symbol(symbol)
-        # 统一使用 openInterestHist，保证基准一致
         r = requests.get(
             "https://fapi.binance.com/futures/data/openInterestHist",
             params={"symbol": sym, "period": "1h", "limit": 25},
@@ -167,10 +170,9 @@ def detect_abandon_signal(exchange, symbol: str) -> dict:
             open_p, close_p = candle[1], candle[4]
             if open_p <= 0:
                 continue
-            body_drop = (open_p - close_p) / open_p * 100  # 正值 = 下跌
+            body_drop = (open_p - close_p) / open_p * 100
             drops.append(round(body_drop, 2))
 
-        # 检查连续满足条件的 K 线数
         consecutive = sum(
             1 for d in drops[-config.ABANDON_CONSECUTIVE:]
             if d > config.ABANDON_BODY_DROP_PCT
@@ -181,7 +183,6 @@ def detect_abandon_signal(exchange, symbol: str) -> dict:
 
         total_drop = sum(d for d in drops[-config.ABANDON_CONSECUTIVE:] if d > 0)
 
-        # OI 是否同步下降
         oi_declining = False
         try:
             sym = to_binance_symbol(symbol)
@@ -241,7 +242,6 @@ def scan_daily():
         vol24h = ticker.get('quoteVolume', 0) or 0
         pct24h = ticker.get('percentage', 0) or 0
 
-        # 基础过滤
         if price <= 0 or price > config.PRICE_MAX:
             continue
         if vol24h < config.VOL_MIN:
@@ -251,15 +251,12 @@ def scan_daily():
 
         checked += 1
 
-        # 计算日线 RSI
         rsi_1d = get_rsi(exchange, symbol, '1d', limit=50)
 
         if rsi_1d >= config.DAILY_RSI_MIN:
-            # 妖币验证
             oi_change = get_oi_change(symbol)
             funding = get_funding_rate(symbol)
 
-            # 妖币评分（0~3）
             yao_score = 0
             if oi_change >= config.OI_CHANGE_MIN:
                 yao_score += 1
@@ -268,7 +265,6 @@ def scan_daily():
             if pct24h >= 30:
                 yao_score += 1
 
-            # 资金费率过高跳过
             if funding > config.FUNDING_MAX:
                 logger.info(f"  ⛔ 跳过: {symbol} 资金费率过高({funding:.4f}%)")
                 continue
@@ -297,7 +293,6 @@ def scan_daily():
     existing_list = load_json(CANDIDATES_FILE, [])
     existing = {c['symbol']: Candidate.from_dict(c) for c in existing_list}
 
-    # 更新或新增
     for sym, cand in candidates.items():
         if sym in existing:
             existing[sym].rsi_1d = cand.rsi_1d
@@ -307,7 +302,7 @@ def scan_daily():
         else:
             existing[sym] = cand
 
-    # 清理已触发超过 CANDIDATE_EXPIRE_DAYS 的候选
+    # 清理过期候选
     now = utcnow()
     to_remove = []
     for sym, c in existing.items():
@@ -361,15 +356,18 @@ def check_candidates():
             f"峰值={rsi_4h_peak:.1f} | 回落={drop:.1f}"
         )
 
-        # 触发条件 A：4h RSI 回落
         trigger_4h = rsi_4h < config.H4_RSI_ENTER and drop >= config.H4_RSI_DROP
-
-        # 触发条件 B：1H 弃盘点
         abandon = detect_abandon_signal(exchange, c.symbol)
         trigger_abandon = abandon.get("signal", False)
 
         if not (trigger_4h or trigger_abandon):
             time.sleep(0.1)
+            continue
+
+        # ── 风控检查 ──
+        allowed, risk_reason = can_open_trade(config.DEFAULT_STAKE)
+        if not allowed:
+            logger.warning(f"  🚫 风控拒绝 {c.symbol}: {risk_reason}")
             continue
 
         # ── 触发开仓 ──
@@ -392,13 +390,21 @@ def check_candidates():
 
         logger.info(f"  🚨 触发信号: {c.symbol} @ {price} [{trigger_reason}]")
 
-        # 创建影子空单
+        # 创建影子空单（带杠杆 + 硬止损）
         trade = Trade.create_short(c.symbol, price, reason=trigger_reason)
         trades_list.append(trade.to_dict())
         atomic_write_json(TRADES_FILE, trades_list)
-        logger.info(f"  ✅ 已自动开空单: {c.symbol} @ {price}")
 
-        # 推送通知（根据 trigger_type 分支措辞）
+        # 记录风控
+        record_trade_opened(config.DEFAULT_STAKE)
+
+        logger.info(
+            f"  ✅ 已开空单: {c.symbol} @ {price} | "
+            f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
+            f"硬止损={trade.hard_stop_price}"
+        )
+
+        # 推送通知
         yao_tag = "🔥妖币" if c.yao_score >= 2 else "📌普通超买"
         if c.trigger_type == 'abandon':
             trigger_desc = f"📊 触发方式：<b>弃盘点信号</b>\n{abandon['reason']}"
@@ -409,12 +415,13 @@ def check_candidates():
             )
 
         msg = (
-            f"🔴 <b>影子空单已自动开仓</b> {yao_tag}\n\n"
+            f"🔴 <b>影子空单已开仓</b> {yao_tag}\n\n"
             f"📌 <b>{c.symbol}</b>\n"
             f"入场价：{price:.6f} U\n"
-            f"虚拟仓位：${trade.stake}\n"
-            f"止盈一档：{trade.take_profit_1:.6f}（-20%）\n"
-            f"止盈二档：{trade.take_profit_2:.6f}（-35%）\n"
+            f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
+            f"止盈一档：{trade.take_profit_1:.6f}（-5%，+{trade.notional*0.05*0.5:.1f}U）\n"
+            f"止盈二档：{trade.take_profit_2:.6f}（-10%，+{trade.notional*0.10*0.5:.1f}U）\n"
+            f"硬止损：{trade.hard_stop_price:.6f}（+3%，-{trade.notional*0.03:.1f}U）\n"
             f"移动止损：最高盈利回撤10%触发\n\n"
             f"{trigger_desc}\n\n"
             f"日线RSI：{c.rsi_1d}（超买）\n"

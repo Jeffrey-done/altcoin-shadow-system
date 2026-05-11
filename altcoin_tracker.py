@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-小币种影子空单追踪器 v3.0
+小币种影子空单追踪器 v4.0
 功能：
-  - 追踪持仓盈亏
-  - 分批止盈（TP1 -20% 锁50%仓位，TP2 -35% 全仓平）
+  - 追踪持仓盈亏（杠杆仓位）
+  - 硬止损（价格反弹 3% 无条件平仓）
+  - 分批止盈（TP1 -5% 锁50%仓位，TP2 -10% 全仓平）
   - 移动止损（最高盈利回撤10%触发）
-  - 时间止损（7天且盈利<5%强制平）
+  - 时间止损（24小时且盈利<3%强制平）
+  - 风控集成（平仓时记录盈亏）
   - 统一逻辑：--check-only 和日报共用同一套评估函数
 """
 
 import sys
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import ccxt
 
@@ -22,6 +24,7 @@ from common import (
     utcnow_iso, hold_days,
 )
 from models import Trade
+from risk_control import record_trade_closed, get_risk_summary
 
 logger = setup_logger("altcoin_tracker")
 
@@ -33,8 +36,8 @@ logger = setup_logger("altcoin_tracker")
 @dataclass
 class EvalResult:
     """交易评估结果"""
-    pnl_pct: float              # 当前盈亏百分比
-    pnl_usd: float              # 当前盈亏金额（剩余仓位）
+    pnl_pct: float              # 价格变动百分比（做空：正=盈利）
+    pnl_usd: float              # 当前盈亏金额（杠杆后）
     current_price: float
     updated: bool = False       # 是否有字段更新
     closed: bool = False        # 是否触发平仓
@@ -45,21 +48,27 @@ class EvalResult:
 def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     """
     评估单笔交易状态，统一处理：
-    - 浮盈计算
+    - 杠杆盈亏计算（名义仓位）
+    - 硬止损（最高优先级）
     - 移动止损更新
     - TP1 / TP2 分批止盈
     - 移动止损触发
     - 时间止损触发
 
-    返回 EvalResult，调用方根据结果决定是否推送 / 写入。
+    盈亏公式（做空）：
+      pnl_pct = (entry - current) / entry * 100
+      pnl_usd = notional_remaining * pnl_pct / 100
+      其中 notional_remaining = stake_remaining * leverage
     """
     entry = trade.entry_price
-    stake = trade.stake
+    leverage = trade.leverage
 
-    # 做空盈亏
+    # 做空盈亏（价格下跌=盈利）
     pnl_pct = (entry - current_price) / entry * 100
-    effective_stake = trade.stake_remaining
-    pnl_usd = effective_stake * pnl_pct / 100
+
+    # 杠杆后的名义仓位盈亏
+    notional_remaining = trade.stake_remaining * leverage
+    pnl_usd = notional_remaining * pnl_pct / 100
 
     result = EvalResult(
         pnl_pct=pnl_pct,
@@ -67,65 +76,92 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         current_price=current_price,
     )
 
+    # ══ 硬止损（最高优先级） ══
+    if trade.hard_stop_price and current_price >= trade.hard_stop_price:
+        remaining_pnl = notional_remaining * pnl_pct / 100
+        total_pnl = trade.tp1_locked_pnl + remaining_pnl
+        trade.pnl = round(total_pnl, 2)
+        trade.status = 'closed'
+        trade.closed_at = utcnow_iso()
+        trade.close_reason = f"硬止损（价格反弹{-pnl_pct:.1f}%触发）"
+        result.closed = True
+        result.updated = True
+        result.pnl_usd = round(total_pnl, 2)
+        result.close_reason = f"🛑 硬止损触发（+{config.HARD_STOP_LOSS_PCT}%，亏损{total_pnl:.1f}U）"
+        result.alert_msg = (
+            f"🛑 <b>硬止损触发</b>\n\n"
+            f"币种：<b>{trade.symbol}</b>\n"
+            f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
+            f"价格反弹：{-pnl_pct:.2f}% > 止损线{config.HARD_STOP_LOSS_PCT}%\n"
+            f"亏损：<b>{total_pnl:.2f}U</b>（保证金{trade.stake}U×{leverage}x）\n"
+            f"已自动平仓，严格执行纪律 ✅"
+        )
+        logger.info(f"[硬止损] {trade.symbol} @ {current_price}, 亏损 {total_pnl:.2f}U")
+        trade.current_price = current_price
+        return result
+
     # ── 更新移动止损最高盈利 ──
     if pnl_pct > trade.best_pnl_pct:
         trade.best_pnl_pct = round(pnl_pct, 2)
         trail_pct = config.TRAIL_STOP_DRAWDOWN_PCT
-        # 移动止损触发价 = 入场价 × (1 - (当前最高盈利% - 回撤阈值))
         trade.trail_stop_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
         result.updated = True
 
     # ── 分批止盈 / 止损判断 ──
     days = hold_days(trade.opened_at)
 
-    # TP1：第一档止盈 -20%（价格跌到 TP1 价位）
+    # TP1：第一档止盈 -5%
     if not trade.tp1_triggered and trade.take_profit_1 and current_price <= trade.take_profit_1:
         trade.tp1_triggered = True
-        # 锁定 50% 仓位的利润
-        locked_pnl = (stake * config.TP1_CLOSE_RATIO) * pnl_pct / 100
+        # 锁定 50% 仓位的利润（杠杆后）
+        locked_notional = trade.stake * config.TP1_CLOSE_RATIO * leverage
+        locked_pnl = locked_notional * pnl_pct / 100
         trade.tp1_locked_pnl = round(locked_pnl, 2)
-        trade.stake_remaining = stake * (1 - config.TP1_CLOSE_RATIO)
-        # 剩余仓位的浮盈
-        result.pnl_usd = round(trade.stake_remaining * pnl_pct / 100, 2)
+        trade.stake_remaining = trade.stake * (1 - config.TP1_CLOSE_RATIO)
+        # 剩余仓位浮盈
+        new_notional = trade.stake_remaining * leverage
+        result.pnl_usd = round(new_notional * pnl_pct / 100, 2)
         result.updated = True
         result.alert_msg = (
-            f"🎯 <b>第一档止盈触发（-20%）</b>\n\n"
+            f"🎯 <b>第一档止盈触发（-5%）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
-            f"锁定盈利：<b>{locked_pnl:+.2f}U（{pnl_pct:+.1f}%）</b>\n"
-            f"剩余50%等待第二档-35%止盈 ✅"
+            f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（50%仓位）\n"
+            f"名义仓位：{trade.stake}×{leverage}x → 剩余{trade.stake_remaining}×{leverage}x\n"
+            f"剩余等待TP2（-10%）✅"
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U")
 
-    # TP2：第二档止盈 -35%
+    # TP2：第二档止盈 -10%
     elif trade.tp1_triggered and trade.take_profit_2 and current_price <= trade.take_profit_2:
-        # 剩余仓位盈亏
-        remaining_pnl = trade.stake_remaining * pnl_pct / 100
+        remaining_notional = trade.stake_remaining * leverage
+        remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
-        trade.close_reason = "TP2止盈-35%全仓平仓"
+        trade.close_reason = "TP2止盈-10%全仓平仓"
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = "✅ 第二档止盈（-35%，全仓平仓）"
+        result.close_reason = "✅ 第二档止盈（-10%，全仓平仓）"
         result.alert_msg = (
-            f"🎯 <b>第二档止盈触发（-35%全仓平仓）</b>\n\n"
+            f"🎯 <b>第二档止盈触发（-10%全仓平仓）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"TP1锁定：{trade.tp1_locked_pnl:+.2f}U\n"
             f"TP2剩余：{remaining_pnl:+.2f}U\n"
-            f"最终盈亏：<b>{total_pnl:+.2f}U（{pnl_pct:+.1f}%）</b>\n"
-            f"影子空单已全部平仓 ✅"
+            f"<b>总盈亏：{total_pnl:+.2f}U（{pnl_pct:+.1f}%×{leverage}x）</b>\n"
+            f"完美止盈 🎉"
         )
         logger.info(f"[TP2] {trade.symbol} @ {current_price}, 总盈亏 {total_pnl:+.2f}U")
 
-    # 移动止损：最高盈利 >= 5% 后激活，价格反弹到 trail_stop_price 触发
+    # 移动止损
     elif (trade.trail_stop_price
           and trade.best_pnl_pct >= config.TRAIL_STOP_ACTIVATE_PCT
           and current_price >= trade.trail_stop_price):
-        remaining_pnl = trade.stake_remaining * pnl_pct / 100
+        remaining_notional = trade.stake_remaining * leverage
+        remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
@@ -134,19 +170,21 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = f"🛑 移动止损触发（最高盈利{trade.best_pnl_pct:.1f}%，回撤至{pnl_pct:.1f}%）"
+        result.close_reason = f"🛑 移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
         result.alert_msg = (
             f"🛑 <b>移动止损触发</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"历史最高：{trade.best_pnl_pct:.1f}% | 当前：{pnl_pct:.1f}%\n"
-            f"盈亏：<b>{total_pnl:+.2f}U</b> | 已自动平仓 ✅"
+            f"盈亏：<b>{total_pnl:+.2f}U</b>（{leverage}x杠杆）\n"
+            f"已自动平仓 ✅"
         )
         logger.info(f"[移动止损] {trade.symbol} @ {current_price}")
 
-    # 时间止损：超过 MAX_HOLD_DAYS 且盈利不足
+    # 时间止损
     elif days >= trade.max_hold_days and pnl_pct < config.TIME_STOP_MIN_PROFIT_PCT:
-        remaining_pnl = trade.stake_remaining * pnl_pct / 100
+        remaining_notional = trade.stake_remaining * leverage
+        remaining_pnl = remaining_notional * pnl_pct / 100
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
@@ -155,7 +193,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = f"⏰ 时间止损（持仓{days}天，盈利仅{pnl_pct:.1f}%）"
+        result.close_reason = f"⏰ 时间止损（持仓{days}天，{pnl_pct:.1f}%）"
         result.alert_msg = (
             f"⏰ <b>时间止损触发</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
@@ -199,13 +237,13 @@ def run(check_only: bool = False):
 
     # 日报行
     lines = [
-        "📊 <b>小币种影子空单日报</b>",
+        "📊 <b>影子空单日报</b>（杠杆模式）",
         f"⏰ {utcnow_iso()[:16].replace('T', ' ')} UTC",
+        f"📐 杠杆：{config.LEVERAGE}x | 保证金/单：{config.DEFAULT_STAKE}U",
         "",
     ]
 
     for trade in open_trades:
-        # 获取最新价
         try:
             current = binance.fetch_ticker(trade.symbol)['last']
         except Exception as e:
@@ -217,6 +255,10 @@ def run(check_only: bool = False):
         if result.updated:
             any_updated = True
 
+        # 平仓时记录风控
+        if result.closed:
+            record_trade_closed(result.pnl_usd, trade.stake)
+
         # 触发推送
         if result.alert_msg:
             send_tg(result.alert_msg)
@@ -226,24 +268,25 @@ def run(check_only: bool = False):
             if result.close_reason:
                 lines.append(f"{result.close_reason} <b>{trade.symbol}</b>")
                 lines.append(f"   入场: {trade.entry_price:.5f} → 现价: {current:.5f}")
-                lines.append(f"   盈亏: <b>{result.pnl_usd:+.2f}U ({result.pnl_pct:+.1f}%)</b>")
+                lines.append(f"   盈亏: <b>{result.pnl_usd:+.2f}U ({result.pnl_pct:+.1f}%×{trade.leverage}x)</b>")
             else:
                 emoji = "🟢" if result.pnl_pct > 0 else "🔴"
                 lines.append(f"{emoji} <b>{trade.symbol}</b> 做空持仓中")
                 lines.append(f"   入场: {trade.entry_price:.5f} | 现价: {current:.5f}")
                 lines.append(
-                    f"   浮动盈亏: <b>{result.pnl_pct:+.1f}% ({result.pnl_usd:+.2f}U)</b>"
+                    f"   浮盈: <b>{result.pnl_pct:+.1f}%×{trade.leverage}x = {result.pnl_usd:+.2f}U</b>"
                 )
                 trail_str = f" | 移动止损: {trade.trail_stop_price:.5f}" if trade.trail_stop_price else ""
+                hard_str = f" | 硬止损: {trade.hard_stop_price:.5f}" if trade.hard_stop_price else ""
                 if trade.tp1_triggered:
                     lines.append(
                         f"   ✅TP1已锁定{trade.tp1_locked_pnl:+.2f}U | "
-                        f"TP2: {trade.take_profit_2:.5f}(-35%){trail_str}"
+                        f"TP2: {trade.take_profit_2:.5f}(-10%){trail_str}"
                     )
                 else:
                     lines.append(
-                        f"   TP1: {trade.take_profit_1:.5f}(-20%) | "
-                        f"TP2: {trade.take_profit_2:.5f}(-35%){trail_str}"
+                        f"   TP1: {trade.take_profit_1:.5f}(-5%) | "
+                        f"TP2: {trade.take_profit_2:.5f}(-10%){hard_str}{trail_str}"
                     )
             lines.append("")
 
@@ -259,6 +302,9 @@ def run(check_only: bool = False):
         )
         lines.append(f"💰 持仓浮盈: <b>{total_open_pnl:+.2f}U</b>")
         lines.append(f"💰 已实现盈亏: <b>{total_closed_pnl:+.2f}U</b>")
+        lines.append("")
+        # 风控状态
+        lines.append(get_risk_summary())
 
         msg = "\n".join(lines)
         send_tg(msg)
