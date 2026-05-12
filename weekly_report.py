@@ -31,8 +31,7 @@ from common import (
     utcnow_iso,
     parse_iso,
 )
-from models import Trade, FundingTrade
-from low_risk_strategy import LowRiskTrade
+from models import Trade, FundingTrade, LowRiskTrade
 
 logger = setup_logger("weekly_report")
 

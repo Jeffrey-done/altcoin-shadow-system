@@ -129,6 +129,60 @@ def load_json(filepath: str, default: Any = None) -> Any:
             lock_fd.close()
 
 
+class LockedJsonFile:
+    """
+    上下文管理器：对 JSON 文件加排他锁，确保 read-modify-write 原子性。
+    用于 realtime_monitor 等需要在持锁期间修改数据的场景。
+
+    用法：
+        with LockedJsonFile(filepath, default=[]) as (data, save):
+            # data 是读取到的 JSON 数据
+            # 修改 data ...
+            save(data)  # 调用 save 写回文件（仍在锁保护下）
+    """
+
+    def __init__(self, filepath: str, default: Any = None):
+        self.filepath = filepath
+        self.default = default if default is not None else []
+        self.lockfile = filepath + '.lock'
+        self.lock_fd = None
+
+    def __enter__(self):
+        self.lock_fd = open(self.lockfile, 'a')
+        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+
+        # 持锁读取
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                data = self.default
+        else:
+            data = self.default
+
+        def save(new_data):
+            """在锁保护下原子写入"""
+            dir_name = os.path.dirname(self.filepath) or '.'
+            fd, tmp_path = tempfile.mkstemp(suffix='.tmp', dir=dir_name)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(new_data, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_path, self.filepath)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
+
+        return data, save
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.lock_fd is not None:
+            fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+            self.lock_fd.close()
+        return False
+
+
 # ── 符号转换 ─────────────────────────────────────────────────────
 def to_binance_symbol(symbol: str) -> str:
     """
