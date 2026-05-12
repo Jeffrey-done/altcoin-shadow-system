@@ -1,148 +1,226 @@
-# 小币种影子做空系统 v5.0
+# 🔴 Altcoin Shadow Short System
 
-100U 本金杠杆做空 + 风控系统，目标周赚 $100+。
+全自动小币种做空影子交易系统 — 7×24 小时运行，自动扫描超买信号、开仓、止盈止损、风控管理。
 
-## 架构
+## 系统架构
 
 ```
-common.py           ← 公共工具（TG推送、原子写JSON、日志、时间）
-config.py           ← 策略参数集中配置（杠杆/止盈/止损/风控）
-models.py           ← 数据模型（Trade / Candidate）
-risk_control.py     ← 每日风控模块（亏损限制/开仓限制/连亏暂停）
-altcoin_scanner.py  ← 做空扫描器：发现候选 + 触发开仓
-altcoin_tracker.py  ← 做空追踪器：止盈/止损/日报
-exchange_manager.py ← 交易所管理（Binance + OKX数据交叉验证）
-realtime_monitor.py ← WebSocket 实时止盈止损监控
-scheduler.py        ← 定时任务调度器
-dashboard.py        ← Web 仪表盘
-weekly_report.py    ← 策略周报
-health_check.py     ← 系统健康检查
-signal_score.py     ← 信号评分系统
-backtest.py         ← 回测引擎
+┌─────────────────────────────────────────────────────────────────┐
+│                        Scheduler (调度器)                         │
+│  每小时整点: scan_daily()  │  每小时30分: check_candidates()      │
+│  每小时15分: tracker()     │  每天8:00: 日报  │  周一9:00: 优化   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  [实时] hot_scanner ──→ 标记热门币 ──→ scan_daily 优先处理        │
+│  [实时] realtime_monitor ──→ WebSocket 止盈止损（<100ms延迟）      │
+│  [实时] tg_bot ──→ Telegram 交互指令                              │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 策略：超买做空
+## 核心流程
 
-| 项目 | 参数 |
-|------|------|
-| 本金/单 | 100U 保证金 × 10x = 1000U 名义仓位 |
-| TP1 | 价格跌 5% → 锁定 50% 仓位利润（≈25U） |
-| TP2 | 价格跌 8% → 全仓平仓（≈40U）（回测优化：10%→8%提升触发率） |
-| 硬止损 | 价格反弹 5% → 无条件平仓（亏≈50U）（回测优化：3%→5%减少假突破） |
-| 移动止损 | 盈利 ≥3% 后激活，回撤 10% 触发 |
-| 时间止损 | 持仓 >24h 且盈利 <3% 强制平 |
+```
+1. 全市场扫描 → 日线 RSI>80 + 涨幅>10% + 成交量>50万U → 加入候选池
+2. 候选确认   → 4h RSI 回落 或 弃盘点信号 → 信号评分
+3. 开仓决策   → 评分≥40分 + 风控通过 + 价格确认 + 冷却期检查 → 开仓
+4. 持仓管理   → 硬止损/移动止损/分批止盈/时间止损 → 实时监控
+5. 风控保护   → 单日亏损上限/最大开仓次数/连亏暂停/持仓占比限制
+```
 
-**触发条件：**
-- 日线 RSI > 80（超买）（回测优化：78→80减少假信号）
-- 4h RSI 从峰值回落 ≥10 点 或 1H 弃盘点信号
-- 过滤：成交量 >50万U、价格 <1U、24h 涨幅 >10%
+## 策略参数
 
-## 风控系统
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 杠杆 | 10x | 100U 保证金 = 1000U 名义仓位 |
+| 硬止损 | 5% | 价格反弹 5% 无条件平仓 |
+| TP1 | -5% | 价格跌 5% 锁定 50% 仓位利润 |
+| TP2 | -8% | 价格跌 8% 全仓平仓 |
+| 移动止损 | 盈利 3% 激活，回撤 10% 触发 | |
+| 时间止损 | 24h 持仓且盈利 < 3% 强制平 | |
+| 最大持仓 | 余额的 90% | |
+| 单日亏损上限 | 30U | 达到后当日停止开仓 |
+| 单日最大开仓 | 2 笔 | |
+| 连亏暂停 | 连亏 3 次暂停 24h | |
 
-| 规则 | 参数 |
-|------|------|
-| 单日最大亏损 | 30U（达到后当日停止开仓） |
-| 单日最大开仓 | 2次 |
-| 连续亏损暂停 | 连亏3次 → 暂停24小时 |
-| 最大持仓占比 | 本金的 50%（最多同时1~2单） |
+## 文件结构
 
-## 使用方法
+```
+├── scheduler.py           # 定时任务调度器（入口）
+├── altcoin_scanner.py     # 全市场扫描 + 候选确认 + 开仓
+├── altcoin_tracker.py     # 持仓追踪 + 止盈止损评估 + 日报
+├── realtime_monitor.py    # WebSocket 实时止盈止损
+├── hot_scanner.py         # 全市场快速预筛（标记热门币）
+├── risk_control.py        # 风控模块（冷却期/对账/仓位限制）
+├── signal_score.py        # 信号评分系统
+├── exchange_manager.py    # 交易所管理（Binance + OKX 交叉验证）
+├── tg_bot.py              # Telegram Bot 交互指令
+├── dashboard.py           # Web 仪表盘（Flask + SocketIO）
+├── auto_optimize.py       # 自动优化建议（周报）
+├── health_check.py        # 健康检查
+├── weekly_report.py       # 策略周报
+├── backtest.py            # 回测引擎
+├── config.py              # 所有策略参数集中配置
+├── common.py              # 公共工具（日志/TG推送/原子写/锁）
+├── models.py              # 数据模型（Trade/Candidate）
+├── live_executor.py       # 实盘下单执行器（LIVE_MODE=True 时）
+│
+├── altcoin_shadow_trades.json   # 交易记录（主数据文件）
+├── altcoin_candidates.json      # 候选池
+├── risk_state.json              # 风控状态
+│
+├── templates/             # Dashboard HTML 模板
+├── static/                # Dashboard 前端资源
+├── tests/                 # 测试用例（45个）
+├── Dockerfile             # Docker 构建文件
+└── docker-compose.yml     # Docker 编排
+```
 
-### 环境准备
+## 启动方式
+
+### Docker（推荐）
 
 ```bash
+docker-compose up -d
+```
+
+### 手动启动
+
+```bash
+# 安装依赖
 pip install -r requirements.txt
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 填入 TG_BOT_TOKEN / TG_CHAT_ID / BINANCE_API_KEY（可选）
+
+# 启动调度器（自动启动所有后台服务）
+python3 scheduler.py
 ```
 
-### 配置
+调度器会自动启动：
+- 快速预筛 WebSocket 线程
+- TG Bot 轮询线程
+- 所有定时任务
 
-创建 `.env` 文件：
-```
-TG_BOT_TOKEN=your_bot_token
-TG_CHAT_ID=your_chat_id
-```
-
-### 启动
+### 独立启动 Dashboard
 
 ```bash
-# ── 做空扫描器 ──
-python3 altcoin_scanner.py scan    # 日线扫描（每4小时）
-python3 altcoin_scanner.py check   # 候选确认（每1小时）
-python3 altcoin_scanner.py both    # 完整流程
-
-# ── 做空追踪器 ──
-python3 altcoin_tracker.py                # 检查 + 推送日报
-python3 altcoin_tracker.py --check-only   # 只检查止盈/止损
-
-# ── 实时监控 ──
-python3 realtime_monitor.py        # WebSocket 实时止盈止损
-
-# ── 仪表盘 ──
-python3 dashboard.py               # 启动 Web 仪表盘
-
-# ── 调度器（Docker 模式）──
-python3 scheduler.py               # 替代 crontab
+python3 dashboard.py --port 8080
 ```
 
-### 推荐 Crontab
+## Telegram Bot 指令
 
-```cron
-# ── 做空策略 ──
-0 */4 * * *   cd /path && python3 altcoin_scanner.py scan
-30 * * * *    cd /path && python3 altcoin_scanner.py check
-15 * * * *    cd /path && python3 altcoin_tracker.py --check-only
-0 8 * * *     cd /path && python3 altcoin_tracker.py
-```
-
-## 参数调优
-
-所有参数集中在 `config.py`：
-
-### 核心参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| ACCOUNT_BALANCE | 100 | 账户总本金（USDT） |
-| LEVERAGE | 10 | 做空杠杆倍数 |
-| DEFAULT_STAKE | 100 | 单笔保证金 |
-| TP1_MULTIPLIER | 0.95 | 第一档止盈（-5%） |
-| TP2_MULTIPLIER | 0.92 | 第二档止盈（-8%，回测优化：10%→8%提升触发率） |
-| HARD_STOP_LOSS_PCT | 5.0 | 硬止损（+5%无条件平，回测优化：3%→5%减少假突破） |
-| TRAIL_STOP_ACTIVATE_PCT | 3 | 移动止损激活门槛 |
-| MAX_HOLD_DAYS | 1 | 最大持仓天数 |
-
-### 风控参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| RISK_MAX_DAILY_LOSS | 30 | 单日最大亏损 |
-| RISK_MAX_DAILY_TRADES | 2 | 单日最大开仓次数 |
-| RISK_CONSECUTIVE_LOSS_PAUSE | 3 | 连亏暂停阈值 |
-| RISK_PAUSE_HOURS | 24 | 暂停时长 |
-| RISK_MAX_POSITION_PCT | 0.5 | 最大持仓占比（50%） |
-
-## 数据文件
-
-| 文件 | 说明 |
+| 指令 | 功能 |
 |------|------|
-| `altcoin_candidates.json` | 做空候选池 |
-| `altcoin_shadow_trades.json` | 交易记录 |
-| `risk_state.json` | 风控状态（当日计数/连亏等） |
-| `weekly_report.json` | 周报数据 |
+| `/status` | 持仓概览 + 风控状态 |
+| `/balance` | 账户余额、今日/累计盈亏、胜率 |
+| `/positions` | 所有持仓详情（入场价、浮盈、止损位） |
+| `/candidates` | 候选池列表（等待触发的币） |
+| `/risk` | 风控状态详情 |
+| `/help` | 显示所有可用指令 |
 
-> 所有文件使用原子写入，崩溃不会损坏数据。
+## 风控机制
 
-## 日志
+### 多层防护
+
+1. **开仓前检查**：单日亏损/开仓次数/持仓占比/冷却期
+2. **持仓中保护**：硬止损(5%) + 移动止损 + 时间止损(24h) + 保本止损(TP1后)
+3. **连亏暂停**：连续亏损 3 次 → 暂停 24h
+4. **冷却期**：同一币种止损平仓后 24h 内不再开仓
+5. **启动对账**：每次重启自动校验 risk_state 与 trades 一致性
+6. **多交易所确认**：开仓前检查 OKX 价格偏差 > 2% 则跳过
+
+### 并发安全
+
+- 所有写入使用 `LockedJsonFile`（fcntl 排他锁）
+- 写入顺序：trades 先落盘 → risk_state 后改 → TG 最后推送
+- 防止"幽灵亏损"（风控扣了账但交易没记录）
+
+## 信号评分系统
+
+| 维度 | 分值 | 说明 |
+|------|------|------|
+| RSI 强度 | 0~25 | RSI 越高越强 |
+| 妖币评分 | 0~25 | OI涨+资金费率高+涨幅>30% |
+| 触发方式 | 0~25 | 弃盘点(25) > 4h RSI 回落(15) |
+| 热度指标 | 0~25 | OI + 资金费率 + BTC趋势 + OKX交叉验证 |
+
+- **≥70 分 (A级)**：全仓开仓
+- **40~69 分 (B级)**：半仓开仓
+- **<40 分**：跳过
+
+## 自动优化
+
+每周一 9:00 UTC 自动分析：
+- 止损触发率（过高建议放宽）
+- 胜率（过低建议提高 RSI 门槛）
+- TP1/TP2 触发率（TP1 高但 TP2 低建议收紧 TP2）
+
+建议通过 TG 推送，不会自动修改参数。
+
+## 定时任务调度
+
+| 时间 | 任务 | 超时 |
+|------|------|------|
+| 每小时 :00 | 全市场日线扫描 | 10min |
+| 每小时 :15 | 持仓止盈止损检查 | 10min |
+| 每小时 :30 | 候选池确认 + 开仓 | 10min |
+| 每 6h :45 | 健康检查 | 10min |
+| 每天 8:00 | 日报推送 | 10min |
+| 每天 0:01 | 过期交易归档（>30天） | 10min |
+| 每周一 9:00 | 自动优化建议 | 10min |
+
+所有任务有 10 分钟超时保护，卡住会跳过并推 TG 告警。
+
+## 候选池管理
+
+- 日线 RSI>80 的币加入候选池
+- **已触发开仓**：立即从候选池移除
+- **超过 12 小时未触发**：自动移除（超买窗口过期）
+- 快速预筛 WebSocket 标记的热门币优先处理
+
+## 环境变量（.env）
 
 ```bash
-LOG_LEVEL=DEBUG python3 altcoin_scanner.py both
+TG_BOT_TOKEN=your_telegram_bot_token
+TG_CHAT_ID=your_chat_id
+
+# 实盘模式（可选，默认影子交易）
+BINANCE_API_KEY=your_api_key
+BINANCE_SECRET=your_api_secret
+
+# Dashboard 认证（可选）
+DASHBOARD_TOKEN=your_dashboard_token
+
+# 日志级别（可选，默认 INFO）
+LOG_LEVEL=INFO
 ```
 
-## 风险提示
+## 技术栈
 
-⚠️ **这是纸上交易/影子交易系统**，用于验证策略。
+- **语言**: Python 3.9+
+- **交易所 API**: ccxt (Binance + OKX)
+- **实时数据**: websocket-client (Binance WebSocket)
+- **Web 框架**: Flask + Flask-SocketIO
+- **并发控制**: fcntl 文件锁 + threading
+- **部署**: Docker / Docker Compose
+- **通知**: Telegram Bot API
 
-- 10x 杠杆意味着 5% 止损 = 本金亏 50%，风控系统会在连亏3次后暂停24h
-- 100U 本金日赚 20U = 日均 20% 收益率，**不可长期持续**
-- 务必先用此系统纸上交易至少2周验证胜率
-- 实盘前确认：胜率 >50%、盈亏比 >1.5:1、最大回撤 <50%
+## 开发
+
+```bash
+# 运行测试
+python3 -m pytest tests/ -x -q
+
+# 单币回测
+python3 backtest.py PEPE/USDT --days 90
+
+# 批量回测
+python3 backtest.py --batch
+
+# 手动扫描
+python3 altcoin_scanner.py scan    # 全市场扫描
+python3 altcoin_scanner.py check   # 候选确认
+python3 altcoin_scanner.py both    # 扫描+确认
+```
