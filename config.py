@@ -34,7 +34,7 @@ PCT_24H_MIN = 10               # 24h 涨幅最低要求（%）
 #  RSI 参数
 # ══════════════════════════════════════════════════════════════════
 RSI_PERIOD = 14                # RSI 计算周期
-DAILY_RSI_MIN = 78             # 日线 RSI 超买阈值
+DAILY_RSI_MIN = 80             # 日线 RSI 超买阈值（回测优化：78→80减少假信号）
 H4_RSI_ENTER = 70              # 4h RSI 回落进入阈值
 H4_RSI_DROP = 10               # 4h RSI 需从峰值回落的点数
 H4_RSI_PEAK_LOOKBACK = 10     # 4h RSI 峰值回溯 K 线数
@@ -60,13 +60,13 @@ ABANDON_OI_DROP_PCT = 0.02     # OI 下降比例阈值
 # TP1: 价格跌 5% → entry * 0.95 → 盈利 = 1000 * 5% * 50% = 25U
 # TP2: 价格跌 10% → entry * 0.90 → 盈利 = 500 * 10% = 50U
 TP1_MULTIPLIER = 0.95          # 第一档止盈价 = 入场价 × 此值（-5%）
-TP2_MULTIPLIER = 0.90          # 第二档止盈价 = 入场价 × 此值（-10%）
+TP2_MULTIPLIER = 0.92          # 第二档止盈价 = 入场价 × 此值（-8%，回测优化：10%→8%提升触发率4.4倍）
 TP1_CLOSE_RATIO = 0.5          # 第一档平仓比例（50% 仓位）
 
 # ══════════════════════════════════════════════════════════════════
 #  硬止损（无条件止损）
 # ══════════════════════════════════════════════════════════════════
-HARD_STOP_LOSS_PCT = 3.0       # 价格反弹 3% 无条件平仓
+HARD_STOP_LOSS_PCT = 5.0       # 价格反弹 5% 无条件平仓（回测优化：3%→5%减少假突破洗盘）
 # 做空硬止损价 = entry * (1 + HARD_STOP_LOSS_PCT/100)
 # 最大亏损 = 1000U * 3% = 30U（本金的 30%）
 
@@ -221,12 +221,11 @@ BATCH_BACKTEST_SYMBOLS = [
     'DOGE/USDT',
     'SHIB/USDT',
     'FLOKI/USDT',
-    '1000SATS/USDT',
     'BONK/USDT',
     'WIF/USDT',
     'PEOPLE/USDT',
-    'LUNC/USDT',
     'ORDI/USDT',
+    # 回测优化移除：1000SATS（2年亏334U）、LUNC（亏128U）
 ]
 BATCH_BACKTEST_DAYS = 90       # 批量回测默认天数
 BATCH_CORRELATION_THRESHOLD = 0.7  # 相关性阈值（高于此值的币对避免同时开仓）
