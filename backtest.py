@@ -518,6 +518,98 @@ def run_backtest(symbol: str, days: int = 90,
     return result
 
 
+def calculate_monthly_breakdown(trades: List[BacktestTrade]) -> dict:
+    """
+    按月分解交易统计。
+    返回: {
+      "2024-01": {"trades": 5, "wins": 3, "pnl": 12.5, "win_rate": 60.0},
+      "2024-02": {...},
+      ...
+    }
+    """
+    monthly = {}
+
+    for t in trades:
+        if not t.entry_time:
+            continue
+        # 提取月份 YYYY-MM
+        month_key = t.entry_time[:7]
+        if month_key not in monthly:
+            monthly[month_key] = {
+                "trades": 0, "wins": 0, "losses": 0,
+                "pnl": 0.0, "win_rate": 0.0,
+                "best_trade": 0.0, "worst_trade": 0.0,
+                "tp1_hits": 0, "tp2_hits": 0,
+            }
+        m = monthly[month_key]
+        m["trades"] += 1
+        m["pnl"] += t.pnl_usd
+        if t.pnl_usd > 0:
+            m["wins"] += 1
+        else:
+            m["losses"] += 1
+        if t.pnl_usd > m["best_trade"]:
+            m["best_trade"] = t.pnl_usd
+        if t.pnl_usd < m["worst_trade"]:
+            m["worst_trade"] = t.pnl_usd
+        if t.tp1_hit:
+            m["tp1_hits"] += 1
+        if t.exit_reason == 'tp2':
+            m["tp2_hits"] += 1
+
+    # 计算胜率
+    for m in monthly.values():
+        m["pnl"] = round(m["pnl"], 2)
+        m["best_trade"] = round(m["best_trade"], 2)
+        m["worst_trade"] = round(m["worst_trade"], 2)
+        m["win_rate"] = round(m["wins"] / m["trades"] * 100, 1) if m["trades"] else 0
+
+    return dict(sorted(monthly.items()))
+
+
+def print_monthly_breakdown(trades: List[BacktestTrade], symbol: str = ''):
+    """打印月度分解报告"""
+    monthly = calculate_monthly_breakdown(trades)
+
+    if not monthly:
+        print("  无交易数据")
+        return
+
+    print(f"\n{'='*75}")
+    print(f"  📅 月度分解报告 {symbol}")
+    print(f"{'='*75}")
+    print(f"  {'月份':<10} {'交易':>5} {'胜率':>7} {'盈亏':>10} {'最佳':>9} {'最差':>9} {'TP1':>4} {'TP2':>4}")
+    print(f"  {'-'*68}")
+
+    total_pnl = 0.0
+    positive_months = 0
+    negative_months = 0
+
+    for month, data in monthly.items():
+        total_pnl += data["pnl"]
+        if data["pnl"] > 0:
+            positive_months += 1
+        elif data["pnl"] < 0:
+            negative_months += 1
+
+        pnl_emoji = "📈" if data["pnl"] > 0 else ("📉" if data["pnl"] < 0 else "➖")
+        print(
+            f"  {month:<10} {data['trades']:>4}  {data['win_rate']:>5.1f}%  "
+            f"{pnl_emoji}{data['pnl']:>+8.2f}U  {data['best_trade']:>+7.2f}U  "
+            f"{data['worst_trade']:>+7.2f}U  {data['tp1_hits']:>3}  {data['tp2_hits']:>3}"
+        )
+
+    print(f"  {'-'*68}")
+    print(f"  {'合计':<10} {sum(d['trades'] for d in monthly.values()):>4}  "
+          f"{'':>7} {total_pnl:>+9.2f}U")
+    print(f"\n  盈利月份: {positive_months} | 亏损月份: {negative_months} | "
+          f"月度胜率: {positive_months/(positive_months+negative_months)*100:.0f}%"
+          if (positive_months + negative_months) > 0 else "")
+    avg_monthly = total_pnl / len(monthly) if monthly else 0
+    print(f"  月均盈亏: {avg_monthly:+.2f}U")
+    print(f"{'='*75}\n")
+
+
 def print_result(result: BacktestResult):
     """打印回测结果"""
     print("\n" + "=" * 60)
@@ -551,6 +643,11 @@ def print_result(result: BacktestResult):
     else:
         print("  ❌ 参数不佳，建议调优后重新回测")
     print()
+
+    # 月度分解
+    if result.trades:
+        symbol = result.trades[0].symbol if result.trades[0].symbol else ''
+        print_monthly_breakdown(result.trades, symbol)
 
 
 
@@ -820,7 +917,7 @@ def generate_batch_report(results: List[BacktestResult], correlation: dict,
     return report
 
 
-def print_batch_report(report: dict):
+def print_batch_report(report: dict, results: List[BacktestResult] = None):
     """打印批量回测报告"""
     summary = report['summary']
     per_coin = report['per_coin_results']
@@ -862,6 +959,14 @@ def print_batch_report(report: dict):
         print(f"    {i}. {coin['symbol']} (评分: {coin['score']:.4f}, "
               f"胜率: {coin['win_rate']}%, 盈亏比: {coin['profit_loss_ratio']:.2f})")
 
+    # 月度分解（汇总所有币种的交易）
+    if results:
+        all_trades = []
+        for r in results:
+            all_trades.extend(r.trades)
+        if all_trades:
+            print_monthly_breakdown(all_trades, "全币种汇总")
+
     print("\n" + "=" * 70 + "\n")
 
 BACKTEST_RESULTS_FILE = os.path.join(
@@ -885,13 +990,24 @@ if __name__ == '__main__':
     parser.add_argument('--days', type=int, default=90, help='回测天数 (默认: 90)')
     parser.add_argument('--grid', action='store_true', help='启用参数网格搜索')
     parser.add_argument('--batch', action='store_true', help='批量回测所有配置币种')
+    parser.add_argument('--monthly', action='store_true', help='仅输出月度分解（需先有回测数据）')
     parser.add_argument('--symbols', nargs='+', help='多币种回测')
 
     args = parser.parse_args()
 
     symbols = args.symbols or [args.symbol]
 
-    if args.batch:
+    if args.monthly:
+        # 仅输出月度分解（对指定币种跑回测后只显示月度）
+        print(f"\n📅 月度分解回测: {symbols} / {args.days}天")
+        for symbol in symbols:
+            result = run_backtest(symbol, args.days)
+            if result.trades:
+                print_monthly_breakdown(result.trades, symbol)
+            else:
+                print(f"  {symbol}: 无交易数据")
+
+    elif args.batch:
         # 批量回测
         batch_symbols = config.BATCH_BACKTEST_SYMBOLS
         batch_days = args.days if args.days != 90 else config.BATCH_BACKTEST_DAYS
@@ -903,7 +1019,7 @@ if __name__ == '__main__':
         report = generate_batch_report(results, correlation, rankings)
 
         # 打印报告
-        print_batch_report(report)
+        print_batch_report(report, results)
 
         # 保存结果
         save_data = {
