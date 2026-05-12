@@ -80,8 +80,14 @@ def check_main_trades(symbol: str, price: float):
     检查交易是否触发止盈止损。
     触发后立即执行平仓并保存。
     使用 LockedJsonFile 确保 read-modify-write 原子性。
+
+    注意：副作用（record_trade_closed / send_tg）必须在 save() 成功后、
+    出锁再执行，否则崩溃时会出现"风控记了账但交易没落盘"的幽灵亏损。
     """
     from altcoin_tracker import evaluate_trade
+
+    pending_risk_updates = []   # [(pnl_usd, stake_remaining, close_reason, symbol, direction), ...]
+    pending_alerts = []
 
     with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
         trades = [Trade.from_dict(t) for t in trades_raw]
@@ -95,20 +101,29 @@ def check_main_trades(symbol: str, price: float):
 
             if result.closed:
                 any_updated = True
-                # 记录风控
-                record_trade_closed(result.pnl_usd, trade.stake_remaining)
-                # TG推送
+                pending_risk_updates.append((
+                    result.pnl_usd, trade.stake_remaining,
+                    trade.close_reason, trade.symbol, trade.direction,
+                ))
                 if result.alert_msg:
-                    send_tg(result.alert_msg)
-                logger.info(
-                    f"⚡ 实时平仓: {trade.symbol} | {trade.direction} | "
-                    f"原因={trade.close_reason} | PnL={result.pnl_usd:+.2f}U"
-                )
+                    pending_alerts.append(result.alert_msg)
             elif result.updated:
                 any_updated = True
 
         if any_updated:
             save([t.to_dict() for t in trades])
+
+    # ══ 出锁后才触发副作用 ══
+    # 先改风控（此时交易已经落盘）
+    for pnl_usd, stake_remaining, close_reason, sym, direction in pending_risk_updates:
+        record_trade_closed(pnl_usd, stake_remaining)
+        logger.info(
+            f"⚡ 实时平仓: {sym} | {direction} | "
+            f"原因={close_reason} | PnL={pnl_usd:+.2f}U"
+        )
+    # 再推送
+    for msg in pending_alerts:
+        send_tg(msg)
 
 
 def on_price_update(symbol: str, price: float):

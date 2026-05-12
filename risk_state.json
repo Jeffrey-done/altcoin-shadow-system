@@ -1,6 +1,8 @@
 {
-  "daily_loss": 5.0,
-  "daily_trades_opened": 1,
+  "date": "2026-05-12",
+  "daily_loss": 0.0,
+  "daily_trades_opened": 0,
   "consecutive_losses": 0,
-  "total_open_stake": 100
+  "paused_until": null,
+  "total_open_stake": 0.0
 }

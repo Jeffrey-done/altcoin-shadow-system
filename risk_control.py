@@ -81,6 +81,82 @@ def _calc_actual_open_stake() -> float:
     return total
 
 
+def _calc_today_realized_loss() -> float:
+    """
+    从交易文件计算"今日"已实现亏损（仅取 pnl<0 的绝对值之和）。
+    用于对账校验 risk_state.daily_loss。
+    注意：只统计今日 UTC 平仓的交易。
+    """
+    trades = load_json(TRADES_FILE, [])
+    today = today_str()
+    total_loss = 0.0
+    for t in trades:
+        if t.get('status') != 'closed':
+            continue
+        closed_at = t.get('closed_at', '')
+        if not closed_at.startswith(today):
+            continue
+        realized = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        if realized < 0:
+            total_loss += abs(realized)
+    return round(total_loss, 2)
+
+
+def _calc_today_trades_opened() -> int:
+    """从交易文件统计今日新开的仓位数（用于对账）"""
+    trades = load_json(TRADES_FILE, [])
+    today = today_str()
+    return sum(1 for t in trades if t.get('opened_at', '').startswith(today))
+
+
+def reconcile_risk_state(notify: bool = False) -> dict:
+    """
+    对账：从 trades 文件反算今日真实的 daily_loss / daily_trades_opened /
+    total_open_stake，若与 risk_state.json 不一致则修正。
+
+    这是防止"幽灵亏损"（risk_state 被改了但 trades 没记录）的最后一道防线。
+    scheduler 启动时会调用一次，每次 can_open_trade 时也做轻量检查。
+
+    参数:
+      notify: True 时如果发现漂移会推送 TG 告警
+    返回: 修正前后的 diff（空 dict 表示无漂移）
+    """
+    state = load_risk_state()
+    expected_loss = _calc_today_realized_loss()
+    expected_trades = _calc_today_trades_opened()
+    expected_stake = _calc_actual_open_stake()
+
+    diff = {}
+    if abs(state.daily_loss - expected_loss) > 0.01:
+        diff['daily_loss'] = (state.daily_loss, expected_loss)
+        state.daily_loss = expected_loss
+
+    if state.daily_trades_opened != expected_trades:
+        diff['daily_trades_opened'] = (state.daily_trades_opened, expected_trades)
+        state.daily_trades_opened = expected_trades
+
+    if abs(state.total_open_stake - expected_stake) > 0.01:
+        diff['total_open_stake'] = (state.total_open_stake, expected_stake)
+        state.total_open_stake = expected_stake
+
+    if diff:
+        save_risk_state(state)
+        msg_lines = ["🔧 风控状态对账修正"]
+        for k, (old, new) in diff.items():
+            msg_lines.append(f"  {k}: {old} → {new}")
+        logger.warning(" | ".join(msg_lines))
+        if notify:
+            send_tg(
+                "🔧 <b>风控状态自动对账</b>\n\n"
+                "检测到 risk_state.json 与交易记录不一致，已自动修正：\n"
+                + "\n".join(f"• {k}: <code>{old}</code> → <code>{new}</code>"
+                            for k, (old, new) in diff.items())
+                + "\n\n可能原因：上次崩溃/并发写入导致的状态漂移。"
+            )
+
+    return diff
+
+
 def save_risk_state(state: RiskState) -> None:
     """持久化风控状态"""
     atomic_write_json(RISK_FILE, state.to_dict())

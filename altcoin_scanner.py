@@ -20,6 +20,7 @@ from common import (
     CANDIDATES_FILE, TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
+    LockedJsonFile,
 )
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened
@@ -446,10 +447,10 @@ def check_candidates():
     exchange = ccxt.binance({'enableRateLimit': True})
     logger.info(f"=== 检查候选池（{len(candidates)}个）| BTC 24h={btc_pct:+.1f}% ===")
 
-    # 已有持仓的币不重复开仓
-    trades_list = load_json(TRADES_FILE, [])
+    # 仅用于"是否已有持仓"的预过滤（真实开仓时会在锁内再校验一次，防竞态）
+    trades_snapshot = load_json(TRADES_FILE, [])
     open_symbols = {
-        t['symbol'] for t in trades_list if t.get('status') == 'open'
+        t['symbol'] for t in trades_snapshot if t.get('status') == 'open'
     }
 
     triggered_any = False
@@ -555,10 +556,23 @@ def check_candidates():
 
         # 创建影子空单（带杠杆 + 硬止损 + 评分仓位）
         trade = Trade.create_short(c.symbol, price, reason=trigger_reason, stake=actual_stake)
-        trades_list.append(trade.to_dict())
-        atomic_write_json(TRADES_FILE, trades_list)
 
-        # 记录风控
+        # ══ 持锁 read-modify-write：防止与 tracker / realtime_monitor 竞态 ══
+        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+            # 锁内二次校验：避免两次扫描间另一进程已经给这个币开了仓
+            already_open = any(
+                t.get('symbol') == c.symbol and t.get('status') == 'open'
+                for t in trades_raw
+            )
+            if already_open:
+                logger.warning(f"  ⏩ 跳过 {c.symbol}：锁内二次校验发现已有持仓")
+                c.triggered = False  # 回滚标记，下次还能检查
+                continue
+            trades_raw.append(trade.to_dict())
+            save(trades_raw)
+
+        # ══ 交易写盘成功后，才改风控状态 ══
+        # 顺序关键：先 trades 后 risk_state，确保不会出现"风控扣了但trades没记"的幽灵亏损
         record_trade_opened(actual_stake)
 
         logger.info(
