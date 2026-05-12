@@ -116,10 +116,18 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trail_pct = config.TRAIL_STOP_DRAWDOWN_PCT
         if trade.direction == 'LONG':
             # 做多：止损价在下方
-            trade.trail_stop_price = round(entry * (1 + pnl_pct / 100 - trail_pct), 6)
+            trail_price = round(entry * (1 + pnl_pct / 100 - trail_pct), 6)
+            # TP1已触发后：保本止损升级，止损不低于入场价
+            if trade.tp1_triggered:
+                trail_price = max(trail_price, entry)
+            trade.trail_stop_price = trail_price
         else:
-            # 做空：止损价在上方
-            trade.trail_stop_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
+            # 做空：止损价在上方（越低越好）
+            trail_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
+            # TP1已触发后：保本止损升级，止损不高于入场价
+            if trade.tp1_triggered:
+                trail_price = min(trail_price, entry)
+            trade.trail_stop_price = trail_price
         result.updated = True
 
     # ── 分批止盈 / 止损判断 ──
@@ -140,6 +148,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         locked_pnl = locked_notional * pnl_pct / 100
         trade.tp1_locked_pnl = round(locked_pnl, 2)
         trade.stake_remaining = trade.stake * (1 - config.TP1_CLOSE_RATIO)
+        # TP1触发后立即启用保本止损：剩余仓位止损提升至入场价
+        if trade.direction == 'LONG':
+            trade.trail_stop_price = max(trade.trail_stop_price or 0, entry)
+        else:
+            # 做空：止损价越低越保守，入场价是最大允许值
+            trade.trail_stop_price = entry if trade.trail_stop_price is None else min(trade.trail_stop_price, entry)
         # 剩余仓位浮盈
         new_notional = trade.stake_remaining * leverage
         result.pnl_usd = round(new_notional * pnl_pct / 100, 2)
@@ -150,9 +164,10 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（{int(config.TP1_CLOSE_RATIO*100)}%仓位）\n"
             f"名义仓位：{trade.stake}×{leverage}x → 剩余{trade.stake_remaining}×{leverage}x\n"
+            f"保本止损已激活：剩余仓位止损 = 入场价\n"
             f"剩余等待TP2（-{(1-config.TP2_MULTIPLIER)*100:.0f}%）✅"
         )
-        logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U")
+        logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U, 保本止损已激活")
 
     # TP2：第二档止盈
     tp2_hit = False
@@ -185,14 +200,17 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         logger.info(f"[TP2] {trade.symbol} @ {current_price}, 总盈亏 {total_pnl:+.2f}U")
 
-    # 移动止损
+    # 移动止损（含TP1后保本止损）
     trail_triggered = False
-    if (trade.trail_stop_price
-          and trade.best_pnl_pct >= config.TRAIL_STOP_ACTIVATE_PCT):
-        if trade.direction == 'LONG' and current_price <= trade.trail_stop_price:
-            trail_triggered = True
-        elif trade.direction == 'SHORT' and current_price >= trade.trail_stop_price:
-            trail_triggered = True
+    if trade.trail_stop_price:
+        # TP1已触发：保本止损无条件生效（不需要达到TRAIL_STOP_ACTIVATE_PCT）
+        # TP1未触发：需要best_pnl_pct达到激活门槛
+        trail_active = trade.tp1_triggered or (trade.best_pnl_pct >= config.TRAIL_STOP_ACTIVATE_PCT)
+        if trail_active:
+            if trade.direction == 'LONG' and current_price <= trade.trail_stop_price:
+                trail_triggered = True
+            elif trade.direction == 'SHORT' and current_price >= trade.trail_stop_price:
+                trail_triggered = True
 
     if trail_triggered:
         remaining_notional = trade.stake_remaining * leverage
@@ -201,20 +219,36 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
-        trade.close_reason = f"移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
+
+        # 区分保本止损和普通移动止损
+        is_breakeven_stop = trade.tp1_triggered and pnl_pct <= 0.5
+        if is_breakeven_stop:
+            trade.close_reason = f"保本止损（TP1后价格回到入场价附近）"
+            result.close_reason = f"🛡️ 保本止损（TP1已锁{trade.tp1_locked_pnl:+.2f}U，剩余保本平仓）"
+            result.alert_msg = (
+                f"🛡️ <b>保本止损触发</b>\n\n"
+                f"币种：<b>{trade.symbol}</b>\n"
+                f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
+                f"TP1已锁定：<b>{trade.tp1_locked_pnl:+.2f}U</b>\n"
+                f"剩余仓位：保本平仓（{remaining_pnl:+.2f}U）\n"
+                f"<b>总盈亏：{total_pnl:+.2f}U</b>（保住了TP1利润）✅"
+            )
+        else:
+            trade.close_reason = f"移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
+            result.close_reason = f"🛑 移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
+            result.alert_msg = (
+                f"🛑 <b>移动止损触发</b>\n\n"
+                f"币种：<b>{trade.symbol}</b>\n"
+                f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
+                f"历史最高：{trade.best_pnl_pct:.1f}% | 当前：{pnl_pct:.1f}%\n"
+                f"盈亏：<b>{total_pnl:+.2f}U</b>（{leverage}x杠杆）\n"
+                f"已自动平仓 ✅"
+            )
+
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = f"🛑 移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
-        result.alert_msg = (
-            f"🛑 <b>移动止损触发</b>\n\n"
-            f"币种：<b>{trade.symbol}</b>\n"
-            f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
-            f"历史最高：{trade.best_pnl_pct:.1f}% | 当前：{pnl_pct:.1f}%\n"
-            f"盈亏：<b>{total_pnl:+.2f}U</b>（{leverage}x杠杆）\n"
-            f"已自动平仓 ✅"
-        )
-        logger.info(f"[移动止损] {trade.symbol} @ {current_price}")
+        logger.info(f"[{'保本止损' if is_breakeven_stop else '移动止损'}] {trade.symbol} @ {current_price}")
 
     # 时间止损
     elif hours_held >= trade.max_hold_days * 24 and pnl_pct < config.TIME_STOP_MIN_PROFIT_PCT:
