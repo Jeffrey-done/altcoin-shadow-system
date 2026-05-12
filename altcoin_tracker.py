@@ -145,12 +145,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.pnl_usd = round(new_notional * pnl_pct / 100, 2)
         result.updated = True
         result.alert_msg = (
-            f"🎯 <b>第一档止盈触发（-5%）</b>\n\n"
+            f"🎯 <b>第一档止盈触发（-{(1-config.TP1_MULTIPLIER)*100:.0f}%）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
-            f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（50%仓位）\n"
+            f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（{int(config.TP1_CLOSE_RATIO*100)}%仓位）\n"
             f"名义仓位：{trade.stake}×{leverage}x → 剩余{trade.stake_remaining}×{leverage}x\n"
-            f"剩余等待TP2（-10%）✅"
+            f"剩余等待TP2（-{(1-config.TP2_MULTIPLIER)*100:.0f}%）✅"
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U")
 
@@ -169,13 +169,13 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.pnl = round(total_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
-        trade.close_reason = "TP2止盈-10%全仓平仓"
+        trade.close_reason = f"TP2止盈-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓"
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = "✅ 第二档止盈（-10%，全仓平仓）"
+        result.close_reason = f"✅ 第二档止盈（-{(1-config.TP2_MULTIPLIER)*100:.0f}%，全仓平仓）"
         result.alert_msg = (
-            f"🎯 <b>第二档止盈触发（-10%全仓平仓）</b>\n\n"
+            f"🎯 <b>第二档止盈触发（-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"TP1锁定：{trade.tp1_locked_pnl:+.2f}U\n"
@@ -316,12 +316,12 @@ def run(check_only: bool = False):
                 if trade.tp1_triggered:
                     lines.append(
                         f"   ✅TP1已锁定{trade.tp1_locked_pnl:+.2f}U | "
-                        f"TP2: {trade.take_profit_2:.5f}(-10%){trail_str}"
+                        f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){trail_str}"
                     )
                 else:
                     lines.append(
-                        f"   TP1: {trade.take_profit_1:.5f}(-5%) | "
-                        f"TP2: {trade.take_profit_2:.5f}(-10%){hard_str}{trail_str}"
+                        f"   TP1: {trade.take_profit_1:.5f}(-{(1-config.TP1_MULTIPLIER)*100:.0f}%) | "
+                        f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){hard_str}{trail_str}"
                     )
             lines.append("")
 

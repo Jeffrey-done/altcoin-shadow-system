@@ -42,6 +42,8 @@ def main_loop():
     last_funding_scan_hour = -1
     last_funding_check_hour = -1
     last_long_hour = -1
+    last_low_risk_scan_hour = -1
+    last_low_risk_check_hour = -1
     last_health_hour = -1
     last_daily_report_done = False
 
@@ -86,6 +88,18 @@ def main_loop():
             last_long_hour = hour
             from long_scanner import scan_long_signals
             run_task("做多扫描", scan_long_signals)
+
+        # ── 每4小时：低风险策略扫描（2, 6, 10, 14, 18, 22）──
+        if hour % 4 == 2 and minute == 0 and hour != last_low_risk_scan_hour:
+            last_low_risk_scan_hour = hour
+            from low_risk_strategy import execute_low_risk_scan
+            run_task("低风险扫描", lambda: execute_low_risk_scan(mode='all'))
+
+        # ── 每2小时：低风险持仓检查（偶数小时:45分）──
+        if hour % 2 == 0 and minute == 45 and hour != last_low_risk_check_hour:
+            last_low_risk_check_hour = hour
+            from low_risk_strategy import check_low_risk_positions
+            run_task("低风险检查", check_low_risk_positions)
 
         # ── 每6小时：健康检查 ──
         if hour % 6 == 0 and minute == 45 and hour != last_health_hour:

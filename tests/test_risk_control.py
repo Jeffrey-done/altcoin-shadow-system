@@ -94,7 +94,7 @@ class TestCanOpenTrade:
         assert allowed is True
         assert reason == "OK"
 
-    def test_position_limit_blocks(self, mock_config):
+    def test_position_limit_blocks(self, mock_config, monkeypatch):
         """持仓占比超限 -> 拒绝开仓"""
         # ACCOUNT_BALANCE=1000, SHORT_STRATEGY_POOL_PCT=60, RISK_MAX_POSITION_PCT=0.5
         # max_position = 1000 * 0.6 * 0.5 = 300
@@ -103,6 +103,10 @@ class TestCanOpenTrade:
             total_open_stake=280.0,
         )
         save_risk_state(state)
+
+        # Mock _calc_actual_open_stake to return the state value
+        # (in production it reads trade files, which are empty in tests)
+        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 280.0)
 
         # 280 + 50 = 330 > 300 -> blocked
         allowed, reason = can_open_trade(50, strategy='short')

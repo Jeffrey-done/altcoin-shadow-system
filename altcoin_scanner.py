@@ -489,6 +489,10 @@ def check_candidates():
                 f"4h RSI：{rsi_4h}（峰值 {rsi_4h_peak:.0f}，回落 {drop:.0f} 点）"
             )
 
+        tp1_pct = round((1 - config.TP1_MULTIPLIER) * 100, 1)
+        tp2_pct = round((1 - config.TP2_MULTIPLIER) * 100, 1)
+        hard_stop_pct = config.HARD_STOP_LOSS_PCT
+
         msg = (
             f"🔴 <b>影子空单已开仓</b> {yao_tag}\n\n"
             f"📌 <b>{c.symbol}</b>\n"
@@ -500,10 +504,10 @@ def check_candidates():
             f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}\n\n"
             f"入场价：{price:.6f} U\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
-            f"止盈一档：{trade.take_profit_1:.6f}（-5%，+{trade.notional*0.05*0.5:.1f}U）\n"
-            f"止盈二档：{trade.take_profit_2:.6f}（-10%，+{trade.notional*0.10*0.5:.1f}U）\n"
-            f"硬止损：{trade.hard_stop_price:.6f}（+3%，-{trade.notional*0.03:.1f}U）\n"
-            f"移动止损：最高盈利回撤10%触发\n\n"
+            f"止盈一档：{trade.take_profit_1:.6f}（-{tp1_pct}%，+{trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
+            f"止盈二档：{trade.take_profit_2:.6f}（-{tp2_pct}%，+{trade.notional*tp2_pct/100*(1-config.TP1_CLOSE_RATIO):.1f}U）\n"
+            f"硬止损：{trade.hard_stop_price:.6f}（+{hard_stop_pct}%，-{trade.notional*hard_stop_pct/100:.1f}U）\n"
+            f"移动止损：最高盈利回撤{config.TRAIL_STOP_DRAWDOWN_PCT*100:.0f}%触发\n\n"
             f"{trigger_desc}\n\n"
             f"日线RSI：{c.rsi_1d}（超买）\n"
             f"24h涨幅：{c.pct24h:+.1f}% | 成交量：{c.vol24h:,}U\n"

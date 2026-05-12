@@ -1,0 +1,14 @@
+# 核心依赖
+ccxt>=4.0.0                # 统一交易所接口（Binance/OKX）
+python-dotenv>=1.0.0       # .env 环境变量加载
+requests>=2.28.0           # HTTP 请求（Binance REST API）
+
+# 实时监控
+websocket-client>=1.5.0    # Binance WebSocket 实时行情
+
+# 仪表盘
+flask>=2.3.0               # Web 框架
+flask-socketio>=5.3.0      # WebSocket 实时推送
+
+# 测试
+pytest>=7.0.0              # 单元测试框架
