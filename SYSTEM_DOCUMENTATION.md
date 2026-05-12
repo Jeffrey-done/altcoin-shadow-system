@@ -172,7 +172,7 @@ OKX API ────→ 费率/OI/行情 ────────┘
    - 价格 ≤ 1.0 USDT（只做小币）
    - 24h涨幅 ≥ 10%
 3. 计算日线RSI（Wilder平滑，14周期）
-4. 日线RSI ≥ 78 进入候选池
+4. 日线RSI ≥ 80 进入候选池
 5. 妖币识别（3分制评分）：
    - OI 24h变化 ≥ 30% → +1分
    - 资金费率 ≥ 0.03%/8h → +1分
@@ -227,8 +227,8 @@ OKX API ────→ 费率/OI/行情 ────────┘
 | 杠杆 | 10x | 固定 |
 | 名义仓位 | 1000U | stake × leverage |
 | TP1价格 | entry × 0.95 | 跌5%触发，平50%仓位 |
-| TP2价格 | entry × 0.90 | 跌10%触发，全仓平 |
-| 硬止损 | entry × 1.03 | 涨3%无条件平仓 |
+| TP2价格 | entry × 0.92 | 跌8%触发，全仓平 |
+| 硬止损 | entry × 1.05 | 涨5%无条件平仓 |
 | 时间止损 | 24小时 | 持仓超时强制平 |
 
 ---
@@ -558,7 +558,7 @@ OKX体量较小，阈值需独立设置：
 
 | 规则 | 阈值 | 触发动作 |
 |------|------|----------|
-| 单笔硬止损 | 3% | 价格反弹3%无条件平仓 |
+| 单笔硬止损 | 5% | 价格反弹5%无条件平仓 |
 | 单日最大亏损 | 30U | 达到后当日禁止开仓 |
 | 单日最大开仓 | 2次 | 达到后当日禁止开新仓 |
 | 连续亏损暂停 | 3次 | 暂停24小时不交易 |
@@ -601,7 +601,7 @@ can_open_trade(stake, strategy) 被调用时：
 
 | 层级 | 类型 | 触发条件 | 说明 |
 |------|------|----------|------|
-| L1 | 硬止损 | 价格反弹3% | 最高优先级，无条件执行 |
+| L1 | 硬止损 | 价格反弹5% | 最高优先级，无条件执行 |
 | L2 | 移动止损 | 盈利3%后激活，从最高回撤10% | 锁住利润 |
 | L3 | 时间止损 | 持仓>24h且盈利<3% | 避免资金占用 |
 | L4 | 日度止损 | 当日累计亏损≥30U | 停止当日所有开仓 |
@@ -745,9 +745,9 @@ can_open_trade(stake, strategy) 被调用时：
 #### 批量回测币种
 
 ```python
-默认10个小币种：
-PEPE/USDT, DOGE/USDT, SHIB/USDT, FLOKI/USDT, 1000SATS/USDT,
-BONK/USDT, WIF/USDT, PEOPLE/USDT, LUNC/USDT, ORDI/USDT
+默认8个小币种：
+PEPE/USDT, DOGE/USDT, SHIB/USDT, FLOKI/USDT,
+BONK/USDT, WIF/USDT, PEOPLE/USDT, ORDI/USDT
 ```
 
 #### 相关性分析
@@ -903,7 +903,7 @@ open http://localhost:8080
 | 参数名 | 值 | 说明 |
 |--------|------|------|
 | RSI_PERIOD | 14 | RSI计算周期 |
-| DAILY_RSI_MIN | 78 | 日线RSI超买阈值 |
+| DAILY_RSI_MIN | 80 | 日线RSI超买阈值（回测优化：78→80） |
 | H4_RSI_ENTER | 70 | 4h RSI进入阈值 |
 | H4_RSI_DROP | 10 | 4h RSI回落点数要求 |
 | H4_RSI_PEAK_LOOKBACK | 10 | RSI峰值回溯K线数 |
@@ -929,9 +929,9 @@ open http://localhost:8080
 | 参数名 | 值 | 说明 |
 |--------|------|------|
 | TP1_MULTIPLIER | 0.95 | TP1价格=入场×0.95(跌5%) |
-| TP2_MULTIPLIER | 0.90 | TP2价格=入场×0.90(跌10%) |
+| TP2_MULTIPLIER | 0.92 | TP2价格=入场×0.92(跌8%，回测优化：10%→8%) |
 | TP1_CLOSE_RATIO | 0.5 | TP1平仓比例(50%) |
-| HARD_STOP_LOSS_PCT | 3.0 | 硬止损(涨3%平仓) |
+| HARD_STOP_LOSS_PCT | 5.0 | 硬止损(涨5%平仓，回测优化：3%→5%) |
 | TRAIL_STOP_ACTIVATE_PCT | 3 | 移动止损激活阈值(%) |
 | TRAIL_STOP_DRAWDOWN_PCT | 0.10 | 移动止损回撤比例 |
 | MAX_HOLD_DAYS | 1 | 最大持仓天数 |
