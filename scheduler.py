@@ -10,19 +10,41 @@ import threading
 import traceback
 from datetime import datetime, timezone
 
+import signal
+
 from common import setup_logger
 
 logger = setup_logger("scheduler")
 
 
-def run_task(name: str, func):
-    """安全执行任务，捕获异常"""
-    try:
-        logger.info(f"[{name}] 开始执行")
-        func()
+def run_task(name: str, func, timeout: int = None):
+    """安全执行任务，捕获异常，支持超时"""
+    import config
+    if timeout is None:
+        timeout = config.TASK_TIMEOUT_SECONDS
+    
+    result = [None]
+    exception = [None]
+    
+    def target():
+        try:
+            func()
+        except Exception as e:
+            exception[0] = e
+    
+    logger.info(f"[{name}] 开始执行（超时={timeout}s）")
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    
+    if thread.is_alive():
+        logger.error(f"[{name}] ⚠️ 超时（>{timeout}s），跳过本次")
+        from common import send_tg
+        send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n已跳过本次执行")
+    elif exception[0]:
+        logger.error(f"[{name}] 异常: {exception[0]}\n{traceback.format_exc()}")
+    else:
         logger.info(f"[{name}] 完成")
-    except Exception as e:
-        logger.error(f"[{name}] 异常: {e}\n{traceback.format_exc()}")
 
 
 def get_utc_hour():
@@ -53,6 +75,7 @@ def main_loop():
     last_tracker_min = -1
     last_health_hour = -1
     last_daily_report_done = False
+    last_optimize_done = False
 
     while True:
         now = datetime.now(timezone.utc)
@@ -90,9 +113,23 @@ def main_loop():
             from altcoin_tracker import run as tracker_run
             run_task("日报推送", lambda: tracker_run(check_only=False))
 
+        # ── 每周一9:00 UTC：自动优化建议 ──
+        import config
+        if hour == 9 and minute == 0 and now.weekday() == config.AUTO_OPTIMIZE_DAY and not last_optimize_done:
+            last_optimize_done = True
+            from auto_optimize import run_auto_optimize
+            run_task("自动优化", run_auto_optimize)
+
         # 日期变更重置
         if hour == 0 and minute == 1:
             last_daily_report_done = False
+            # 每日清理过期交易
+            from common import cleanup_old_trades
+            run_task("清理过期交易", cleanup_old_trades)
+
+        # 周二重置优化标志（周一执行后，周二0点重置）
+        if now.weekday() == 1 and hour == 0 and minute == 1:
+            last_optimize_done = False
 
         # 睡眠30秒
         time.sleep(30)

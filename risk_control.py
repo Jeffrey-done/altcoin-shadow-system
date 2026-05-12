@@ -293,6 +293,42 @@ def refresh_open_stake() -> None:
         logger.info(f"🔄 持仓同步：{actual:.0f}U（无偏差）")
 
 
+def is_in_cooldown(symbol: str) -> tuple:
+    """
+    检查某币种是否在止损平仓后的冷却期内。
+    
+    Returns: (bool, str) - (是否冷却中, 原因描述)
+    """
+    from datetime import timedelta
+    trades = load_json(TRADES_FILE, [])
+    now = utcnow()
+    cooldown_hours = config.COOLDOWN_HOURS
+
+    for t in reversed(trades):
+        if t.get('symbol') != symbol:
+            continue
+        if t.get('status') != 'closed':
+            continue
+        close_reason = t.get('close_reason', '').lower()
+        if '止损' not in close_reason and 'stop' not in close_reason:
+            continue
+        # 找到了止损平仓记录，检查时间
+        closed_at = t.get('closed_at', '')
+        if not closed_at:
+            continue
+        try:
+            closed_dt = parse_iso(closed_at)
+            hours_since = (now - closed_dt).total_seconds() / 3600
+            if hours_since < cooldown_hours:
+                remaining = cooldown_hours - hours_since
+                reason = f"止损平仓后冷却中（{hours_since:.1f}h/{cooldown_hours}h，剩余{remaining:.1f}h）"
+                return (True, reason)
+        except Exception:
+            continue
+
+    return (False, "")
+
+
 def get_risk_summary() -> str:
     """获取风控状态摘要（用于日报）"""
     state = load_risk_state()

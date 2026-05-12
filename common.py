@@ -22,6 +22,7 @@ CANDIDATES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_candidates.json')
 TRADES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_shadow_trades.json')
 RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
 WEEKLY_REPORT_FILE = os.path.join(SCRIPT_DIR, 'weekly_report.json')
+TRADES_ARCHIVE_FILE = os.path.join(SCRIPT_DIR, 'altcoin_trades_archive.json')
 
 # 向后兼容：保留常量定义以便旧数据加载不报错
 FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
@@ -294,3 +295,53 @@ def get_dynamic_balance() -> float:
             total_pnl += t.get('tp1_locked_pnl', 0)
 
     return config.ACCOUNT_BALANCE + total_pnl
+
+
+
+def cleanup_old_trades():
+    """
+    归档超过 TRADES_ARCHIVE_DAYS 的已平仓交易。
+    将旧记录移到 archive 文件，主交易文件只保留近期数据。
+    """
+    import config
+    trades = load_json(TRADES_FILE, [])
+    if not trades:
+        return 0
+    
+    now = utcnow()
+    keep = []
+    archive_new = []
+    
+    for t in trades:
+        if t.get('status') != 'closed':
+            keep.append(t)
+            continue
+        
+        closed_at = t.get('closed_at', '')
+        if not closed_at:
+            keep.append(t)
+            continue
+        
+        try:
+            closed_dt = parse_iso(closed_at)
+            age_days = (now - closed_dt).days
+            if age_days > config.TRADES_ARCHIVE_DAYS:
+                archive_new.append(t)
+            else:
+                keep.append(t)
+        except Exception:
+            keep.append(t)
+    
+    if not archive_new:
+        return 0
+    
+    # 追加到归档文件
+    existing_archive = load_json(TRADES_ARCHIVE_FILE, [])
+    existing_archive.extend(archive_new)
+    atomic_write_json(TRADES_ARCHIVE_FILE, existing_archive)
+    
+    # 更新主交易文件
+    atomic_write_json(TRADES_FILE, keep)
+    
+    logging.info(f"归档了 {len(archive_new)} 笔过期交易（>{config.TRADES_ARCHIVE_DAYS}天）")
+    return len(archive_new)

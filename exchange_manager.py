@@ -481,3 +481,47 @@ def get_btc_24h_change_multi() -> float:
 
     logger.warning("获取 BTC 涨跌幅失败（所有数据源）")
     return 0.0
+
+
+
+def cross_validate_price(symbol: str, binance_price: float) -> dict:
+    """
+    对比 Binance 和 OKX 的价格，返回偏差信息。
+    
+    Returns:
+        {
+            'available': bool,      # OKX 是否有数据
+            'okx_price': float,     # OKX 价格
+            'divergence_pct': float, # 偏差百分比（绝对值）
+            'pass': bool,           # 是否通过（偏差<阈值）
+            'reason': str,          # 描述
+        }
+    """
+    result = {'available': False, 'okx_price': 0, 'divergence_pct': 0, 'pass': True, 'reason': ''}
+    
+    if not config.OKX_ENABLED:
+        return result
+    
+    try:
+        okx = get_okx()
+        if okx is None:
+            return result
+            
+        ticker = okx.fetch_ticker(symbol)
+        okx_price = ticker.get('last', 0)
+        if okx_price <= 0:
+            return result
+        
+        result['available'] = True
+        result['okx_price'] = okx_price
+        
+        divergence = abs(binance_price - okx_price) / binance_price * 100
+        result['divergence_pct'] = round(divergence, 2)
+        
+        if divergence > config.PRICE_DIVERGENCE_MAX_PCT:
+            result['pass'] = False
+            result['reason'] = f"价格偏差{divergence:.1f}%（Binance={binance_price:.6f} vs OKX={okx_price:.6f}）"
+        
+        return result
+    except Exception as e:
+        return result

@@ -149,6 +149,8 @@ class BinanceWSMonitor:
         self.current_symbols = []
         self.running = True
         self._lock = threading.Lock()
+        self._last_connected = time.time()
+        self._disconnect_alerted = False
 
     def _build_url(self, symbols: list) -> str:
         """构建 combined stream URL"""
@@ -185,9 +187,12 @@ class BinanceWSMonitor:
         logger.warning(f"WebSocket 错误: {error}")
 
     def _on_close(self, ws, close_status_code, close_msg):
+        self._last_connected = time.time()
         logger.info(f"WebSocket 断开 (code={close_status_code})")
 
     def _on_open(self, ws):
+        self._last_connected = time.time()
+        self._disconnect_alerted = False
         logger.info(f"WebSocket 已连接，监控 {len(self.current_symbols)} 个币种")
 
     def connect(self, symbols: list):
@@ -314,6 +319,19 @@ def main():
             logger.error(f"监控循环异常: {e}")
 
         time.sleep(30)
+
+        # WebSocket 断线告警
+        if monitor.ws and not monitor.ws.sock:
+            disconnect_duration = time.time() - monitor._last_connected
+            if disconnect_duration > config.WS_DISCONNECT_ALERT_MINUTES * 60 and not monitor._disconnect_alerted:
+                monitor._disconnect_alerted = True
+                send_tg(
+                    f"🔌 <b>WebSocket 断线告警</b>\n\n"
+                    f"已断开 {disconnect_duration/60:.1f} 分钟\n"
+                    f"监控币种: {', '.join(last_symbols) if last_symbols else '无'}\n"
+                    f"正在尝试重连..."
+                )
+                logger.error(f"WebSocket 断线超 {config.WS_DISCONNECT_ALERT_MINUTES} 分钟")
 
 
 if __name__ == '__main__':

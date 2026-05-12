@@ -459,6 +459,13 @@ def check_candidates():
         if c.triggered or c.symbol in open_symbols:
             continue
 
+        # ── 冷却期检查 ──
+        from risk_control import is_in_cooldown
+        in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
+        if in_cooldown:
+            logger.info(f"  ❄️ 冷却中 {c.symbol}: {cooldown_reason}")
+            continue
+
         # 获取 4h RSI
         rsi_4h = get_rsi(exchange, c.symbol, '4h', limit=50)
         rsi_4h_peak = get_rsi_peak(exchange, c.symbol, '4h')
@@ -540,6 +547,15 @@ def check_candidates():
         except Exception as e:
             logger.error(f"获取最新价失败 ({c.symbol}): {e}")
             continue
+
+        # ── 多交易所价格确认 ──
+        if config.OKX_CROSS_VALIDATE_ENABLED:
+            from exchange_manager import cross_validate_price
+            price_cv = cross_validate_price(c.symbol, price)
+            if price_cv['available'] and not price_cv['pass']:
+                logger.warning(f"  ⚠️ 价格偏差过大 {c.symbol}: {price_cv['reason']}")
+                c.triggered = False
+                continue
 
         c.triggered = True
         triggered_any = True
