@@ -67,6 +67,7 @@ def calculate_signal_score(
     abandon_oi_declining: bool = False,
     btc_24h_pct: float = 0.0,
     cross_validate_bonus: int = 0,
+    vol_divergence_bonus: int = 0,
 ) -> dict:
     """
     综合评分 0~100。
@@ -77,6 +78,7 @@ def calculate_signal_score(
       3. 触发方式（0~25）：弃盘点 > 4h RSI 回落
       4. 市场热度（0~25）：OI 变化 + 资金费率 + BTC 趋势加分
       5. OKX 交叉验证加分（额外 0~8）：两所数据一致时奖励
+      6. 量价背离加分（额外 0~8）：价格新高但量缩，顶部确认
 
     返回:
       {
@@ -148,8 +150,8 @@ def calculate_signal_score(
 
     heat_score = min(25, heat_score)
 
-    # ── 总分（含 OKX 交叉验证加分）──
-    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus)
+    # ── 总分（含 OKX 交叉验证加分 + 量价背离加分）──
+    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus + vol_divergence_bonus)
     total_score = max(0, min(100, total_score))
 
     # ── 评级 & 仓位 ──
@@ -170,6 +172,7 @@ def calculate_signal_score(
         "trigger": round(trigger_score, 1),
         "heat": round(heat_score, 1),
         "cross_validate": cross_validate_bonus,
+        "vol_divergence": vol_divergence_bonus,
     }
 
     reason_parts = []
@@ -183,6 +186,8 @@ def calculate_signal_score(
         reason_parts.append(f"市场热度高")
     if cross_validate_bonus > 0:
         reason_parts.append(f"OKX交叉验证(+{cross_validate_bonus})")
+    if vol_divergence_bonus > 0:
+        reason_parts.append(f"量价背离(+{vol_divergence_bonus})")
 
     reason = " + ".join(reason_parts) if reason_parts else "信号一般"
 
@@ -199,6 +204,7 @@ def calculate_signal_score(
         f"RSI={rsi_score:.0f} 妖={yao_dim_score:.0f} "
         f"触发={trigger_score:.0f} 热度={heat_score:.0f}"
         f"{f' OKX=+{cross_validate_bonus}' if cross_validate_bonus > 0 else ''}"
+        f"{f' 量价背离=+{vol_divergence_bonus}' if vol_divergence_bonus > 0 else ''}"
         f" | 仓位={stake}U | {reason}"
     )
 

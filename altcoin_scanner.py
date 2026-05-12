@@ -223,6 +223,91 @@ def detect_abandon_signal(exchange, symbol: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  量价背离检测（Volume-Price Divergence）
+# ══════════════════════════════════════════════════════════════════
+
+def detect_volume_divergence(exchange, symbol: str) -> dict:
+    """
+    检测量价背离：价格冲高但成交量递减 → 顶部信号更强。
+
+    逻辑：
+      1. 获取近24根1H K线
+      2. 找到最近两次"价格局部高点"（高于前后2根）
+      3. 如果第二个高点的价格 >= 第一个高点（新高或持平）
+         但第二个高点的成交量 < 第一个高点的成交量 × 0.7（缩量30%+）
+         → 量价背离成立
+
+    返回:
+      {
+        "divergence": bool,        # 是否存在量价背离
+        "shrink_ratio": float,     # 成交量缩减比例（0~1，越小越强）
+        "score_bonus": int,        # 建议加分值（0~8）
+        "reason": str,             # 描述
+      }
+    """
+    result = {"divergence": False, "shrink_ratio": 1.0, "score_bonus": 0, "reason": ""}
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=24)
+        if len(ohlcv) < 10:
+            return result
+
+        # 提取高点和成交量
+        highs = [c[2] for c in ohlcv]   # high price
+        volumes = [c[5] for c in ohlcv]  # volume
+
+        # 找局部高点（高于前后2根K线的high）
+        peaks = []  # [(index, high_price, volume)]
+        for i in range(2, len(highs) - 2):
+            if highs[i] >= highs[i-1] and highs[i] >= highs[i-2] \
+               and highs[i] >= highs[i+1] and highs[i] >= highs[i+2]:
+                peaks.append((i, highs[i], volumes[i]))
+
+        if len(peaks) < 2:
+            return result
+
+        # 比较最近两个高点
+        prev_peak = peaks[-2]
+        last_peak = peaks[-1]
+
+        prev_price, prev_vol = prev_peak[1], prev_peak[2]
+        last_price, last_vol = last_peak[1], last_peak[2]
+
+        # 价格创新高或持平（差距<1%）
+        price_higher = last_price >= prev_price * 0.99
+
+        if not price_higher:
+            return result
+
+        # 成交量缩减检查
+        if prev_vol <= 0:
+            return result
+
+        vol_ratio = last_vol / prev_vol  # <1 表示缩量
+
+        if vol_ratio < 0.70:
+            # 量价背离成立：价格新高但量缩30%+
+            shrink_pct = round((1 - vol_ratio) * 100, 0)
+            result["divergence"] = True
+            result["shrink_ratio"] = round(vol_ratio, 2)
+
+            # 缩量越多，加分越高
+            if vol_ratio < 0.40:
+                result["score_bonus"] = 8   # 缩量60%+ → 强烈背离
+            elif vol_ratio < 0.55:
+                result["score_bonus"] = 5   # 缩量45%+ → 中等背离
+            else:
+                result["score_bonus"] = 3   # 缩量30%+ → 轻微背离
+
+            result["reason"] = f"量价背离：价格新高但成交量缩{shrink_pct:.0f}%（顶部信号）"
+            logger.info(f"  📉 {symbol}: {result['reason']}")
+
+    except Exception as e:
+        logger.debug(f"量价背离检测失败 ({symbol}): {e}")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════
 #  第一阶段：日线扫描（每4小时）
 # ══════════════════════════════════════════════════════════════════
 
@@ -393,6 +478,9 @@ def check_candidates():
             time.sleep(0.1)
             continue
 
+        # ── 量价背离检查（Volume-Price Divergence）──
+        vol_divergence = detect_volume_divergence(exchange, c.symbol)
+
         # ── 信号评分 ──
         abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
 
@@ -422,6 +510,7 @@ def check_candidates():
             abandon_oi_declining=abandon_oi,
             btc_24h_pct=btc_pct,
             cross_validate_bonus=cross_validate_bonus,
+            vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
         )
 
         # 评分太低跳过
@@ -501,7 +590,8 @@ def check_candidates():
             f"妖={score_result['details'].get('yao',0):.0f} "
             f"触发={score_result['details'].get('trigger',0):.0f} "
             f"热度={score_result['details'].get('heat',0):.0f}"
-            f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}\n\n"
+            f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}"
+            f"{(' 量价背离=+' + str(vol_divergence.get('score_bonus', 0))) if vol_divergence.get('divergence') else ''}\n\n"
             f"入场价：{price:.6f} U\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
             f"止盈一档：{trade.take_profit_1:.6f}（-{tp1_pct}%，+{trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
