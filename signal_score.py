@@ -12,7 +12,7 @@
 import requests
 
 import config
-from common import setup_logger, to_binance_symbol
+from common import setup_logger
 from exchange_manager import get_btc_24h_change_multi
 
 logger = setup_logger("signal_score")

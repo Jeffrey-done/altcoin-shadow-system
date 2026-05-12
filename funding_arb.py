@@ -110,10 +110,9 @@ def scan_negative_funding():
         return
 
     # 风控检查
-    allowed, reason = can_open_trade(config.FUNDING_ARB_STAKE)
+    allowed, reason = can_open_trade(config.FUNDING_ARB_STAKE, strategy='funding_arb')
     if not allowed:
         logger.warning(f"风控拒绝：{reason}")
-        return
 
     # 获取所有费率
     all_rates = get_all_funding_rates()
@@ -183,7 +182,7 @@ def scan_negative_funding():
             continue
 
         # 再次检查风控
-        allowed, reason = can_open_trade(config.FUNDING_ARB_STAKE)
+        allowed, reason = can_open_trade(config.FUNDING_ARB_STAKE, strategy='funding_arb')
         if not allowed:
             logger.warning(f"风控拒绝第{opened+1}单：{reason}")
             break
@@ -202,7 +201,7 @@ def scan_negative_funding():
         # 保存
         trades.append(trade)
         atomic_write_json(FUNDING_TRADES_FILE, [t.to_dict() for t in trades])
-        record_trade_opened(config.FUNDING_ARB_STAKE)
+        record_trade_opened(config.FUNDING_ARB_STAKE, strategy='funding_arb')
         opened += 1
 
         logger.info(

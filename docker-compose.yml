@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data
+      - ./:/app/
       - ./.env:/app/.env:ro
     restart: unless-stopped
     command: python3 dashboard.py
@@ -16,7 +16,7 @@ services:
   scheduler:
     build: .
     volumes:
-      - ./data:/app/data
+      - ./:/app/
       - ./.env:/app/.env:ro
     restart: unless-stopped
     command: python3 scheduler.py
@@ -27,7 +27,7 @@ services:
   realtime-monitor:
     build: .
     volumes:
-      - ./data:/app/data
+      - ./:/app/
       - ./.env:/app/.env:ro
     restart: unless-stopped
     command: python3 realtime_monitor.py

@@ -217,11 +217,8 @@ def detect_pin_bar_bottom(exchange, symbol: str) -> dict:
 def create_long_trade(symbol: str, price: float, reason: str,
                       strategy: str) -> Trade:
     """创建做多影子交易"""
-    import time as _time
-    from dataclasses import asdict
-
     trade = Trade(
-        id=f"LONG-{strategy.upper()}-{symbol.replace('/USDT','').replace('/','')}-{int(_time.time())}",
+        id=f"LONG-{strategy.upper()}-{symbol.replace('/USDT','').replace('/','')}-{int(time.time())}",
         symbol=symbol,
         direction='LONG',
         entry_price=price,
@@ -270,7 +267,7 @@ def scan_long_signals():
     open_symbols = {t['symbol'] for t in trades_list if t.get('status') == 'open'}
 
     # 风控检查
-    allowed, risk_reason = can_open_trade(config.LONG_STAKE)
+    allowed, risk_reason = can_open_trade(config.LONG_STAKE, strategy='short')
     if not allowed:
         logger.warning(f"  🚫 风控拒绝: {risk_reason}")
         return
@@ -337,7 +334,7 @@ def scan_long_signals():
                     trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(trade.stake)
+                record_trade_opened(trade.stake, strategy='short')
                 opened += 1
 
                 logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
@@ -378,7 +375,7 @@ def scan_long_signals():
                     trade.notional = trade.stake * config.LONG_LEVERAGE
                 trades_list.append(trade.to_dict())
                 atomic_write_json(TRADES_FILE, trades_list)
-                record_trade_opened(trade.stake)
+                record_trade_opened(trade.stake, strategy='short')
                 opened += 1
 
                 logger.info(f"  ✅ 做多开仓: {symbol} @ {price} | {result['reason']} | 评分={score_result['score']}[{score_result['grade']}]")
