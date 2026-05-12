@@ -10,8 +10,6 @@ import threading
 import traceback
 from datetime import datetime, timezone
 
-import signal
-
 from common import setup_logger
 
 logger = setup_logger("scheduler")
