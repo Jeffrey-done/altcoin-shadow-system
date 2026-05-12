@@ -75,6 +75,13 @@ def main_loop():
     except Exception as e:
         logger.warning(f"快速预筛启动失败（非致命）: {e}")
 
+    # 启动 TG Bot 后台线程
+    try:
+        from tg_bot import start_bot_thread
+        start_bot_thread()
+    except Exception as e:
+        logger.warning(f"TG Bot 启动失败（非致命）: {e}")
+
     last_scan_hour = -1
     last_check_min = -1
     last_tracker_min = -1
