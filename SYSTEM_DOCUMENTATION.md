@@ -1,10 +1,10 @@
 # 影子做空交易系统（Shadow Short Trading System）
 
-## 系统技术文档 v5.0
+## 系统技术文档 v6.0
 
 ---
 
-**文档版本**: 5.0  
+**文档版本**: 6.0  
 **最后更新**: 2025年  
 **系统名称**: 影子做空交易系统  
 **英文名称**: Altcoin Shadow Trading System  
@@ -59,12 +59,12 @@
 ```
 扫描信号 → 评分过滤 → 风控检查 → 影子开仓 → 实时追踪
     ↓                                           ↓
-日线扫描(4h)                              止盈止损(1h)
-候选确认(1h)                              移动止损更新
-做多扫描(2h)                              时间止损检查
-费率扫描(结算前1h)                         ↓
-低风险扫描(4h)                         平仓记录 → 风控更新
-    ↓                                           ↓
+日线扫描(4h)                              实时监控(WebSocket/5s轮询)
+候选确认(1h)                              止盈止损(~100ms延迟)
+做多扫描(2h)                              移动止损更新
+费率扫描(结算前1h)                         时间止损检查
+低风险扫描(4h)                              ↓
+    ↓                                  平仓记录 → 风控更新
 自动复利 ← 盈利累积 ← 周报汇总 ← 统计分析
 ```
 
@@ -101,8 +101,13 @@
 │  ┌──────────────────────┐  ┌──────────────────────┐             │
 │  │  altcoin_tracker.py   │  │  live_executor.py    │             │
 │  │  (影子持仓追踪)        │  │  (实盘执行器)         │             │
-│  │  止盈止损/移动止损     │  │  Binance API下单     │             │
+│  │  止盈止损/移动止损     │  │  Binance+OKX下单     │             │
 │  └──────────┬───────────┘  └──────────────────────┘             │
+│             ▼                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │              realtime_monitor.py (实时监控器)                   │ │
+│  │    Binance WebSocket 7×24 / 轮询备选(5秒) / 毫秒级止盈止损      │ │
+│  └─────────────────────────────────────────────────────────────┘ │
 │             ▼                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │                      common.py (公共工具)                      │ │
@@ -136,6 +141,10 @@ OKX API ────→ 费率/OI/行情 ────────┘
           ┌────────┼────────┐
           ▼        ▼        ▼
       Dashboard  周报生成  TG推送
+                    ▲
+                    │
+    realtime_monitor.py (WebSocket/轮询)
+     → 实时价格 → 触发止盈止损 → 更新交易文件
 ```
 
 ### 2.3 技术栈
@@ -146,6 +155,7 @@ OKX API ────→ 费率/OI/行情 ────────┘
 | 交易所接口 | ccxt | 统一交易所抽象层 |
 | OKX接口 | ccxt + REST API | 辅助数据源 + 交叉验证 |
 | HTTP请求 | requests | Binance REST API调用 |
+| 实时行情 | websocket-client | Binance WebSocket miniTicker |
 | Web框架 | Flask + Flask-SocketIO | 仪表盘 |
 | 实时推送 | WebSocket (SocketIO) | 前端实时数据更新 |
 | 定时调度 | 自建调度器 | 替代crontab |
@@ -155,6 +165,7 @@ OKX API ────→ 费率/OI/行情 ────────┘
 | 环境管理 | python-dotenv | .env配置隔离 |
 
 ---
+
 
 ## 3. 策略详解
 
@@ -172,7 +183,7 @@ OKX API ────→ 费率/OI/行情 ────────┘
    - 价格 ≤ 1.0 USDT（只做小币）
    - 24h涨幅 ≥ 10%
 3. 计算日线RSI（Wilder平滑，14周期）
-4. 日线RSI ≥ 78 进入候选池
+4. 日线RSI ≥ 80 进入候选池（回测优化：78→80减少假信号）
 5. 妖币识别（3分制评分）：
    - OI 24h变化 ≥ 30% → +1分
    - 资金费率 ≥ 0.03%/8h → +1分
@@ -227,8 +238,8 @@ OKX API ────→ 费率/OI/行情 ────────┘
 | 杠杆 | 10x | 固定 |
 | 名义仓位 | 1000U | stake × leverage |
 | TP1价格 | entry × 0.95 | 跌5%触发，平50%仓位 |
-| TP2价格 | entry × 0.90 | 跌10%触发，全仓平 |
-| 硬止损 | entry × 1.03 | 涨3%无条件平仓 |
+| TP2价格 | entry × 0.92 | 跌8%触发，全仓平（回测优化：10%→8%提升触发率4.4倍） |
+| 硬止损 | entry × 1.05 | 涨5%无条件平仓（回测优化：3%→5%减少假突破洗盘） |
 | 时间止损 | 24小时 | 持仓超时强制平 |
 
 ---
@@ -276,11 +287,48 @@ OKX API ────→ 费率/OI/行情 ────────┘
 
 ---
 
-### 3.3 持仓追踪器（altcoin_tracker.py）
+### 3.3 实时监控器（realtime_monitor.py）
+
+#### 定位
+
+替代原来每小时一次的 altcoin_tracker 检查，将止盈止损延迟从60分钟降到约100ms（WebSocket模式）或5秒（轮询备选模式）。
+
+#### 工作模式
+
+| 模式 | 条件 | 延迟 | 说明 |
+|------|------|------|------|
+| WebSocket | websocket-client已安装 | ~100ms | Binance miniTicker流 |
+| 轮询 | websocket-client未安装 | 5秒 | REST API批量价格查询 |
+
+#### 工作原理
+
+```
+1. 每30秒读取所有交易文件，收集持仓中的币种
+2. 连接 Binance WebSocket miniTicker 流（或轮询）
+3. 每收到价格更新就检查是否触及止盈/止损
+4. 触发后立即执行 evaluate_trade() 平仓逻辑
+5. 持仓变化时自动更新订阅列表
+```
+
+#### 监控覆盖
+
+- 做空/做多交易（altcoin_shadow_trades.json）
+- 费率套利交易（funding_arb_trades.json）
+- 低风险策略交易（low_risk_trades.json）
+
+#### WebSocket 连接管理
+
+- 自动重连：断开后自动重建连接
+- 动态订阅：持仓变化时更新监控币种列表
+- Ping/Pong：20秒心跳保活
+
+---
+
+### 3.4 持仓追踪器（altcoin_tracker.py）
 
 #### 职责
 
-每小时运行（:15分），检查所有持仓的止盈止损状态。同时支持做空和做多方向。
+作为调度器定时任务（每小时:15分），对所有持仓执行评估。同时作为 realtime_monitor 的核心评估逻辑提供者（evaluate_trade函数）。
 
 #### 止盈止损优先级
 
@@ -338,7 +386,7 @@ TP1触发时：
 
 ---
 
-### 3.4 资金费率套利（funding_arb.py）
+### 3.5 资金费率套利（funding_arb.py）
 
 #### 策略原理
 
@@ -401,7 +449,7 @@ Binance合约每8小时结算一次资金费率。当费率为负时，空头付
 
 ---
 
-### 3.5 低风险日收策略（low_risk_strategy.py）
+### 3.6 低风险日收策略（low_risk_strategy.py）
 
 #### 目标
 
@@ -409,7 +457,7 @@ Binance合约每8小时结算一次资金费率。当费率为负时，空头付
 
 #### 子策略一：网格交易
 
-**适用条件**：24h振幅在1%~3%的震荡币种（如BTC、ETH等大币）
+**适用条件**：24h振幅在1%~3%的震荡币种（BTC、ETH等大币）
 
 **执行逻辑**：
 1. 计算24h最高/最低价，等分为5个网格层级
@@ -419,6 +467,8 @@ Binance合约每8小时结算一次资金费率。当费率为负时，空头付
 5. 最大持仓4小时
 
 **参数**：20U保证金 × 5x杠杆 = 100U名义仓位
+
+**监控币种**：BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT
 
 #### 子策略二：均值回归
 
@@ -444,6 +494,8 @@ Binance合约每8小时结算一次资金费率。当费率为负时，空头付
 3. 每个仓位：20U × 5x = 100U
 4. 止损1.5%，目标跨过结算
 
+**费率收割监控池**：BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT, DOT/USDT
+
 #### Kelly公式动态仓位
 
 ```python
@@ -462,7 +514,7 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 
 ---
 
-### 3.6 信号评分系统（signal_score.py）
+### 3.7 信号评分系统（signal_score.py）
 
 #### 做空信号评分（0~100分）
 
@@ -472,7 +524,7 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 |------|------|----------|
 | RSI强度 | 0~25分 | 日线RSI越高越强 + 4h回落深度加分 |
 | 妖币特征 | 0~25分 | yao_score映射: 0→0, 1→8, 2→16, 3→25 |
-| 触发方式 | 0~25分 | 弃盘点25 > 弃盘点(无OI)20 > 4h回落15 |
+| 触发方式 | 0~25分 | 弃盘点(+OI)25 > 弃盘点(无OI)20 > 4h回落15 |
 | 市场热度 | 0~25分 | OI涨幅(0~10) + 费率(0~8) + BTC趋势(0~7) |
 | OKX交叉验证 | 0~8分(额外) | 两所费率/OI一致时加分 |
 
@@ -504,7 +556,7 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 
 ---
 
-### 3.7 多交易所管理（exchange_manager.py）
+### 3.8 多交易所管理（exchange_manager.py）
 
 #### 设计原则
 
@@ -525,12 +577,14 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 
 #### 交叉验证逻辑
 
+```
 费率交叉验证：
   Binance费率 ≥ 0.03% 且 OKX费率 ≥ 0.02% → signal_boost = True
   Binance费率 ≤ -0.05% 且 OKX费率 ≤ -0.04% → both_negative = True
 
 OI交叉验证：
   Binance OI变化 ≥ 30% 且 OKX OI变化 ≥ 20% → signal_boost = True
+```
 
 #### OKX参数（独立于Binance）
 
@@ -544,6 +598,7 @@ OKX体量较小，阈值需独立设置：
 ---
 
 
+
 ## 4. 风控体系
 
 ### 4.1 风控模块（risk_control.py）
@@ -553,12 +608,13 @@ OKX体量较小，阈值需独立设置：
 - **保护本金优先**：宁可错过信号，不可扩大亏损
 - **层层递进**：单笔止损 → 单日止损 → 连亏暂停 → 持仓限制
 - **自动化执行**：所有风控规则自动执行，无需人工干预
+- **自动修正**：每次风控检查时同步实际持仓，防止累积偏差
 
 #### 风控规则总览
 
 | 规则 | 阈值 | 触发动作 |
 |------|------|----------|
-| 单笔硬止损 | 3% | 价格反弹3%无条件平仓 |
+| 单笔硬止损 | 5% | 价格反弹5%无条件平仓 |
 | 单日最大亏损 | 30U | 达到后当日禁止开仓 |
 | 单日最大开仓 | 2次 | 达到后当日禁止开新仓 |
 | 连续亏损暂停 | 3次 | 暂停24小时不交易 |
@@ -583,8 +639,9 @@ can_open_trade(stake, strategy) 被调用时：
   1. 检查暂停状态 → 暂停期间内拒绝
   2. 检查单日亏损 → 超30U拒绝
   3. 检查开仓次数 → 超2次拒绝
-  4. 检查持仓占比 → 超过对应池50%拒绝
-  5. 全部通过 → 允许开仓
+  4. 同步实际持仓（从交易文件重新计算，防止偏差）
+  5. 检查持仓占比 → 超过对应池50%拒绝
+  6. 全部通过 → 允许开仓
 ```
 
 #### 资金池隔离
@@ -601,7 +658,7 @@ can_open_trade(stake, strategy) 被调用时：
 
 | 层级 | 类型 | 触发条件 | 说明 |
 |------|------|----------|------|
-| L1 | 硬止损 | 价格反弹3% | 最高优先级，无条件执行 |
+| L1 | 硬止损 | 价格反弹5% | 最高优先级，无条件执行 |
 | L2 | 移动止损 | 盈利3%后激活，从最高回撤10% | 锁住利润 |
 | L3 | 时间止损 | 持仓>24h且盈利<3% | 避免资金占用 |
 | L4 | 日度止损 | 当日累计亏损≥30U | 停止当日所有开仓 |
@@ -713,7 +770,7 @@ can_open_trade(stake, strategy) 被调用时：
 
 1. **单币回测**：对指定币种执行完整策略回放
 2. **参数网格搜索**：遍历参数组合找最优配置
-3. **批量回测**：10个币种同时回测对比
+3. **批量回测**：8个币种同时回测对比
 4. **相关性分析**：Pearson相关系数矩阵
 5. **推荐组合**：低相关性+高评分的币种组合
 
@@ -745,9 +802,9 @@ can_open_trade(stake, strategy) 被调用时：
 #### 批量回测币种
 
 ```python
-默认10个小币种：
-PEPE/USDT, DOGE/USDT, SHIB/USDT, FLOKI/USDT, 1000SATS/USDT,
-BONK/USDT, WIF/USDT, PEOPLE/USDT, LUNC/USDT, ORDI/USDT
+默认8个小币种（移除了历史表现差的1000SATS和LUNC）：
+PEPE/USDT, DOGE/USDT, SHIB/USDT, FLOKI/USDT,
+BONK/USDT, WIF/USDT, PEOPLE/USDT, ORDI/USDT
 ```
 
 #### 相关性分析
@@ -796,7 +853,7 @@ BONK/USDT, WIF/USDT, PEOPLE/USDT, LUNC/USDT, ORDI/USDT
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
-RUN pip install --no-cache-dir ccxt python-dotenv requests flask flask-socketio
+RUN pip install --no-cache-dir ccxt python-dotenv requests flask flask-socketio websocket-client
 COPY . .
 RUN mkdir -p /app/backtest_cache
 EXPOSE 8080
@@ -808,6 +865,7 @@ CMD ["python3", "dashboard.py"]
 ```yaml
 version: '3.8'
 services:
+  # 实时仪表盘
   dashboard:
     build: .
     ports:
@@ -818,6 +876,7 @@ services:
     restart: unless-stopped
     command: python3 dashboard.py
 
+  # 定时任务调度器（扫描+追踪+费率+做多+健康检查）
   scheduler:
     build: .
     volumes:
@@ -825,6 +884,17 @@ services:
       - ./.env:/app/.env:ro
     restart: unless-stopped
     command: python3 scheduler.py
+    depends_on:
+      - dashboard
+
+  # 实时止盈止损监控器（Binance WebSocket 7×24）
+  realtime-monitor:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    command: python3 realtime_monitor.py
     depends_on:
       - dashboard
 ```
@@ -846,6 +916,7 @@ docker-compose up -d
 # 4. 查看日志
 docker-compose logs -f scheduler
 docker-compose logs -f dashboard
+docker-compose logs -f realtime-monitor
 
 # 5. 访问仪表盘
 open http://localhost:8080
@@ -869,14 +940,17 @@ open http://localhost:8080
 |------|------|--------|------|
 | 日线扫描 | 每4小时 | 0:00/4:00/8:00/12:00/16:00/20:00 | 全市场RSI扫描 |
 | 候选确认 | 每小时 | :30分 | 4H RSI回落/弃盘点检测 |
-| 止盈止损 | 每小时 | :15分 | 所有持仓检查 |
+| 止盈止损 | 每小时 | :15分 | 所有持仓检查（realtime_monitor的备份） |
 | 费率扫描 | 结算前1h | 7:00/15:00/23:00 | 负费率币种扫描 |
 | 费率检查 | 结算后30min | 0:30/8:30/16:30 | 费率持仓平仓 |
 | 做多扫描 | 每2小时 | 奇数整点 | 突破回踩/插针信号 |
 | 健康检查 | 每6小时 | :45分 | 系统状态监控 |
 | 日报推送 | 每日 | 8:00 UTC | 持仓日报 |
 
+> **注意**：止盈止损检查在 scheduler 中作为备份机制（每小时），主力实时监控由 realtime_monitor.py 的 WebSocket/轮询模式承担（~100ms/5秒延迟）。
+
 ---
+
 
 
 ## 8. 参数配置表
@@ -903,7 +977,7 @@ open http://localhost:8080
 | 参数名 | 值 | 说明 |
 |--------|------|------|
 | RSI_PERIOD | 14 | RSI计算周期 |
-| DAILY_RSI_MIN | 78 | 日线RSI超买阈值 |
+| DAILY_RSI_MIN | 80 | 日线RSI超买阈值（回测优化：78→80） |
 | H4_RSI_ENTER | 70 | 4h RSI进入阈值 |
 | H4_RSI_DROP | 10 | 4h RSI回落点数要求 |
 | H4_RSI_PEAK_LOOKBACK | 10 | RSI峰值回溯K线数 |
@@ -929,9 +1003,9 @@ open http://localhost:8080
 | 参数名 | 值 | 说明 |
 |--------|------|------|
 | TP1_MULTIPLIER | 0.95 | TP1价格=入场×0.95(跌5%) |
-| TP2_MULTIPLIER | 0.90 | TP2价格=入场×0.90(跌10%) |
+| TP2_MULTIPLIER | 0.92 | TP2价格=入场×0.92(跌8%，回测优化：10%→8%提升触发率) |
 | TP1_CLOSE_RATIO | 0.5 | TP1平仓比例(50%) |
-| HARD_STOP_LOSS_PCT | 3.0 | 硬止损(涨3%平仓) |
+| HARD_STOP_LOSS_PCT | 5.0 | 硬止损(涨5%平仓，回测优化：3%→5%减少假突破) |
 | TRAIL_STOP_ACTIVATE_PCT | 3 | 移动止损激活阈值(%) |
 | TRAIL_STOP_DRAWDOWN_PCT | 0.10 | 移动止损回撤比例 |
 | MAX_HOLD_DAYS | 1 | 最大持仓天数 |
@@ -975,6 +1049,7 @@ open http://localhost:8080
 |--------|------|------|
 | BTC_FILTER_ENABLED | True | 是否启用 |
 | BTC_CRASH_THRESHOLD | -5.0 | BTC暴跌暂停做空(%) |
+| BTC_LONG_CRASH_THRESHOLD | -8.0 | BTC暴跌暂停做多(%) |
 | BTC_PUMP_THRESHOLD | 8.0 | BTC暴涨信号加分(%) |
 
 ### 8.11 自动复利
@@ -1025,6 +1100,7 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 | LONG_TP1_PCT | 0.05 | TP1(+5%) |
 | LONG_TP2_PCT | 0.10 | TP2(+10%) |
 | LONG_STOP_LOSS_PCT | 3.0 | 止损(-3%) |
+| LONG_MAX_HOLD_HOURS | 24 | 最大持仓时间(小时) |
 
 ### 8.14 低风险策略
 
@@ -1039,11 +1115,32 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 | LOW_RISK_GRID_SPACING_PCT | 0.5 | 网格间距(%) |
 | LOW_RISK_GRID_STAKE | 20 | 网格保证金(U) |
 | LOW_RISK_GRID_LEVERAGE | 5 | 网格杠杆 |
+| LOW_RISK_GRID_MAX_HOLD_HOURS | 4 | 网格最大持仓(小时) |
+| LOW_RISK_MEAN_REVERSION_LOOKBACK | 24 | 均值回归回看(小时) |
 | LOW_RISK_MEAN_REVERSION_THRESHOLD | 1.5 | 均值回归阈值(σ) |
 | LOW_RISK_MEAN_REVERSION_STAKE | 30 | 均值回归保证金 |
+| LOW_RISK_MEAN_REVERSION_LEVERAGE | 5 | 均值回归杠杆 |
+| LOW_RISK_MEAN_REVERSION_TARGET_PCT | 1.0 | 均值回归目标(%) |
+| LOW_RISK_MEAN_REVERSION_STOP_PCT | 1.5 | 均值回归止损(%) |
+| LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS | 8 | 均值回归最大持仓(小时) |
 | LOW_RISK_FUNDING_MAX_COINS | 3 | 费率收割最大币数 |
 
-### 8.15 周报配置
+### 8.15 候选池管理
+
+| 参数名 | 值 | 说明 |
+|--------|------|------|
+| CANDIDATE_EXPIRE_DAYS | 1 | 已触发候选保留天数 |
+
+### 8.16 回测参数
+
+| 参数名 | 值 | 说明 |
+|--------|------|------|
+| BACKTEST_SLIPPAGE_PCT | 0.1 | 滑点模拟(%) |
+| BACKTEST_FEE_PCT | 0.04 | taker手续费(每边%) |
+| BATCH_BACKTEST_DAYS | 90 | 批量回测默认天数 |
+| BATCH_CORRELATION_THRESHOLD | 0.7 | 相关性阈值 |
+
+### 8.17 周报配置
 
 | 参数名 | 值 | 说明 |
 |--------|------|------|
@@ -1052,7 +1149,7 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 | WEEKLY_ROI_GRADE_B | 5 | B级ROI阈值(%) |
 | WEEKLY_ROI_GRADE_C | 0 | C级ROI阈值(%) |
 
-### 8.16 OKX多交易所配置
+### 8.18 OKX多交易所配置
 
 | 参数名 | 值 | 说明 |
 |--------|------|------|
@@ -1068,6 +1165,7 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 | OKX_DEFAULT_LEVERAGE | 10 | OKX默认杠杆 |
 
 ---
+
 
 
 ## 9. 数据文件说明
@@ -1130,11 +1228,11 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
     "reason": "4h RSI从85回落至65",
     "strategy": "short_overbought",
     "take_profit_1": 0.0000117,
-    "take_profit_2": 0.0000111,
+    "take_profit_2": 0.0000113,
     "tp1_triggered": false,
     "tp1_locked_pnl": 0.0,
     "stake_remaining": 100,
-    "hard_stop_price": 0.0000127,
+    "hard_stop_price": 0.0000129,
     "best_pnl_pct": 0.0,
     "trail_stop_price": null,
     "max_hold_days": 1,
@@ -1170,6 +1268,33 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
     "total_pnl": 0.92,
     "closed_at": "2025-01-01T09:00:00+00:00",
     "close_reason": "结算完成（持仓9.0h）"
+  }
+]
+```
+
+#### low_risk_trades.json
+
+```json
+[
+  {
+    "id": "LR-GRID-BTC-L3-1704067200",
+    "symbol": "BTC/USDT",
+    "strategy": "grid",
+    "direction": "LONG",
+    "entry_price": 42500.0,
+    "stake": 20,
+    "leverage": 5,
+    "notional": 100,
+    "grid_level": 3,
+    "target_price": 42712.5,
+    "stop_price": 42075.0,
+    "max_hold_hours": 4.0,
+    "opened_at": "2025-01-01T12:00:00+00:00",
+    "status": "open",
+    "pnl": 0.0,
+    "current_price": null,
+    "closed_at": null,
+    "close_reason": null
   }
 ]
 ```
@@ -1210,12 +1335,18 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
     "best_trade": {"symbol": "PEPE/USDT", "pnl": 4.2},
     "worst_trade": {"symbol": "SHIB/USDT", "pnl": -2.1},
     "daily_breakdown": {"2024-12-30": 1.5, "2024-12-31": 2.0},
+    "avg_hold_hours": 12.5,
     "strategy_breakdown": {
       "short_overbought": {"count": 3, "pnl": 5.2, "wins": 2},
       "funding_arb": {"count": 4, "pnl": 2.1, "wins": 3}
     }
   },
-  "suggestions": ["费率套利贡献超过50%总收益，建议增加费率策略资金分配"]
+  "suggestions": ["费率套利贡献超过50%总收益，建议增加费率策略资金分配"],
+  "config_snapshot": {
+    "account_balance": 100,
+    "leverage": 10,
+    "default_stake": 100
+  }
 }
 ```
 
@@ -1225,13 +1356,13 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 
 ```python
 写入流程：
-  1. 获取排他锁（LOCK_EX）
-  2. 写入临时文件
+  1. 获取排他锁（LOCK_EX）— 通过 .lock 文件
+  2. 写入临时文件（tempfile.mkstemp）
   3. os.replace() 原子替换目标文件
   4. 释放锁
 
 读取流程：
-  1. 获取共享锁（LOCK_SH）
+  1. 获取共享锁（LOCK_SH）— 通过 .lock 文件
   2. 读取并解析JSON
   3. 释放锁
 ```
@@ -1246,7 +1377,7 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 
 ```bash
 # 安装依赖
-pip install ccxt python-dotenv requests flask flask-socketio
+pip install ccxt python-dotenv requests flask flask-socketio websocket-client
 
 # 创建 .env 文件
 TG_BOT_TOKEN=your_telegram_bot_token
@@ -1272,11 +1403,14 @@ python3 altcoin_scanner.py check
 # 做多扫描
 python3 long_scanner.py scan
 
-# 止盈止损检查
+# 止盈止损检查（定时备份）
 python3 altcoin_tracker.py --check-only
 
 # 日报推送
 python3 altcoin_tracker.py
+
+# 实时止盈止损监控（7×24运行）
+python3 realtime_monitor.py
 
 # 费率套利扫描
 python3 funding_arb.py scan
@@ -1296,6 +1430,9 @@ python3 low_risk_strategy.py scan --mode funding
 # 低风险持仓检查
 python3 low_risk_strategy.py check
 
+# 低风险状态查看
+python3 low_risk_strategy.py status
+
 # 周报生成
 python3 weekly_report.py
 
@@ -1310,7 +1447,7 @@ python3 dashboard.py --port 8080
 # 健康检查
 python3 health_check.py
 
-# 自动调度（包含所有任务）
+# 自动调度（包含所有定时任务）
 python3 scheduler.py
 ```
 
@@ -1364,19 +1501,19 @@ OKX_PASSPHRASE=your_passphrase
 
 #### 信号太少
 
-- 降低 DAILY_RSI_MIN（如 75 → 72）
+- 降低 DAILY_RSI_MIN（如 80 → 78）
 - 降低 H4_RSI_DROP（如 10 → 8）
 - 扩大 PRICE_MAX（如 1.0 → 2.0）
 - 降低 VOL_MIN（如 500000 → 300000）
 
 #### 止损太频繁
 
-- 增大 HARD_STOP_LOSS_PCT（如 3% → 5%）
+- 增大 HARD_STOP_LOSS_PCT（如 5% → 7%）
 - 注意：增大止损也增大单笔最大亏损
 
 #### 利润太少
 
-- 增大 TP2_MULTIPLIER（如 0.90 → 0.85）
+- 减小 TP2_MULTIPLIER（如 0.92 → 0.88，即跌12%再全仓平）
 - 增大 TRAIL_STOP_ACTIVATE_PCT 让利润多跑
 - 启用自动复利增加仓位
 
@@ -1413,7 +1550,7 @@ OKX_PASSPHRASE=your_passphrase
 
 **Q: 系统启动后没有任何交易？**
 A: 检查以下几点：
-1. 市场是否有符合条件的币（24h涨幅>10%，RSI>78）
+1. 市场是否有符合条件的币（24h涨幅>10%，RSI>80）
 2. 风控是否处于暂停状态（连亏或日亏达限）
 3. BTC过滤是否触发（BTC跌>5%）
 4. 查看日志：`docker-compose logs scheduler`
@@ -1426,6 +1563,9 @@ A: 访问仪表盘 http://localhost:8080，数据每10秒自动更新。
 
 **Q: 回测和实盘结果差异大？**
 A: 回测已包含0.1%滑点和0.04%手续费模拟，但实际市场流动性可能导致更大滑点。建议从小仓位开始验证。
+
+**Q: realtime_monitor 和 altcoin_tracker 有什么区别？**
+A: realtime_monitor 是7×24实时监控（WebSocket ~100ms延迟），altcoin_tracker 是scheduler中的定时备份检查（每小时一次）。两者共用同一套 evaluate_trade() 逻辑，realtime_monitor 是主力，tracker 是保底。
 
 **Q: 如何重置系统？**
 A: 删除所有 .json 数据文件即可重新开始：
@@ -1443,23 +1583,24 @@ rm -f risk_state.json weekly_report.json
 
 | 文件 | 行数 | 功能 |
 |------|------|------|
-| altcoin_scanner.py | ~300 | 做空扫描器（日线+4H两阶段） |
-| long_scanner.py | ~280 | 做多扫描器（突破回踩+插针） |
-| altcoin_tracker.py | ~250 | 持仓追踪（止盈止损执行） |
-| funding_arb.py | ~230 | 资金费率套利 |
-| low_risk_strategy.py | ~420 | 低风险日收（网格+均值回归+费率） |
-| signal_score.py | ~280 | 信号评分+BTC过滤 |
-| risk_control.py | ~180 | 风控模块 |
-| backtest.py | ~550 | 回测引擎（单币+网格+批量） |
-| weekly_report.py | ~300 | 策略周报 |
-| dashboard.py | ~1600 | 实时仪表盘（Flask+SocketIO） |
-| scheduler.py | ~100 | 任务调度器 |
-| config.py | ~180 | 参数配置中心 |
-| common.py | ~170 | 公共工具（JSON/TG/时间/复利） |
-| models.py | ~180 | 数据模型（Trade/FundingTrade） |
-| live_executor.py | ~300 | 实盘执行器（Binance+OKX双交易所） |
-| exchange_manager.py | ~320 | 多交易所管理（Binance+OKX数据/验证/执行） |
-| health_check.py | ~130 | 健康检查 |
+| altcoin_scanner.py | ~542 | 做空扫描器（日线+4H两阶段） |
+| long_scanner.py | ~437 | 做多扫描器（突破回踩+插针） |
+| altcoin_tracker.py | ~360 | 持仓追踪（止盈止损评估逻辑） |
+| realtime_monitor.py | ~437 | 实时监控器（WebSocket/轮询 7×24） |
+| funding_arb.py | ~415 | 资金费率套利 |
+| low_risk_strategy.py | ~730 | 低风险日收（网格+均值回归+费率） |
+| signal_score.py | ~363 | 信号评分+BTC过滤（做空+做多） |
+| risk_control.py | ~254 | 风控模块（含自动修正） |
+| backtest.py | ~1104 | 回测引擎（单币+网格+批量） |
+| weekly_report.py | ~487 | 策略周报（三策略聚合） |
+| dashboard.py | ~1690 | 实时仪表盘（Flask+SocketIO） |
+| scheduler.py | ~111 | 任务调度器 |
+| exchange_manager.py | ~483 | 多交易所管理（Binance+OKX数据/验证/执行） |
+| live_executor.py | ~418 | 实盘执行器（Binance+OKX双交易所统一接口） |
+| common.py | ~251 | 公共工具（JSON/TG/时间/复利/动态余额） |
+| models.py | ~198 | 数据模型（Trade/FundingTrade/Candidate） |
+| config.py | ~258 | 策略参数集中配置 |
+| health_check.py | ~184 | 健康检查 |
 
 ### B. 关键算法说明
 
@@ -1479,15 +1620,22 @@ RSI = 100 - 100/(1 + avg_gain/avg_loss)
 #### 动态余额计算
 
 ```python
-动态余额 = 初始本金(100U) + 做空已实现盈亏 + 费率已实现盈亏 + 低风险已实现盈亏
+动态余额 = 初始本金(100U) 
+         + 做空已实现盈亏（含TP1锁定利润）
+         + 费率已实现盈亏（total_pnl）
+         + 低风险已实现盈亏
+
+特殊处理：
+  TP1触发但交易未完全平仓（status='open'但tp1_locked_pnl>0）时，
+  锁定利润视为已实现，计入动态余额。
 ```
 
 ### C. Telegram推送消息类型
 
 | 事件 | 消息格式 | 频率 |
 |------|----------|------|
-| 做空开仓 | 含评分/入场价/止盈止损/触发原因 | 信号触发时 |
-| 做多开仓 | 含策略/入场价/止盈止损 | 信号触发时 |
+| 做空开仓 | 含评分/入场价/止盈止损/触发原因/OKX验证 | 信号触发时 |
+| 做多开仓 | 含策略/入场价/止盈止损/评分 | 信号触发时 |
 | TP1止盈 | 含锁定利润/剩余仓位 | 触发时 |
 | TP2全仓平 | 含总盈亏 | 触发时 |
 | 硬止损 | 含亏损金额 | 触发时 |
@@ -1495,15 +1643,33 @@ RSI = 100 - 100/(1 + avg_gain/avg_loss)
 | 时间止损 | 含持仓天数 | 触发时 |
 | 费率开仓 | 含费率/预期收入 | 开仓时 |
 | 费率平仓 | 含方向PnL/费率收入/总计 | 平仓时 |
+| 低风险开仓 | 含策略/方向/仓位 | 开仓时 |
+| 低风险平仓 | 含策略/原因/盈亏 | 平仓时 |
 | 风控暂停 | 含连亏次数/暂停时间 | 触发时 |
 | 日亏达限 | 含累计亏损 | 触发时 |
 | 日报 | 含所有持仓浮盈/风控状态 | 每日8:00 UTC |
-| 周报 | 含完整统计/建议 | 每周一 |
+| 周报 | 含完整统计/建议/策略明细 | 每周一 |
 | 健康告警 | 含异常项目列表 | 检测到异常时 |
 | BTC过滤 | 含BTC跌幅/暂停原因 | 触发时 |
+
+### D. v5.0 → v6.0 变更摘要
+
+| 变更项 | v5.0 | v6.0 | 原因 |
+|--------|------|------|------|
+| DAILY_RSI_MIN | 78 | 80 | 回测优化，减少假信号 |
+| TP2_MULTIPLIER | 0.90(-10%) | 0.92(-8%) | 回测优化，触发率提升4.4倍 |
+| HARD_STOP_LOSS_PCT | 3% | 5% | 回测优化，减少假突破洗盘 |
+| 批量回测币种 | 10个 | 8个 | 移除1000SATS、LUNC（历史亏损严重） |
+| 新增模块 | - | realtime_monitor.py | WebSocket实时止盈止损，延迟从60分→100ms |
+| Docker服务 | 2个 | 3个 | 新增realtime-monitor服务 |
+| 依赖 | 6个 | 7个 | 新增websocket-client |
+| 新增参数 | - | BTC_LONG_CRASH_THRESHOLD | 做多专用BTC暴跌过滤 |
+| 新增参数 | - | LONG_MAX_HOLD_HOURS | 做多最大持仓时间 |
+| 新增参数 | - | 多项LOW_RISK_*细化参数 | 低风险策略参数完善 |
+| live_executor | 仅Binance | Binance+OKX双交易所 | 统一execute_open/close接口 |
 
 ---
 
 *文档结束*
 
-*本文档基于系统代码v5.0自动生成，如有参数变更请同步更新。*
+*本文档基于系统代码v6.0更新，如有参数变更请同步更新。*
