@@ -59,8 +59,6 @@ function loadData() {
                 <div class="section-title">💰 盈亏分布</div>
                 <div class="table-wrapper"><table><tbody>
                     <tr><td>做空策略</td><td><b>${App.fmtPnl(stats.short_pnl||0)}</b></td></tr>
-                    <tr><td>费率套利</td><td><b>${App.fmtPnl(stats.funding_pnl||0)}</b></td></tr>
-                    <tr><td>低风险策略</td><td><b>${App.fmtPnl(stats.low_risk_pnl||0)}</b></td></tr>
                     <tr><td>最佳交易</td><td><b>${stats.best_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.best_trade?.pnl||0)}</td></tr>
                     <tr><td>最差交易</td><td><b>${stats.worst_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.worst_trade?.pnl||0)}</td></tr>
                     <tr><td>最大单日亏损</td><td>${App.fmtPnl(stats.max_drawdown_day||0)}</td></tr>
