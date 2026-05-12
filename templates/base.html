@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Shadow Trading Dashboard{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+{% block head_extra %}{% endblock %}
+</head>
+<body>
+<div class="container">
+    <!-- Header Bar -->
+    <div class="header-bar">
+        <div class="header-left">
+            <h1>{% block page_icon %}{% endblock %}{% block page_title %}Shadow Trading System{% endblock %}</h1>
+        </div>
+        <div class="header-right">
+            {% block header_controls %}{% endblock %}
+            <button class="notification-toggle" id="notification-toggle" title="事件通知">
+                🔔
+                <span class="notification-badge" id="notification-badge" style="display:none;">0</span>
+            </button>
+            <button class="theme-toggle" id="theme-toggle" title="切换主题">🌙</button>
+        </div>
+    </div>
+    <div class="subtitle">{% block subtitle %}{% endblock %}</div>
+
+    <!-- Desktop Navigation -->
+    <nav class="nav">
+        <a href="/">🏠 主面板</a>
+        <a href="/low-risk">📊 低风险策略</a>
+        <a href="/weekly-report">📋 周报</a>
+        <a href="/batch-backtest">🔬 批量回测</a>
+        <a href="/backtest">📈 单币回测</a>
+        <a href="/signal-scores">🎯 策略评分</a>
+    </nav>
+
+    <!-- Page Content -->
+    {% block content %}{% endblock %}
+</div>
+
+<!-- Notification Panel (Slide-out) -->
+<div class="notification-overlay" id="notification-overlay"></div>
+<div class="notification-panel" id="notification-panel">
+    <div class="notification-panel-header">
+        <h3>📋 事件日志</h3>
+        <button class="notification-panel-close" id="notification-close">✕</button>
+    </div>
+    <div class="notification-panel-body" id="notification-body">
+        <div class="empty-state" style="padding:20px;">加载中...</div>
+    </div>
+</div>
+
+<!-- Mobile Bottom Tab Bar -->
+<nav class="mobile-tab-bar">
+    <a href="/"><span class="tab-icon">🏠</span>主面板</a>
+    <a href="/low-risk"><span class="tab-icon">📊</span>低风险</a>
+    <a href="/weekly-report"><span class="tab-icon">📋</span>周报</a>
+    <a href="/batch-backtest"><span class="tab-icon">🔬</span>回测</a>
+    <a href="/signal-scores"><span class="tab-icon">🎯</span>评分</a>
+</nav>
+
+<!-- Core Scripts -->
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

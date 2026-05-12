@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}策略周报 - Shadow Trading{% endblock %}
+{% block page_title %}📋 策略周报{% endblock %}
+{% block subtitle %}自动生成的周度策略表现报告{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
+
+{% block content %}
+<div id="content"><div class="empty-state">加载中...</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadData() {
+    fetch('/api/weekly-report').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
+        if (!data || !data.stats) {
+            content.innerHTML = `<div class="empty-state"><p>暂无周报数据</p><p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 weekly_report.py</code></p></div>`;
+            return;
+        }
+        const meta = data.metadata || {};
+        const stats = data.stats;
+        const suggestions = data.suggestions || [];
+        const gradeEmoji = {'A':'🏆','B':'✅','C':'⚠️','F':'❌'}[meta.grade] || '❓';
+
+        let html = `
+        <div class="grid grid-5">
+            <div class="card">
+                <div class="card-header">评级</div>
+                <div class="card-value">${gradeEmoji} ${meta.grade||'-'}</div>
+                <div class="card-sub">ROI: ${(meta.roi_pct||0).toFixed(1)}%</div>
+            </div>
+            <div class="card">
+                <div class="card-header">总盈亏</div>
+                <div class="card-value ${App.pnlColor(stats.total_pnl)}">${App.fmtPnl(stats.total_pnl||0)}</div>
+            </div>
+            <div class="card">
+                <div class="card-header">交易数</div>
+                <div class="card-value blue">${stats.total_trades||0}</div>
+                <div class="card-sub">${stats.win_count||0}胜 / ${stats.loss_count||0}负</div>
+            </div>
+            <div class="card">
+                <div class="card-header">胜率</div>
+                <div class="card-value ${(stats.win_rate||0) >= 50 ? 'green' : 'yellow'}">${stats.win_rate||0}%</div>
+            </div>
+            <div class="card">
+                <div class="card-header">平均持仓</div>
+                <div class="card-value blue">${(stats.avg_hold_hours||0).toFixed(1)}h</div>
+            </div>
+        </div>
+
+        <div class="grid grid-2">
+            <div class="card">
+                <div class="section-title">💰 盈亏分布</div>
+                <div class="table-wrapper"><table><tbody>
+                    <tr><td>做空策略</td><td><b>${App.fmtPnl(stats.short_pnl||0)}</b></td></tr>
+                    <tr><td>费率套利</td><td><b>${App.fmtPnl(stats.funding_pnl||0)}</b></td></tr>
+                    <tr><td>低风险策略</td><td><b>${App.fmtPnl(stats.low_risk_pnl||0)}</b></td></tr>
+                    <tr><td>最佳交易</td><td><b>${stats.best_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.best_trade?.pnl||0)}</td></tr>
+                    <tr><td>最差交易</td><td><b>${stats.worst_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.worst_trade?.pnl||0)}</td></tr>
+                    <tr><td>最大单日亏损</td><td>${App.fmtPnl(stats.max_drawdown_day||0)}</td></tr>
+                </tbody></table></div>
+            </div>
+            <div class="card">
+                <div class="section-title">📊 策略明细</div>
+                <div class="table-wrapper"><table><thead><tr><th>策略</th><th>交易数</th><th>盈亏</th><th>胜率</th></tr></thead><tbody>`;
+
+        if (stats.strategy_breakdown) {
+            for (const [strat, s] of Object.entries(stats.strategy_breakdown)) {
+                const wr = s.count > 0 ? (s.wins / s.count * 100).toFixed(0) : 0;
+                html += `<tr><td><b>${strat}</b></td><td>${s.count}</td><td>${App.fmtPnl(s.pnl)}</td><td>${wr}%</td></tr>`;
+            }
+        }
+        html += `</tbody></table></div></div></div>`;
+
+        // Daily breakdown
+        if (stats.daily_breakdown && Object.keys(stats.daily_breakdown).length > 0) {
+            html += `<div class="card" style="margin-top:12px;"><div class="section-title">📅 每日盈亏</div><div class="table-wrapper"><table>
+                <thead><tr><th>日期</th><th>盈亏</th><th>可视化</th></tr></thead><tbody>`;
+            const maxAbs = Math.max(...Object.values(stats.daily_breakdown).map(v => Math.abs(v)), 1);
+            for (const [day, pnl] of Object.entries(stats.daily_breakdown)) {
+                const barW = Math.abs(pnl) / maxAbs * 100;
+                const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                html += `<tr><td>${day}</td><td>${App.fmtPnl(pnl)}</td>
+                    <td><div style="height:12px;width:${barW}%;background:${color};border-radius:2px;"></div></td></tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
+
+        // Suggestions
+        if (suggestions.length > 0) {
+            html += `<div class="card" style="margin-top:12px;"><div class="section-title">💡 策略建议</div><ul style="padding-left:20px;">`;
+            suggestions.forEach(s => { html += `<li style="margin-bottom:6px;font-size:0.85rem;">${s}</li>`; });
+            html += `</ul></div>`;
+        }
+
+        // Metadata
+        html += `<div class="card-sub" style="margin-top:12px;text-align:center;">
+            报告范围: ${(meta.week_start||'').slice(0,10)} ~ ${(meta.week_end||'').slice(0,10)} |
+            生成时间: ${(meta.generated_at||'').slice(0,16).replace('T',' ')} UTC</div>`;
+
+        content.innerHTML = html;
+    }).catch(e => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
+});
+</script>
+{% endblock %}

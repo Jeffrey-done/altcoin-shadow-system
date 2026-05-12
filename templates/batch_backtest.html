@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}批量回测 - Shadow Trading{% endblock %}
+{% block page_title %}🔬 批量回测结果{% endblock %}
+{% block subtitle %}多币种对比 | 相关性分析 | 推荐组合{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
+
+{% block content %}
+<div id="content"><div class="empty-state">加载中...</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadData() {
+    fetch('/api/batch-backtest').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
+        if (!data || !data.report) {
+            content.innerHTML = `<div class="empty-state"><p>暂无批量回测数据</p>
+                <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --batch</code></p></div>`;
+            return;
+        }
+
+        let warnHtml = '';
+        // Check for parameter changes
+        if (data.current_config && data.config_snapshot) {
+            const cur = data.current_config;
+            const snap = data.config_snapshot;
+            const mismatches = [];
+            if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI阈值: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
+            if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
+            if (snap.tp2_pct && snap.tp2_pct !== cur.tp2_pct) mismatches.push(`TP2: ${snap.tp2_pct}%→${cur.tp2_pct}%`);
+            if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
+            if (mismatches.length > 0) {
+                warnHtml = `<div class="card" style="border-color:var(--yellow);margin-bottom:12px;"><b style="color:var(--yellow);">⚠️ 参数已变更，数据可能过期</b><br>
+                    <span class="card-sub">变更项: ${mismatches.join(' | ')}<br>请重新运行: <code>python3 backtest.py --batch</code></span></div>`;
+            }
+        }
+
+        const report = data.report;
+        const summary = report.summary || {};
+        const rankings = report.rankings || [];
+        const recommended = report.recommended_portfolio || [];
+        const highCorr = report.high_correlation_pairs || {};
+
+        let html = warnHtml + `
+        <div class="grid grid-4">
+            <div class="card"><div class="card-header">币种数量</div><div class="card-value blue">${summary.total_coins||0}</div></div>
+            <div class="card"><div class="card-header">总交易数</div><div class="card-value">${summary.total_trades||0}</div></div>
+            <div class="card"><div class="card-header">整体胜率</div><div class="card-value ${(summary.overall_win_rate||0) >= 50 ? 'green' : 'yellow'}">${summary.overall_win_rate||0}%</div></div>
+            <div class="card"><div class="card-header">总盈亏</div><div class="card-value ${App.pnlColor(summary.total_pnl)}">${App.fmtPnl(summary.total_pnl||0)}</div></div>
+        </div>`;
+
+        // Rankings table
+        html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">📋 各币种表现</div><div class="table-wrapper"><table>
+            <thead><tr><th>排名</th><th>币种</th><th>评分</th><th>交易数</th><th>胜率</th><th>盈亏比</th><th>盈亏</th><th>最大回撤</th><th>夏普率</th></tr></thead><tbody>`;
+        rankings.forEach((coin, i) => {
+            const cls = coin.total_pnl > 0 ? 'green' : 'red';
+            html += `<tr><td><b>${i+1}</b></td><td><b>${coin.symbol}</b></td><td>${coin.score.toFixed(4)}</td>
+                <td>${coin.total_trades}</td><td>${coin.win_rate}%</td><td>${coin.profit_loss_ratio.toFixed(2)}x</td>
+                <td class="${cls}"><b>${coin.total_pnl >= 0 ? '+' : ''}${coin.total_pnl.toFixed(2)}U</b></td>
+                <td>${coin.max_drawdown.toFixed(1)}%</td><td>${coin.sharpe_ratio.toFixed(2)}</td></tr>`;
+        });
+        html += `</tbody></table></div></div>`;
+
+        // Recommended portfolio
+        if (recommended.length > 0) {
+            html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">🏆 推荐组合（低相关性 Top 币种）</div>
+                <div class="grid grid-5">`;
+            recommended.forEach((coin, i) => {
+                html += `<div class="card" style="border-color:var(--green);">
+                    <div class="card-header">#${i+1} ${coin.symbol}</div>
+                    <div style="font-size:0.8rem;">评分: <b>${coin.score.toFixed(4)}</b></div>
+                    <div style="font-size:0.8rem;">胜率: ${coin.win_rate}%</div>
+                    <div style="font-size:0.8rem;">盈亏比: ${coin.profit_loss_ratio.toFixed(2)}</div>
+                    <div style="font-size:0.8rem;" class="${App.pnlColor(coin.total_pnl)}">PnL: ${coin.total_pnl >= 0?'+':''}${coin.total_pnl.toFixed(1)}U</div>
+                </div>`;
+            });
+            html += `</div></div>`;
+        }
+
+        // High correlation pairs
+        if (Object.keys(highCorr).length > 0) {
+            html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">⚠️ 高相关性币对</div><div class="table-wrapper"><table>
+                <thead><tr><th>币对</th><th>相关系数</th><th>建议</th></tr></thead><tbody>`;
+            for (const [pair, val] of Object.entries(highCorr)) {
+                const [a, b] = pair.split('|');
+                html += `<tr><td>${a} ↔ ${b}</td><td><b>${val.toFixed(4)}</b></td><td class="yellow">避免同时开仓</td></tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
+
+        html += `<div class="card-sub" style="margin-top:12px;text-align:center;">
+            回测天数: ${data.days||90}天 | 生成时间: ${(data.timestamp||'').slice(0,16).replace('T',' ')} UTC</div>`;
+
+        content.innerHTML = html;
+    }).catch(e => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
+});
+</script>
+{% endblock %}

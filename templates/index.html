@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+
+{% block title %}Shadow Trading Dashboard{% endblock %}
+{% block page_icon %}<span class="live-dot"></span>{% endblock %}
+{% block page_title %}Shadow Trading System{% endblock %}
+{% block subtitle %}<span id="timestamp">连接中...</span>{% endblock %}
+
+{% block header_controls %}
+<span id="connection-status" style="font-size:0.75rem;color:var(--text-secondary);">⏳</span>
+{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Summary Cards -->
+<div class="grid grid-4">
+    <div class="card">
+        <div class="card-header">今日盈亏</div>
+        <div class="card-value" id="today-pnl">--</div>
+        <div class="card-sub">全策略合计</div>
+        <div id="today-trend"></div>
+    </div>
+    <div class="card">
+        <div class="card-header">累计盈亏</div>
+        <div class="card-value" id="total-pnl">--</div>
+        <div class="card-sub">总交易 <span id="total-trades">0</span> 单 <span id="roi-label"></span></div>
+    </div>
+    <div class="card">
+        <div class="card-header">动态余额</div>
+        <div class="card-value" id="balance">--</div>
+        <div class="card-sub" id="leverage-info">--</div>
+    </div>
+    <div class="card">
+        <div class="card-header">胜率</div>
+        <div class="card-value" id="win-rate">--</div>
+        <div class="card-sub">盈利单/总单</div>
+    </div>
+</div>
+
+<!-- 资金池分配 -->
+<div class="card" style="margin-bottom:12px;">
+    <div class="section-title">💰 资金池分配</div>
+    <div class="pool-bar" id="pool-bar"></div>
+    <div class="grid grid-4" id="pool-details" style="margin-top:8px;"></div>
+</div>
+
+<!-- 做空持仓 + 做多持仓 -->
+<div class="grid grid-2">
+    <div class="card" id="short-positions-table" data-direction="SHORT">
+        <div class="section-title">🔴 做空持仓 <span class="card-sub" id="short-pnl-info"></span></div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr>
+                    <th>币种</th><th>入场</th><th>现价</th>
+                    <th class="sortable" data-sort="pnl_pct">盈亏%</th>
+                    <th class="sortable" data-sort="pnl_u">盈亏U</th>
+                    <th class="sortable" data-sort="hold_time">持仓</th>
+                    <th>状态</th>
+                </tr></thead>
+                <tbody id="short-trades"></tbody>
+            </table>
+        </div>
+        <div class="card-sub" id="short-empty" style="padding:12px;text-align:center;display:none;">暂无做空持仓</div>
+    </div>
+    <div class="card" id="long-positions-table" data-direction="LONG">
+        <div class="section-title">🟢 做多持仓 <span class="card-sub" id="long-pnl-info"></span></div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr>
+                    <th>币种</th><th>入场</th><th>现价</th>
+                    <th class="sortable" data-sort="pnl_pct">盈亏%</th>
+                    <th class="sortable" data-sort="pnl_u">盈亏U</th>
+                    <th class="sortable" data-sort="hold_time">持仓</th>
+                    <th>策略</th>
+                </tr></thead>
+                <tbody id="long-trades"></tbody>
+            </table>
+        </div>
+        <div class="card-sub" id="long-empty" style="padding:12px;text-align:center;display:none;">暂无做多持仓</div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <!-- Risk Control -->
+    <div class="card">
+        <div class="section-title">🛡️ 风控状态 <span class="sparkline-container"><canvas id="risk-sparkline" width="100" height="24"></canvas></span></div>
+        <div id="risk-content"></div>
+    </div>
+    <!-- Funding Arbitrage -->
+    <div class="card">
+        <div class="section-title">💰 费率套利</div>
+        <div style="margin-bottom:8px;">
+            <span class="card-sub">今日：</span><span id="funding-today" class="green">--</span>
+            <span class="card-sub" style="margin-left:12px;">累计：</span><span id="funding-total" class="green">--</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>币种</th><th>费率</th><th>方向PnL</th><th>费率收入</th><th>总计</th></tr></thead>
+                <tbody id="funding-trades"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <!-- Low Risk Summary -->
+    <div class="card">
+        <div class="section-title">📊 低风险策略 <a href="/low-risk" style="font-size:0.75rem;margin-left:8px;">详情→</a></div>
+        <div style="margin-bottom:8px;">
+            <span class="card-sub">今日：</span><span id="lr-today" class="green">--</span>
+            <span class="card-sub" style="margin-left:12px;">累计：</span><span id="lr-total" class="green">--</span>
+            <span class="card-sub" style="margin-left:12px;">持仓：</span><span id="lr-open-count">0</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>币种</th><th>策略</th><th>方向</th><th>入场</th><th>浮盈</th></tr></thead>
+                <tbody id="lr-trades"></tbody>
+            </table>
+        </div>
+        <div class="card-sub" id="lr-empty" style="padding:12px;text-align:center;display:none;">暂无低风险持仓</div>
+    </div>
+    <!-- Candidates + Funnel -->
+    <div class="card">
+        <div class="section-title">📋 候选池</div>
+        <div id="funnel-container"></div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>币种</th><th>RSI(1D)</th><th>24h%</th><th>OI变化</th><th>妖币分</th><th>状态</th></tr></thead>
+                <tbody id="candidates"></tbody>
+            </table>
+        </div>
+        <div class="card-sub" id="cand-empty" style="padding:12px;text-align:center;display:none;">候选池为空</div>
+    </div>
+</div>
+
+<!-- PnL Chart -->
+<div class="card" style="margin-top:12px;">
+    <div class="section-title">📈 历史盈亏曲线</div>
+    <div class="chart-controls">
+        <button class="chart-range-btn" data-range="7d">7天</button>
+        <button class="chart-range-btn" data-range="30d">30天</button>
+        <button class="chart-range-btn active" data-range="all">全部</button>
+        <span style="margin-left:auto;font-size:0.7rem;color:var(--text-secondary);">🟢 累计 | 🔵 每日</span>
+    </div>
+    <div style="height:240px;position:relative;">
+        <canvas id="pnl-chart"></canvas>
+        <div class="chart-tooltip" id="chart-tooltip"></div>
+    </div>
+</div>
+
+<!-- Closed Trades -->
+<div class="card" style="margin-top:12px;">
+    <div class="section-title">✅ 最近平仓记录</div>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>币种</th><th>方向</th><th>入场</th><th>平仓价</th><th>盈亏</th><th>原因</th><th>时间</th></tr></thead>
+            <tbody id="closed-trades"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chart.js') }}"></script>
+<script src="{{ url_for('static', filename='js/positions.js') }}"></script>
+<script src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
+<script src="{{ url_for('static', filename='js/funnel.js') }}"></script>
+<script>
+// SocketIO connection
+const socket = io();
+let lastDashboardData = null;
+
+function updateDashboard(data) {
+    lastDashboardData = data;
+
+    // Timestamp
+    const ts = data.timestamp ? data.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : '--';
+    document.getElementById('timestamp').textContent = `最后更新: ${ts}`;
+
+    // Account summary
+    const a = data.account;
+    const todayTotal = a.today_pnl + (data.funding?.today_pnl || 0);
+    document.getElementById('today-pnl').innerHTML = App.fmtPnl(todayTotal);
+    document.getElementById('today-pnl').className = 'card-value ' + App.pnlColor(todayTotal);
+
+    // Yesterday comparison trend
+    const yesterdayPnl = data.yesterday_pnl;
+    document.getElementById('today-trend').innerHTML = App.trendLabel(todayTotal, yesterdayPnl);
+
+    const totalAll = a.total_pnl + (data.funding?.total_pnl || 0);
+    document.getElementById('total-pnl').innerHTML = App.fmtPnl(totalAll);
+    document.getElementById('total-pnl').className = 'card-value ' + App.pnlColor(totalAll);
+    document.getElementById('total-trades').textContent = a.total_trades;
+    document.getElementById('roi-label').innerHTML = App.roiLabel(totalAll, a.initial_balance);
+
+    document.getElementById('balance').innerHTML = `${a.balance}U`;
+    document.getElementById('balance').className = 'card-value ' + (a.balance >= a.initial_balance ? 'green' : 'red');
+    document.getElementById('leverage-info').textContent = `${a.leverage}x杠杆 | 复利仓: ${data.pool?.compound_stake || '--'}U`;
+
+    document.getElementById('win-rate').textContent = a.win_rate + '%';
+    document.getElementById('win-rate').className = 'card-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
+
+    // Pool allocation
+    const pool = data.pool || {};
+    document.getElementById('pool-bar').innerHTML = `
+        <div class="pool-segment" style="width:${pool.short_pct||60}%;background:var(--red);">做空${pool.short_pct||60}%</div>
+        <div class="pool-segment" style="width:${pool.funding_arb_pct||20}%;background:var(--yellow);">费率${pool.funding_arb_pct||20}%</div>
+        <div class="pool-segment" style="width:${pool.low_risk_pct||20}%;background:var(--green);">低风险${pool.low_risk_pct||20}%</div>
+    `;
+    document.getElementById('pool-details').innerHTML = `
+        <div><span class="card-sub">做空池：</span><b>${pool.short||0}U</b> <span class="card-sub">占用 ${pool.short_used||0}U</span></div>
+        <div><span class="card-sub">费率池：</span><b>${pool.funding_arb||0}U</b> <span class="card-sub">占用 ${pool.funding_used||0}U</span></div>
+        <div><span class="card-sub">低风险池：</span><b>${pool.low_risk||0}U</b> <span class="card-sub">占用 ${pool.low_risk_used||0}U</span></div>
+        <div><span class="card-sub">做多占用：</span><b>${pool.long_used||0}U</b></div>
+    `;
+
+    // Short positions
+    const st = data.short_trades || {};
+    document.getElementById('short-pnl-info').innerHTML = `今日 ${App.fmtPnl(st.today_pnl||0)} | 累计 ${App.fmtPnl(st.total_pnl||0)}`;
+    PositionTable.render(st.open, 'short-trades', 'short-empty', 'SHORT', data.config);
+
+    // Long positions
+    const lt = data.long_trades || {};
+    document.getElementById('long-pnl-info').innerHTML = `今日 ${App.fmtPnl(lt.today_pnl||0)} | 累计 ${App.fmtPnl(lt.total_pnl||0)}`;
+    PositionTable.render(lt.open, 'long-trades', 'long-empty', 'LONG', data.config);
+
+    // Low risk summary
+    const lr = data.low_risk || {};
+    document.getElementById('lr-today').innerHTML = App.fmtPnl(lr.today_pnl || 0);
+    document.getElementById('lr-total').innerHTML = App.fmtPnl(lr.total_pnl || 0);
+    document.getElementById('lr-open-count').textContent = (lr.open||[]).length;
+    const lrTbody = document.getElementById('lr-trades');
+    const lrEmpty = document.getElementById('lr-empty');
+    if (!lr.open || lr.open.length === 0) {
+        lrTbody.innerHTML = '';
+        lrEmpty.style.display = 'block';
+    } else {
+        lrEmpty.style.display = 'none';
+        lrTbody.innerHTML = lr.open.map(t => `<tr>
+            <td><b>${t.symbol}</b></td>
+            <td>${t.strategy}</td>
+            <td>${t.direction}</td>
+            <td>${(t.entry_price||0).toFixed(6)}</td>
+            <td>${App.fmtPnl(t.pnl||0)}</td>
+        </tr>`).join('');
+    }
+
+    // Risk control
+    const risk = data.risk || {};
+    const cfg = data.config || {};
+    const dailyLoss = risk.daily_loss || 0;
+    const dailyMax = cfg.max_daily_loss || 30;
+    const dailyPct = Math.min(dailyLoss / dailyMax * 100, 100);
+    const trades_opened = risk.daily_trades_opened || 0;
+    const maxTrades = cfg.max_daily_trades || 2;
+    const consLoss = risk.consecutive_losses || 0;
+    const paused = risk.paused_until ? true : false;
+    let statusBadge = '<span class="badge badge-ok">正常</span>';
+    if (paused) statusBadge = '<span class="badge badge-stop">暂停中</span>';
+    else if (dailyLoss >= dailyMax) statusBadge = '<span class="badge badge-stop">今日停止</span>';
+    else if (dailyLoss >= dailyMax * 0.7) statusBadge = '<span class="badge badge-warn">接近限额</span>';
+    const barColor = dailyPct > 80 ? 'var(--red)' : dailyPct > 50 ? 'var(--yellow)' : 'var(--green)';
+
+    let riskHtml = `
+        <div style="margin-bottom:12px;">状态：${statusBadge}</div>
+        <div style="margin-bottom:8px;"><span>今日亏损：${dailyLoss.toFixed(1)} / ${dailyMax}U</span>
+            <div class="risk-bar"><div class="risk-bar-fill" style="width:${dailyPct}%;background:${barColor}"></div></div></div>
+        <div style="margin-bottom:8px;">今日开仓：${trades_opened} / ${maxTrades} 次</div>
+        <div style="margin-bottom:8px;">连续亏损：${consLoss} / 3 次</div>
+        <div style="margin-bottom:8px;">持仓占用：${(risk.total_open_stake||0).toFixed(0)}U</div>
+        ${paused ? '<div class="red" style="margin-top:8px;">暂停至：' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}`;
+
+    // Last pause timestamp
+    if (data.risk_last_pause) {
+        riskHtml += `<div style="margin-top:6px;font-size:0.75rem;color:var(--text-secondary);">上次暂停: ${App.formatTime(data.risk_last_pause)}</div>`;
+    }
+    document.getElementById('risk-content').innerHTML = riskHtml;
+
+    // Risk sparkline (7-day history)
+    if (data.risk_history && data.risk_history.length > 0) {
+        drawSparkline('risk-sparkline', data.risk_history, 100, 24);
+    }
+
+    // Funding
+    document.getElementById('funding-today').innerHTML = App.fmtPnl(data.funding?.today_pnl || 0);
+    document.getElementById('funding-total').innerHTML = App.fmtPnl(data.funding?.total_pnl || 0);
+    const fundingTbody = document.getElementById('funding-trades');
+    const allFunding = [...(data.funding?.open || []), ...(data.funding?.closed || [])].slice(-8);
+    fundingTbody.innerHTML = allFunding.map(t => {
+        const badge = t.status === 'open' ? '<span class="badge badge-open">持仓</span>' : '<span class="badge badge-closed">已平</span>';
+        return `<tr><td>${t.symbol} ${badge}</td><td>${(t.funding_rate||0).toFixed(4)}%</td>
+            <td>${App.fmtPnl(t.pnl||0)}</td><td>${App.fmtPnl(t.funding_income||0)}</td><td><b>${App.fmtPnl(t.total_pnl||0)}</b></td></tr>`;
+    }).join('');
+
+    // Candidates + Funnel
+    const candTbody = document.getElementById('candidates');
+    const candEmpty = document.getElementById('cand-empty');
+    if (!data.candidates || data.candidates.length === 0) {
+        candTbody.innerHTML = ''; candEmpty.style.display = 'block';
+    } else {
+        candEmpty.style.display = 'none';
+        candTbody.innerHTML = data.candidates.slice(0, 15).map(c => {
+            const badge = c.triggered ? '<span class="badge badge-closed">已触发</span>' : '<span class="badge badge-open">等待中</span>';
+            const yao = c.yao_score >= 2 ? '🔥' : (c.yao_score === 1 ? '⚡' : '📌');
+            return `<tr><td>${c.symbol}</td><td><b>${c.rsi_1d}</b></td><td>${App.fmtPct(c.pct24h)}</td>
+                <td>${(c.oi_change||0).toFixed(0)}%</td><td>${yao} ${c.yao_score}/3</td><td>${badge}</td></tr>`;
+        }).join('');
+    }
+    CandidateFunnel.render(data.candidates);
+
+    // Closed trades (combined short + long)
+    const closedTbody = document.getElementById('closed-trades');
+    const allClosed = [...(st.closed||[]), ...(lt.closed||[])].sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
+    closedTbody.innerHTML = allClosed.map(t => {
+        const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
+        return `<tr><td><b>${t.symbol}</b></td><td>${t.direction||'SHORT'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
+            <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
+            <td>${t.close_reason || '--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
+    }).join('');
+}
+
+// SocketIO events
+socket.on('update', function(data) {
+    updateDashboard(data);
+    PnlChart.update(data.pnl_chart);
+    BinanceWS.lastData = data;
+
+    // Collect position symbols and start Binance WS
+    const symbols = new Set();
+    (data.short_trades?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.long_trades?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.low_risk?.open || []).forEach(t => symbols.add(t.symbol));
+    (data.funding?.open || []).forEach(t => symbols.add(t.symbol));
+    symbols.delete('');
+    BinanceWS.updateSymbols([...symbols]);
+});
+
+socket.on('connect', () => {
+    document.getElementById('timestamp').textContent = '已连接，等待数据...';
+    document.getElementById('connection-status').textContent = '🟢 已连接';
+});
+socket.on('disconnect', () => {
+    document.getElementById('timestamp').textContent = '⚠️ 连接断开，重连中...';
+    document.getElementById('connection-status').textContent = '🔴 断开';
+});
+
+// Binance WS price callback
+BinanceWS.onPriceUpdate = function(symbol, price) {
+    PositionTable.updatePrice(symbol, price, lastDashboardData);
+};
+
+// Init chart and sort headers
+document.addEventListener('DOMContentLoaded', () => {
+    PnlChart.init('pnl-chart', 'chart-tooltip');
+    PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
+        if (lastDashboardData) {
+            PositionTable.render(lastDashboardData.short_trades?.open, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
+        }
+    });
+    PositionTable.initSortHeaders('long-positions-table', 'long-trades', () => {
+        if (lastDashboardData) {
+            PositionTable.render(lastDashboardData.long_trades?.open, 'long-trades', 'long-empty', 'LONG', lastDashboardData.config);
+        }
+    });
+});
+</script>
+{% endblock %}

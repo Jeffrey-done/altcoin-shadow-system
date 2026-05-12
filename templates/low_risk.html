@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}低风险策略 - Shadow Trading{% endblock %}
+{% block page_title %}📊 低风险日收策略{% endblock %}
+{% block subtitle %}网格交易 | 均值回归 | 多币费率收割{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
+
+{% block content %}
+<div id="content"><div class="empty-state">加载中...</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadData() {
+    fetch('/api/low-risk').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
+        const target = data.config?.daily_target || 2;
+        const progress = target > 0 ? Math.min((data.today_pnl / target) * 100, 100) : 0;
+        const barColor = progress >= 100 ? 'var(--green)' : progress >= 50 ? 'var(--yellow)' : 'var(--accent)';
+
+        let html = `
+        <div class="grid grid-4">
+            <div class="card">
+                <div class="card-header">今日盈亏</div>
+                <div class="card-value ${App.pnlColor(data.today_pnl)}">${data.today_pnl >= 0 ? '+' : ''}${data.today_pnl.toFixed(4)}U</div>
+                <div class="card-sub">目标: ${target.toFixed(2)}U</div>
+            </div>
+            <div class="card">
+                <div class="card-header">累计盈亏</div>
+                <div class="card-value ${App.pnlColor(data.total_pnl)}">${data.total_pnl >= 0 ? '+' : ''}${data.total_pnl.toFixed(4)}U</div>
+            </div>
+            <div class="card">
+                <div class="card-header">当前持仓</div>
+                <div class="card-value blue">${(data.open||[]).length}</div>
+                <div class="card-sub">上限: ${data.config?.max_positions || 5}</div>
+            </div>
+            <div class="card">
+                <div class="card-header">今日进度</div>
+                <div class="progress-bar"><div class="progress-bar-fill" style="width:${Math.max(0,progress)}%;background:${barColor}"></div>
+                    <span class="progress-bar-label">${progress.toFixed(1)}%</span></div>
+            </div>
+        </div>`;
+
+        // Strategy stats
+        if (data.strategy_stats && Object.keys(data.strategy_stats).length > 0) {
+            html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">📊 策略统计</div>
+                <div class="table-wrapper"><table>
+                <thead><tr><th>策略</th><th>交易数</th><th>盈亏</th><th>胜率</th></tr></thead><tbody>`;
+            for (const [strat, s] of Object.entries(data.strategy_stats)) {
+                const wr = s.count > 0 ? (s.wins / s.count * 100).toFixed(0) : 0;
+                html += `<tr><td><b>${strat}</b></td><td>${s.count}</td><td>${App.fmtPnl(s.pnl)}</td><td>${wr}%</td></tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
+
+        // Open positions
+        html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">🔄 持仓中 (${(data.open||[]).length})</div>`;
+        if (data.open && data.open.length > 0) {
+            html += `<div class="table-wrapper"><table><thead><tr><th>币种</th><th>策略</th><th>方向</th><th>入场</th><th>目标</th><th>止损</th><th>浮盈</th></tr></thead><tbody>`;
+            data.open.forEach(t => {
+                html += `<tr><td><b>${t.symbol}</b></td><td>${t.strategy}</td><td>${t.direction}</td>
+                    <td>${(t.entry_price||0).toFixed(6)}</td><td>${(t.target_price||0).toFixed(6)}</td>
+                    <td>${(t.stop_price||0).toFixed(6)}</td><td>${App.fmtPnl(t.pnl||0)}</td></tr>`;
+            });
+            html += `</tbody></table></div>`;
+        } else {
+            html += `<div class="card-sub" style="padding:12px;text-align:center;">暂无持仓</div>`;
+        }
+        html += `</div>`;
+
+        // Closed trades
+        html += `<div class="card"><div class="section-title">✅ 最近平仓</div><div class="table-wrapper"><table>
+            <thead><tr><th>币种</th><th>策略</th><th>方向</th><th>盈亏</th><th>原因</th><th>时间</th></tr></thead><tbody>`;
+        (data.closed||[]).slice().reverse().slice(0,20).forEach(t => {
+            html += `<tr><td><b>${t.symbol}</b></td><td>${t.strategy}</td><td>${t.direction}</td>
+                <td><b>${App.fmtPnl(t.pnl||0)}</b></td><td>${t.close_reason||'--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
+        });
+        html += `</tbody></table></div></div>`;
+
+        content.innerHTML = html;
+    }).catch(e => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
+});
+</script>
+{% endblock %}
