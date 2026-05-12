@@ -37,6 +37,17 @@ def main_loop():
     """主调度循环，每分钟检查一次"""
     logger.info("=== 调度器启动 ===")
 
+    # 启动时对账一次：修正风控状态与交易记录的漂移（幽灵亏损预防）
+    try:
+        from risk_control import reconcile_risk_state
+        diff = reconcile_risk_state(notify=True)
+        if diff:
+            logger.warning(f"启动对账修正了 {len(diff)} 项风控字段: {list(diff.keys())}")
+        else:
+            logger.info("启动对账：风控状态一致 ✅")
+    except Exception as e:
+        logger.error(f"启动对账异常: {e}")
+
     last_scan_hour = -1
     last_check_min = -1
     last_tracker_min = -1

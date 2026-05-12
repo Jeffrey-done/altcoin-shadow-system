@@ -21,7 +21,7 @@ import config
 from common import (
     TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
-    utcnow_iso, hold_days, hold_hours,
+    utcnow_iso, hold_days, hold_hours, LockedJsonFile,
 )
 from models import Trade
 from risk_control import record_trade_closed, get_risk_summary
@@ -288,21 +288,20 @@ def run(check_only: bool = False):
     统一入口：
     - check_only=True：只检查止盈 / 止损触发，触发时单独推送
     - check_only=False：检查 + 推送日报汇总
+
+    改为持锁 read-modify-write，防止与 realtime_monitor / scanner 并发覆盖。
+    副作用（record_trade_closed / send_tg）一律在 save() 成功后再执行。
     """
+    # 先用无锁读判断是否有持仓，避免空仓时也要抢锁
     trades_raw = load_json(TRADES_FILE, [])
     if not trades_raw:
         logger.info("无交易记录")
         return
-
-    trades = [Trade.from_dict(t) for t in trades_raw]
-    open_trades = [t for t in trades if t.status == 'open']
-
-    if not open_trades:
+    if not any(t.get('status') == 'open' for t in trades_raw):
         logger.info("无持仓中的空单")
         return
 
     binance = ccxt.binance({'enableRateLimit': True})
-    any_updated = False
 
     # 日报行
     lines = [
@@ -312,77 +311,101 @@ def run(check_only: bool = False):
         "",
     ]
 
-    for trade in open_trades:
-        try:
-            current = binance.fetch_ticker(trade.symbol)['last']
-        except Exception as e:
-            logger.warning(f"获取价格失败 ({trade.symbol}): {e}")
-            current = trade.entry_price
+    # 持锁 RMW：整段读-改-写在同一把锁里
+    pending_risk_updates = []   # [(pnl_usd, stake_remaining), ...]
+    pending_alerts = []         # [alert_msg, ...]
 
-        result = evaluate_trade(trade, current)
+    with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+        trades = [Trade.from_dict(t) for t in trades_raw]
+        open_trades = [t for t in trades if t.status == 'open']
 
-        if result.updated:
-            any_updated = True
+        if not open_trades:
+            # 进锁后发现状态变了（别的进程刚平完）
+            logger.info("获锁后无持仓中的空单")
+            return
 
-        # 平仓时记录风控
-        if result.closed:
-            record_trade_closed(result.pnl_usd, trade.stake_remaining)
+        any_updated = False
 
-        # 触发推送
-        if result.alert_msg:
-            send_tg(result.alert_msg)
+        for trade in open_trades:
+            try:
+                current = binance.fetch_ticker(trade.symbol)['last']
+            except Exception as e:
+                logger.warning(f"获取价格失败 ({trade.symbol}): {e}")
+                current = trade.entry_price
 
-        # 日报内容
-        if not check_only:
-            if result.close_reason:
-                lines.append(f"{result.close_reason} <b>{trade.symbol}</b>")
-                lines.append(f"   入场: {trade.entry_price:.5f} → 现价: {current:.5f}")
-                lines.append(f"   盈亏: <b>{result.pnl_usd:+.2f}U ({result.pnl_pct:+.1f}%×{trade.leverage}x)</b>")
-            else:
-                emoji = "🟢" if result.pnl_pct > 0 else "🔴"
-                lines.append(f"{emoji} <b>{trade.symbol}</b> 做空持仓中")
-                lines.append(f"   入场: {trade.entry_price:.5f} | 现价: {current:.5f}")
-                lines.append(
-                    f"   浮盈: <b>{result.pnl_pct:+.1f}%×{trade.leverage}x = {result.pnl_usd:+.2f}U</b>"
-                )
-                trail_str = f" | 移动止损: {trade.trail_stop_price:.5f}" if trade.trail_stop_price else ""
-                hard_str = f" | 硬止损: {trade.hard_stop_price:.5f}" if trade.hard_stop_price else ""
-                if trade.tp1_triggered:
-                    lines.append(
-                        f"   ✅TP1已锁定{trade.tp1_locked_pnl:+.2f}U | "
-                        f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){trail_str}"
-                    )
+            result = evaluate_trade(trade, current)
+
+            if result.updated:
+                any_updated = True
+
+            # 平仓时：把 risk 更新和推送推迟到 save 之后
+            if result.closed:
+                pending_risk_updates.append((result.pnl_usd, trade.stake_remaining))
+            if result.alert_msg:
+                pending_alerts.append(result.alert_msg)
+
+            # 日报内容
+            if not check_only:
+                if result.close_reason:
+                    lines.append(f"{result.close_reason} <b>{trade.symbol}</b>")
+                    lines.append(f"   入场: {trade.entry_price:.5f} → 现价: {current:.5f}")
+                    lines.append(f"   盈亏: <b>{result.pnl_usd:+.2f}U ({result.pnl_pct:+.1f}%×{trade.leverage}x)</b>")
                 else:
+                    emoji = "🟢" if result.pnl_pct > 0 else "🔴"
+                    lines.append(f"{emoji} <b>{trade.symbol}</b> 做空持仓中")
+                    lines.append(f"   入场: {trade.entry_price:.5f} | 现价: {current:.5f}")
                     lines.append(
-                        f"   TP1: {trade.take_profit_1:.5f}(-{(1-config.TP1_MULTIPLIER)*100:.0f}%) | "
-                        f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){hard_str}{trail_str}"
+                        f"   浮盈: <b>{result.pnl_pct:+.1f}%×{trade.leverage}x = {result.pnl_usd:+.2f}U</b>"
                     )
-            lines.append("")
+                    trail_str = f" | 移动止损: {trade.trail_stop_price:.5f}" if trade.trail_stop_price else ""
+                    hard_str = f" | 硬止损: {trade.hard_stop_price:.5f}" if trade.hard_stop_price else ""
+                    if trade.tp1_triggered:
+                        lines.append(
+                            f"   ✅TP1已锁定{trade.tp1_locked_pnl:+.2f}U | "
+                            f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){trail_str}"
+                        )
+                    else:
+                        lines.append(
+                            f"   TP1: {trade.take_profit_1:.5f}(-{(1-config.TP1_MULTIPLIER)*100:.0f}%) | "
+                            f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){hard_str}{trail_str}"
+                        )
+                lines.append("")
 
-    # 汇总
+        # 持仓浮盈汇总需要在写盘前、锁内、基于刚评估完的 trades 算
+        if not check_only:
+            total_open_pnl = sum(
+                t.tp1_locked_pnl + t.pnl
+                for t in trades if t.status == 'open'
+            )
+            total_closed_pnl = sum(
+                t.tp1_locked_pnl + t.pnl
+                for t in trades if t.status == 'closed'
+            )
+            lines.append(f"💰 持仓浮盈: <b>{total_open_pnl:+.2f}U</b>")
+            lines.append(f"💰 已实现盈亏: <b>{total_closed_pnl:+.2f}U</b>")
+
+        # 先把交易数据落盘（在锁保护下）
+        if any_updated:
+            save([t.to_dict() for t in trades])
+            logger.info("交易数据已更新并保存")
+
+    # ══ 出锁后才执行副作用 ══
+    # 1) 先改 risk_state（在 trades 已经持久化之后）
+    for pnl_usd, stake_remaining in pending_risk_updates:
+        record_trade_closed(pnl_usd, stake_remaining)
+
+    # 2) 再推送 TG
+    for msg in pending_alerts:
+        send_tg(msg)
+
+    # 3) 最后发日报（风控状态需要在 record_trade_closed 之后读，才是最新的）
     if not check_only:
-        total_open_pnl = sum(
-            t.tp1_locked_pnl + t.pnl
-            for t in trades if t.status == 'open'
-        )
-        total_closed_pnl = sum(
-            t.tp1_locked_pnl + t.pnl
-            for t in trades if t.status == 'closed'
-        )
-        lines.append(f"💰 持仓浮盈: <b>{total_open_pnl:+.2f}U</b>")
-        lines.append(f"💰 已实现盈亏: <b>{total_closed_pnl:+.2f}U</b>")
+        from risk_control import get_risk_summary as _get_summary
         lines.append("")
-        # 风控状态
-        lines.append(get_risk_summary())
-
+        lines.append(_get_summary())
         msg = "\n".join(lines)
         send_tg(msg)
         logger.info(msg)
-
-    # 持久化
-    if any_updated:
-        atomic_write_json(TRADES_FILE, [t.to_dict() for t in trades])
-        logger.info("交易数据已更新并保存")
 
 
 # ══════════════════════════════════════════════════════════════════
