@@ -317,6 +317,15 @@ def scan_daily():
     logger.info("=== 开始日线扫描 ===")
     exchange = ccxt.binance({'enableRateLimit': True})
 
+    # 获取快速预筛标记的热门币（优先处理）
+    try:
+        from hot_scanner import get_hot_symbol_list
+        hot_list = get_hot_symbol_list()
+        if hot_list:
+            logger.info(f"  🔥 快速预筛标记了 {len(hot_list)} 个热门币，优先处理")
+    except ImportError:
+        hot_list = []
+
     try:
         tickers = exchange.fetch_tickers()
     except Exception as e:
@@ -326,7 +335,14 @@ def scan_daily():
     candidates: dict[str, Candidate] = {}
     checked = 0
 
-    for symbol, ticker in tickers.items():
+    # 排序：热门币优先（减少 API 调用浪费在冷门币上）
+    sorted_symbols = list(tickers.keys())
+    if hot_list:
+        hot_set = set(hot_list)
+        sorted_symbols.sort(key=lambda s: (0 if s in hot_set else 1))
+
+    for symbol in sorted_symbols:
+        ticker = tickers[symbol]
         if not symbol.endswith('/USDT'):
             continue
 

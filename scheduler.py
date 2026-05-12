@@ -68,6 +68,13 @@ def main_loop():
     except Exception as e:
         logger.error(f"启动对账异常: {e}")
 
+    # 启动快速预筛后台线程
+    try:
+        from hot_scanner import start_hot_scanner_thread
+        start_hot_scanner_thread()
+    except Exception as e:
+        logger.warning(f"快速预筛启动失败（非致命）: {e}")
+
     last_scan_hour = -1
     last_check_min = -1
     last_tracker_min = -1
