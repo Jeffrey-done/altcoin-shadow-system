@@ -358,16 +358,35 @@ def api_data():
 
 @app.route('/api/backtest')
 def api_backtest():
-    """返回最近一次单币回测结果"""
+    """返回最近一次单币回测结果，附带当前config参数用于对比"""
     bt_file = os.path.join(SCRIPT_DIR, 'backtest_results.json')
     data = load_json(bt_file, {})
+    # 注入当前 config 参数，前端可对比缓存数据是否过期
+    data['current_config'] = {
+        'daily_rsi_min': config.DAILY_RSI_MIN,
+        'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
+        'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
+        'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+        'h4_rsi_drop': config.H4_RSI_DROP,
+        'trail_activate_pct': config.TRAIL_STOP_ACTIVATE_PCT,
+        'leverage': config.LEVERAGE,
+        'stake': config.DEFAULT_STAKE,
+    }
     return jsonify(data)
 
 
 @app.route('/api/batch-backtest')
 def api_batch_backtest():
-    """返回批量回测结果"""
+    """返回批量回测结果，附带当前config参数用于对比"""
     data = load_json(BATCH_BACKTEST_RESULTS_FILE, {})
+    data['current_config'] = {
+        'daily_rsi_min': config.DAILY_RSI_MIN,
+        'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
+        'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
+        'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+        'batch_symbols': config.BATCH_BACKTEST_SYMBOLS,
+        'batch_days': config.BATCH_BACKTEST_DAYS,
+    }
     return jsonify(data)
 
 
@@ -1355,6 +1374,24 @@ fetch('/api/batch-backtest').then(r => r.json()).then(data => {
             <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --batch</code></p></div>`;
         return;
     }
+    // 检查参数是否过期
+    if (data.current_config && data.config_snapshot) {
+        const cur = data.current_config;
+        const snap = data.config_snapshot;
+        const mismatches = [];
+        if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI阈值: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
+        if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
+        if (snap.tp2_pct && snap.tp2_pct !== cur.tp2_pct) mismatches.push(`TP2: ${snap.tp2_pct}%→${cur.tp2_pct}%`);
+        if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
+        if (mismatches.length > 0) {
+            const warn = document.createElement('div');
+            warn.style.cssText = 'background:#3d2f1f;border:1px solid #d29922;border-radius:8px;padding:12px;margin-bottom:12px;';
+            warn.innerHTML = `<b style="color:#d29922;">⚠️ 参数已变更，批量回测数据可能过期</b><br>
+                <span style="font-size:0.8rem;color:#8b949e;">变更项: ${mismatches.join(' | ')}<br>
+                请重新运行: <code>python3 backtest.py --batch</code></span>`;
+            content.prepend(warn);
+        }
+    }
     const report = data.report;
     const summary = report.summary || {};
     const perCoin = report.per_coin_results || [];
@@ -1655,6 +1692,25 @@ function drawEquityChart(result) {
 }
 
 fetch('/api/backtest').then(r => r.json()).then(data => {
+    // 检查参数是否过期
+    if (data.current_config && data.config_snapshot) {
+        const cur = data.current_config;
+        const snap = data.config_snapshot;
+        const mismatches = [];
+        if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI阈值: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
+        if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
+        if (snap.tp2_pct && snap.tp2_pct !== cur.tp2_pct) mismatches.push(`TP2: ${snap.tp2_pct}%→${cur.tp2_pct}%`);
+        if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
+        if (snap.h4_rsi_drop && snap.h4_rsi_drop !== cur.h4_rsi_drop) mismatches.push(`回落: ${snap.h4_rsi_drop}→${cur.h4_rsi_drop}`);
+        if (mismatches.length > 0) {
+            const warn = document.createElement('div');
+            warn.style.cssText = 'background:#3d2f1f;border:1px solid #d29922;border-radius:8px;padding:12px;margin-bottom:12px;';
+            warn.innerHTML = `<b style="color:#d29922;">⚠️ 参数已变更，回测数据可能过期</b><br>
+                <span style="font-size:0.8rem;color:#8b949e;">变更项: ${mismatches.join(' | ')}<br>
+                请重新运行: <code>python3 backtest.py --symbol PEPE/USDT</code></span>`;
+            document.getElementById('content').prepend(warn);
+        }
+    }
     renderResult(data);
     setTimeout(() => {
         const results = data.results || data.top_results;

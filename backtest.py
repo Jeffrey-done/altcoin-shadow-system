@@ -1047,11 +1047,18 @@ if __name__ == '__main__':
         # 打印报告
         print_batch_report(report, results)
 
-        # 保存结果
+        # 保存结果（含参数快照，面板可对比是否过期）
         save_data = {
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'days': batch_days,
             'report': report,
+            'config_snapshot': {
+                'daily_rsi_min': config.DAILY_RSI_MIN,
+                'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
+                'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
+                'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+                'batch_symbols': config.BATCH_BACKTEST_SYMBOLS,
+            },
         }
         atomic_write_json(BATCH_BACKTEST_RESULTS_FILE, save_data)
         logger.info(f"批量回测结果已保存到 {BATCH_BACKTEST_RESULTS_FILE}")
@@ -1093,12 +1100,20 @@ if __name__ == '__main__':
             print(f"  总交易: {total_trades} | 总盈亏: {total_pnl:+.2f}U | 胜率: {overall_wr}%")
             print(f"{'='*60}\n")
 
-        # 保存
+        # 保存（含参数快照）
         save_data = {
             'symbols': symbols,
             'days': args.days,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'results': [r.to_dict() for r in all_results],
+            'config_snapshot': {
+                'daily_rsi_min': config.DAILY_RSI_MIN,
+                'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
+                'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
+                'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+                'h4_rsi_drop': config.H4_RSI_DROP,
+                'leverage': config.LEVERAGE,
+            },
         }
         atomic_write_json(BACKTEST_RESULTS_FILE, save_data)
         logger.info(f"结果已保存到 {BACKTEST_RESULTS_FILE}")
