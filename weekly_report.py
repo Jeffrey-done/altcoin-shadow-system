@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-策略周报模块 v1.0
+策略周报模块 v2.0
 功能：
-  - 聚合做空交易和费率套利交易数据
+  - 聚合做空交易数据
   - 计算周度统计：总盈亏、胜率、最佳/最差交易、回撤、每日明细
   - 生成格式化报告（TG推送 + JSON数据）
   - 基于表现的策略建议
@@ -20,8 +20,6 @@ from datetime import datetime, timedelta, timezone
 import config
 from common import (
     TRADES_FILE,
-    FUNDING_TRADES_FILE,
-    LOW_RISK_TRADES_FILE,
     WEEKLY_REPORT_FILE,
     setup_logger,
     send_tg,
@@ -31,7 +29,7 @@ from common import (
     utcnow_iso,
     parse_iso,
 )
-from models import Trade, FundingTrade, LowRiskTrade
+from models import Trade
 
 logger = setup_logger("weekly_report")
 
@@ -79,7 +77,8 @@ def collect_weekly_trades(week_start, week_end):
     加载交易文件，筛选在 [week_start, week_end] 内平仓的交易。
 
     Returns:
-        tuple: (short_trades: list[Trade], funding_trades: list[FundingTrade], low_risk_trades: list[LowRiskTrade])
+        tuple: (short_trades: list[Trade], funding_trades: list, low_risk_trades: list)
+        Note: funding_trades and low_risk_trades are always empty (kept for API compat)
     """
     # 加载做空交易
     raw_trades = load_json(TRADES_FILE, [])
@@ -93,68 +92,31 @@ def collect_weekly_trades(week_start, week_end):
         if week_start <= closed_dt <= week_end:
             short_trades.append(t)
 
-    # 加载费率套利交易
-    raw_funding = load_json(FUNDING_TRADES_FILE, [])
-    all_funding = [FundingTrade.from_dict(f) for f in raw_funding]
-
-    funding_trades = []
-    for f in all_funding:
-        if f.status != 'closed' or not f.closed_at:
-            continue
-        closed_dt = parse_iso(f.closed_at)
-        if week_start <= closed_dt <= week_end:
-            funding_trades.append(f)
-
-    # 加载低风险策略交易
-    raw_low_risk = load_json(LOW_RISK_TRADES_FILE, [])
-    all_low_risk = [LowRiskTrade.from_dict(lr) for lr in raw_low_risk]
-
-    low_risk_trades = []
-    for lr in all_low_risk:
-        if lr.status != 'closed' or not lr.closed_at:
-            continue
-        closed_dt = parse_iso(lr.closed_at)
-        if week_start <= closed_dt <= week_end:
-            low_risk_trades.append(lr)
-
-    return short_trades, funding_trades, low_risk_trades
+    return short_trades, [], []
 
 
 # ══════════════════════════════════════════════════════════════════
 #  统计计算
 # ══════════════════════════════════════════════════════════════════
 
-def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
+def calculate_weekly_stats(short_trades, funding_trades=None, low_risk_trades=None):
     """
     计算周度统计数据。
 
     做空交易盈亏 = tp1_locked_pnl + pnl
-    费率交易盈亏 = total_pnl
-    低风险交易盈亏 = pnl
 
     Returns:
         dict: 统计数据
     """
-    if low_risk_trades is None:
-        low_risk_trades = []
-
     # 做空盈亏
     short_pnls = [(t.tp1_locked_pnl + t.pnl) for t in short_trades]
     short_pnl = sum(short_pnls)
 
-    # 费率盈亏
-    funding_pnls = [f.total_pnl for f in funding_trades]
-    funding_pnl = sum(funding_pnls)
-
-    # 低风险盈亏
-    low_risk_pnls = [lr.pnl for lr in low_risk_trades]
-    low_risk_pnl = sum(low_risk_pnls)
-
-    total_pnl = short_pnl + funding_pnl + low_risk_pnl
-    total_trades = len(short_trades) + len(funding_trades) + len(low_risk_trades)
+    total_pnl = short_pnl
+    total_trades = len(short_trades)
 
     # 胜率统计
-    all_pnls = short_pnls + funding_pnls + low_risk_pnls
+    all_pnls = short_pnls
     win_count = sum(1 for p in all_pnls if p > 0)
     loss_count = sum(1 for p in all_pnls if p <= 0)
     win_rate = round(win_count / total_trades * 100, 1) if total_trades > 0 else 0.0
@@ -166,10 +128,6 @@ def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
     all_trade_entries = []
     for t in short_trades:
         all_trade_entries.append({'symbol': t.symbol, 'pnl': t.tp1_locked_pnl + t.pnl})
-    for f in funding_trades:
-        all_trade_entries.append({'symbol': f.symbol, 'pnl': f.total_pnl})
-    for lr in low_risk_trades:
-        all_trade_entries.append({'symbol': lr.symbol, 'pnl': lr.pnl})
 
     if all_trade_entries:
         best_trade = max(all_trade_entries, key=lambda x: x['pnl'])
@@ -181,14 +139,6 @@ def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
         if t.closed_at:
             day_str = parse_iso(t.closed_at).strftime('%Y-%m-%d')
             daily_breakdown[day_str] = daily_breakdown.get(day_str, 0) + t.tp1_locked_pnl + t.pnl
-    for f in funding_trades:
-        if f.closed_at:
-            day_str = parse_iso(f.closed_at).strftime('%Y-%m-%d')
-            daily_breakdown[day_str] = daily_breakdown.get(day_str, 0) + f.total_pnl
-    for lr in low_risk_trades:
-        if lr.closed_at:
-            day_str = parse_iso(lr.closed_at).strftime('%Y-%m-%d')
-            daily_breakdown[day_str] = daily_breakdown.get(day_str, 0) + lr.pnl
 
     # 四舍五入每日盈亏
     daily_breakdown = {k: round(v, 2) for k, v in sorted(daily_breakdown.items())}
@@ -202,16 +152,6 @@ def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
         if t.opened_at and t.closed_at:
             opened = parse_iso(t.opened_at)
             closed = parse_iso(t.closed_at)
-            hold_hours_list.append((closed - opened).total_seconds() / 3600)
-    for f in funding_trades:
-        if f.opened_at and f.closed_at:
-            opened = parse_iso(f.opened_at)
-            closed = parse_iso(f.closed_at)
-            hold_hours_list.append((closed - opened).total_seconds() / 3600)
-    for lr in low_risk_trades:
-        if lr.opened_at and lr.closed_at:
-            opened = parse_iso(lr.opened_at)
-            closed = parse_iso(lr.closed_at)
             hold_hours_list.append((closed - opened).total_seconds() / 3600)
 
     avg_hold_hours = round(sum(hold_hours_list) / len(hold_hours_list), 1) if hold_hours_list else 0.0
@@ -227,22 +167,6 @@ def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
         strategy_breakdown[key]['pnl'] += pnl
         if pnl > 0:
             strategy_breakdown[key]['wins'] += 1
-    for f in funding_trades:
-        key = f.strategy
-        if key not in strategy_breakdown:
-            strategy_breakdown[key] = {'count': 0, 'pnl': 0.0, 'wins': 0}
-        strategy_breakdown[key]['count'] += 1
-        strategy_breakdown[key]['pnl'] += f.total_pnl
-        if f.total_pnl > 0:
-            strategy_breakdown[key]['wins'] += 1
-    for lr in low_risk_trades:
-        key = lr.strategy
-        if key not in strategy_breakdown:
-            strategy_breakdown[key] = {'count': 0, 'pnl': 0.0, 'wins': 0}
-        strategy_breakdown[key]['count'] += 1
-        strategy_breakdown[key]['pnl'] += lr.pnl
-        if lr.pnl > 0:
-            strategy_breakdown[key]['wins'] += 1
 
     # 四舍五入策略盈亏
     for key in strategy_breakdown:
@@ -251,8 +175,8 @@ def calculate_weekly_stats(short_trades, funding_trades, low_risk_trades=None):
     return {
         'total_pnl': round(total_pnl, 2),
         'short_pnl': round(short_pnl, 2),
-        'funding_pnl': round(funding_pnl, 2),
-        'low_risk_pnl': round(low_risk_pnl, 2),
+        'funding_pnl': 0.0,
+        'low_risk_pnl': 0.0,
         'total_trades': total_trades,
         'win_count': win_count,
         'loss_count': loss_count,
@@ -291,17 +215,12 @@ def generate_suggestions(stats):
     if stats['avg_hold_hours'] > 20:
         suggestions.append("平均持仓超过20小时，建议检查时间止损参数是否过于宽松")
 
-    # 费率收入占比高
-    total_pnl = stats['total_pnl']
-    funding_pnl = stats['funding_pnl']
-    if total_pnl > 0 and funding_pnl > 0 and (funding_pnl / total_pnl) > 0.5:
-        suggestions.append("费率套利贡献超过50%总收益，建议增加费率策略资金分配")
-
     # 连续亏损检查（通过亏损数判断）
     if stats['loss_count'] >= 3 and stats['win_count'] == 0:
         suggestions.append("存在连续亏损，建议审查风控参数和市场环境适配性")
 
     # 总体亏损
+    total_pnl = stats['total_pnl']
     if total_pnl < 0:
         suggestions.append("本周整体亏损，建议回顾入场信号质量和止损执行情况")
 
@@ -351,8 +270,6 @@ def format_tg_report(stats, suggestions, week_start, week_end):
         "<b>--- 盈亏汇总 ---</b>",
         f"总盈亏：<code>{stats['total_pnl']:+.2f}U</code>",
         f"  做空策略：<code>{stats['short_pnl']:+.2f}U</code>",
-        f"  费率套利：<code>{stats['funding_pnl']:+.2f}U</code>",
-        f"  低风险策略：<code>{stats['low_risk_pnl']:+.2f}U</code>",
         "",
         "<b>--- 交易统计 ---</b>",
         f"总交易数：{stats['total_trades']}",
@@ -451,7 +368,7 @@ def main():
 
     # 收集交易数据
     short_trades, funding_trades, low_risk_trades = collect_weekly_trades(week_start, week_end)
-    logger.info(f"本周交易: 做空 {len(short_trades)} 笔, 费率 {len(funding_trades)} 笔, 低风险 {len(low_risk_trades)} 笔")
+    logger.info(f"本周交易: 做空 {len(short_trades)} 笔")
 
     # 计算统计
     stats = calculate_weekly_stats(short_trades, funding_trades, low_risk_trades)

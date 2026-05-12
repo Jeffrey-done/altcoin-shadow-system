@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-影子做空系统实时仪表盘 v3.0 - Refactored Architecture
+影子做空系统实时仪表盘 v4.0 - Short-Only Architecture
 Flask + SocketIO + Jinja2 Templates + Modular Static Files
 
 Features:
@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from common import (
-    TRADES_FILE, CANDIDATES_FILE, FUNDING_TRADES_FILE, RISK_FILE,
-    LOW_RISK_TRADES_FILE, WEEKLY_REPORT_FILE,
+    TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
+    WEEKLY_REPORT_FILE,
     load_json, utcnow_iso, today_str, get_dynamic_balance, get_compound_stake,
 )
 
@@ -81,11 +81,9 @@ def get_dashboard_data() -> dict:
     """汇总所有数据供前端展示"""
     trades = load_json(TRADES_FILE, [])
     candidates = load_json(CANDIDATES_FILE, [])
-    funding_trades = load_json(FUNDING_TRADES_FILE, [])
     risk_state = load_json(RISK_FILE, {})
-    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
 
-    # 分离做空和做多
+    # 分离做空和做多（保留direction字段向后兼容）
     short_trades = [t for t in trades if t.get('direction', 'SHORT') == 'SHORT']
     long_trades = [t for t in trades if t.get('direction') == 'LONG']
 
@@ -93,10 +91,6 @@ def get_dashboard_data() -> dict:
     closed_short = [t for t in short_trades if t.get('status') == 'closed']
     open_long = [t for t in long_trades if t.get('status') == 'open']
     closed_long = [t for t in long_trades if t.get('status') == 'closed']
-
-    # 低风险持仓
-    open_low_risk = [t for t in low_risk_trades if t.get('status') == 'open']
-    closed_low_risk = [t for t in low_risk_trades if t.get('status') == 'closed']
 
     # 今日盈亏
     today = today_str()
@@ -106,9 +100,6 @@ def get_dashboard_data() -> dict:
     today_closed_long = [
         t for t in closed_long if t.get('closed_at', '').startswith(today)
     ]
-    today_closed_lr = [
-        t for t in closed_low_risk if t.get('closed_at', '').startswith(today)
-    ]
 
     today_pnl_short = sum(
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in today_closed_short
@@ -116,7 +107,6 @@ def get_dashboard_data() -> dict:
     today_pnl_long = sum(
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in today_closed_long
     )
-    today_pnl_lr = sum(t.get('pnl', 0) for t in today_closed_lr)
 
     # TP1已锁定但未平仓的利润
     today_tp1_locked_short = sum(
@@ -137,7 +127,6 @@ def get_dashboard_data() -> dict:
     total_pnl_long = sum(
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_long
     )
-    total_pnl_lr = sum(t.get('pnl', 0) for t in closed_low_risk)
 
     total_pnl_short += sum(
         t.get('tp1_locked_pnl', 0) for t in open_short if t.get('tp1_triggered')
@@ -145,15 +134,6 @@ def get_dashboard_data() -> dict:
     total_pnl_long += sum(
         t.get('tp1_locked_pnl', 0) for t in open_long if t.get('tp1_triggered')
     )
-
-    # 费率套利统计
-    funding_open = [t for t in funding_trades if t.get('status') == 'open']
-    funding_closed = [t for t in funding_trades if t.get('status') == 'closed']
-    funding_today_pnl = sum(
-        t.get('total_pnl', 0) for t in funding_closed
-        if t.get('closed_at', '').startswith(today)
-    )
-    funding_total_pnl = sum(t.get('total_pnl', 0) for t in funding_closed)
 
     # 胜率
     all_closed = closed_short + closed_long
@@ -173,18 +153,6 @@ def get_dashboard_data() -> dict:
         day = closed_at[:10]
         pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
         pnl_history[day] = pnl_history.get(day, 0) + pnl
-    for t in funding_closed:
-        closed_at = t.get('closed_at', '')
-        if not closed_at:
-            continue
-        day = closed_at[:10]
-        pnl_history[day] = pnl_history.get(day, 0) + t.get('total_pnl', 0)
-    for t in closed_low_risk:
-        closed_at = t.get('closed_at', '')
-        if not closed_at:
-            continue
-        day = closed_at[:10]
-        pnl_history[day] = pnl_history.get(day, 0) + t.get('pnl', 0)
 
     sorted_days = sorted(pnl_history.keys())
     pnl_chart_data = {
@@ -197,29 +165,20 @@ def get_dashboard_data() -> dict:
         cum += pnl_history[d]
         pnl_chart_data['cumulative'].append(round(cum, 2))
 
-    # 动态余额和资金池
+    # 动态余额
     dynamic_balance = get_dynamic_balance()
     compound_stake = get_compound_stake()
-    pool_allocation = {
-        'total': round(dynamic_balance, 2),
-        'short': round(dynamic_balance * config.SHORT_STRATEGY_POOL_PCT / 100, 2),
-        'funding_arb': round(dynamic_balance * config.FUNDING_ARB_POOL_PCT / 100, 2),
-        'low_risk': round(dynamic_balance * config.LOW_RISK_POOL_PCT / 100, 2),
-        'short_pct': config.SHORT_STRATEGY_POOL_PCT,
-        'funding_arb_pct': config.FUNDING_ARB_POOL_PCT,
-        'low_risk_pct': config.LOW_RISK_POOL_PCT,
-        'compound_stake': round(compound_stake, 2),
-    }
 
     # 持仓占用
     short_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_short)
     long_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_long)
-    funding_used = sum(t.get('stake', 0) for t in funding_open)
-    lr_used = sum(t.get('stake', 0) for t in open_low_risk)
-    pool_allocation['short_used'] = round(short_used, 2)
-    pool_allocation['long_used'] = round(long_used, 2)
-    pool_allocation['funding_used'] = round(funding_used, 2)
-    pool_allocation['low_risk_used'] = round(lr_used, 2)
+
+    pool_allocation = {
+        'total': round(dynamic_balance, 2),
+        'compound_stake': round(compound_stake, 2),
+        'short_used': round(short_used, 2),
+        'long_used': round(long_used, 2),
+    }
 
     # ── Yesterday PnL (for trend comparison) ──
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -236,8 +195,8 @@ def get_dashboard_data() -> dict:
             'balance': round(dynamic_balance, 2),
             'initial_balance': config.ACCOUNT_BALANCE,
             'leverage': config.LEVERAGE,
-            'today_pnl': round(today_pnl_short + today_pnl_long + today_pnl_lr, 2),
-            'total_pnl': round(total_pnl_short + total_pnl_long + total_pnl_lr, 2),
+            'today_pnl': round(today_pnl_short + today_pnl_long, 2),
+            'total_pnl': round(total_pnl_short + total_pnl_long, 2),
             'win_rate': round(win_rate, 1),
             'total_trades': len(all_for_winrate),
         },
@@ -253,19 +212,7 @@ def get_dashboard_data() -> dict:
             'today_pnl': round(today_pnl_long, 2),
             'total_pnl': round(total_pnl_long, 2),
         },
-        'low_risk': {
-            'open': open_low_risk,
-            'closed': closed_low_risk[-20:],
-            'today_pnl': round(today_pnl_lr, 2),
-            'total_pnl': round(total_pnl_lr, 2),
-        },
         'candidates': candidates,
-        'funding': {
-            'open': funding_open,
-            'closed': funding_closed[-10:],
-            'today_pnl': round(funding_today_pnl, 4),
-            'total_pnl': round(funding_total_pnl, 4),
-        },
         'risk': risk_state,
         'pnl_chart': pnl_chart_data,
         'pool': pool_allocation,
@@ -310,8 +257,6 @@ def _extract_events() -> list:
     """
     events = []
     trades = load_json(TRADES_FILE, [])
-    funding_trades = load_json(FUNDING_TRADES_FILE, [])
-    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
     risk_state = load_json(RISK_FILE, {})
 
     # Trade open/close events
@@ -341,35 +286,6 @@ def _extract_events() -> list:
                 'type': 'close',
                 'level': level,
                 'message': f"{'✅' if pnl > 0 else '❌'} 平仓 {direction} {symbol} | {pnl:+.2f}U | {reason}",
-            })
-
-    # Funding arb events
-    for t in funding_trades:
-        if t.get('opened_at'):
-            events.append({
-                'time': t['opened_at'],
-                'type': 'open',
-                'level': 'info',
-                'message': f"💰 费率套利开仓 {t.get('symbol', '?')} | 费率: {t.get('funding_rate', 0):.4f}%",
-            })
-        if t.get('closed_at'):
-            total_pnl = t.get('total_pnl', 0)
-            events.append({
-                'time': t['closed_at'],
-                'type': 'close',
-                'level': 'success' if total_pnl > 0 else 'warning',
-                'message': f"💰 费率套利平仓 {t.get('symbol', '?')} | {total_pnl:+.4f}U",
-            })
-
-    # Low-risk events
-    for t in low_risk_trades:
-        if t.get('closed_at'):
-            pnl = t.get('pnl', 0)
-            events.append({
-                'time': t['closed_at'],
-                'type': 'close',
-                'level': 'success' if pnl > 0 else 'warning',
-                'message': f"📊 低风险平仓 {t.get('symbol', '?')} [{t.get('strategy', '')}] | {pnl:+.4f}U",
             })
 
     # Risk pause events
@@ -434,16 +350,6 @@ def _inject_live_prices(data: dict) -> dict:
         if sym in prices:
             trade['current_price'] = prices[sym]
 
-    for trade in data.get('low_risk', {}).get('open', []):
-        sym = trade.get('symbol', '')
-        if sym in prices:
-            trade['current_price'] = prices[sym]
-
-    for trade in data.get('funding', {}).get('open', []):
-        sym = trade.get('symbol', '')
-        if sym in prices:
-            trade['current_price'] = prices[sym]
-
     return data
 
 
@@ -459,10 +365,6 @@ def background_push():
             for trade in data.get('short_trades', {}).get('open', []):
                 open_symbols.add(trade.get('symbol', ''))
             for trade in data.get('long_trades', {}).get('open', []):
-                open_symbols.add(trade.get('symbol', ''))
-            for trade in data.get('low_risk', {}).get('open', []):
-                open_symbols.add(trade.get('symbol', ''))
-            for trade in data.get('funding', {}).get('open', []):
                 open_symbols.add(trade.get('symbol', ''))
             open_symbols.discard('')
 
@@ -508,11 +410,6 @@ def _make_etag_response(data):
 @app.route('/')
 def index():
     return render_template('index.html')
-
-
-@app.route('/low-risk')
-def low_risk_page():
-    return render_template('low_risk.html')
 
 
 @app.route('/weekly-report')
@@ -598,41 +495,6 @@ def api_weekly_report():
     return _make_etag_response(data)
 
 
-@app.route('/api/low-risk')
-@check_api_token
-def api_low_risk():
-    """返回低风险策略数据"""
-    trades = load_json(LOW_RISK_TRADES_FILE, [])
-    open_trades = [t for t in trades if t.get('status') == 'open']
-    closed_trades = [t for t in trades if t.get('status') == 'closed']
-    today = today_str()
-    today_closed = [t for t in closed_trades if t.get('closed_at', '').startswith(today)]
-    daily_pnl = sum(t.get('pnl', 0) for t in today_closed)
-    total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
-    # 按策略统计
-    strategy_stats = {}
-    for t in closed_trades:
-        strat = t.get('strategy', 'unknown')
-        if strat not in strategy_stats:
-            strategy_stats[strat] = {'count': 0, 'pnl': 0, 'wins': 0}
-        strategy_stats[strat]['count'] += 1
-        strategy_stats[strat]['pnl'] += t.get('pnl', 0)
-        if t.get('pnl', 0) > 0:
-            strategy_stats[strat]['wins'] += 1
-    return jsonify({
-        'open': open_trades,
-        'closed': closed_trades[-30:],
-        'today_pnl': round(daily_pnl, 4),
-        'total_pnl': round(total_pnl, 4),
-        'strategy_stats': strategy_stats,
-        'config': {
-            'daily_target': config.ACCOUNT_BALANCE * config.LOW_RISK_DAILY_TARGET_PCT / 100,
-            'max_positions': config.LOW_RISK_MAX_POSITIONS,
-            'symbols': config.LOW_RISK_SYMBOLS,
-        },
-    })
-
-
 @app.route('/api/signal-scores')
 @check_api_token
 def api_signal_scores():
@@ -687,9 +549,9 @@ if __name__ == '__main__':
         if idx + 1 < len(sys.argv):
             port = int(sys.argv[idx + 1])
 
-    print(f"🚀 Dashboard v3.0 启动: http://localhost:{port}")
+    print(f"🚀 Dashboard v4.0 启动: http://localhost:{port}")
     print(f"   架构: Flask + Jinja2 Templates + Modular Static Files")
-    print(f"   页面: 主面板 | 低风险策略 | 周报 | 批量回测 | 单币回测 | 策略评分")
+    print(f"   页面: 主面板 | 周报 | 批量回测 | 单币回测 | 策略评分")
     print(f"   API认证: {'已启用 (DASHBOARD_TOKEN)' if os.environ.get('DASHBOARD_TOKEN') else '未设置 (开放访问)'}")
     print(f"   实时推送间隔: 10秒")
     print(f"   按 Ctrl+C 停止")

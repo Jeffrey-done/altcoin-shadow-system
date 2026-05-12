@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-异常报警模块 v1.0
+异常报警模块 v2.0
 定期检查系统健康状态，异常时 TG 告警。
 
 检查项：
@@ -24,7 +24,7 @@ import requests
 
 import config
 from common import (
-    TRADES_FILE, CANDIDATES_FILE, RISK_FILE, FUNDING_TRADES_FILE,
+    TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
     setup_logger, send_tg, load_json, utcnow, today_str, parse_iso,
 )
 
@@ -90,7 +90,7 @@ def check_total_loss() -> tuple:
 def check_file_health() -> tuple:
     """检查数据文件是否正常"""
     issues = []
-    files = [TRADES_FILE, CANDIDATES_FILE, RISK_FILE, FUNDING_TRADES_FILE]
+    files = [TRADES_FILE, CANDIDATES_FILE, RISK_FILE]
 
     for filepath in files:
         if not os.path.exists(filepath):

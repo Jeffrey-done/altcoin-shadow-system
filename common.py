@@ -21,8 +21,10 @@ ENV_PATH = os.path.join(SCRIPT_DIR, '.env')
 CANDIDATES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_candidates.json')
 TRADES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_shadow_trades.json')
 RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
-FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
 WEEKLY_REPORT_FILE = os.path.join(SCRIPT_DIR, 'weekly_report.json')
+
+# 向后兼容：保留常量定义以便旧数据加载不报错
+FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
 LOW_RISK_TRADES_FILE = os.path.join(SCRIPT_DIR, 'low_risk_trades.json')
 
 
@@ -273,8 +275,8 @@ def get_compound_stake() -> float:
 
 def get_dynamic_balance() -> float:
     """
-    计算动态账户余额 = 初始本金 + 所有策略已实现盈亏 + TP1已锁定利润。
-    
+    计算动态账户余额 = 初始本金 + 已实现盈亏 + TP1已锁定利润。
+
     TP1锁定利润说明：
       当 TP1 触发时，50%仓位已平仓并锁定利润（tp1_locked_pnl），
       但交易 status 仍为 'open'（剩余50%等TP2）。
@@ -282,24 +284,13 @@ def get_dynamic_balance() -> float:
     """
     import config
     trades = load_json(TRADES_FILE, [])
-    funding_trades = load_json(FUNDING_TRADES_FILE, [])
-    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
 
     total_pnl = 0.0
-    # 做空/做多交易
     for t in trades:
         if t.get('status') == 'closed':
             total_pnl += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
         elif t.get('status') == 'open' and t.get('tp1_locked_pnl', 0) > 0:
             # TP1已触发但交易未完全平仓：锁定利润计入余额
             total_pnl += t.get('tp1_locked_pnl', 0)
-    # 资金费率套利交易
-    for t in funding_trades:
-        if t.get('status') == 'closed':
-            total_pnl += t.get('total_pnl', 0)
-    # 低风险策略交易
-    for t in low_risk_trades:
-        if t.get('status') == 'closed':
-            total_pnl += t.get('pnl', 0)
 
     return config.ACCOUNT_BALANCE + total_pnl

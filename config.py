@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-策略参数集中配置 v4.0
+策略参数集中配置 v5.0
 所有阈值、档位、止损规则统一管理，方便调优和回测。
-新增：杠杆模式、短线止盈、硬止损、风控参数、资金费率套利参数
+专注做空策略 + 风控系统。
 """
 
 # ══════════════════════════════════════════════════════════════════
@@ -89,19 +89,7 @@ RISK_MAX_DAILY_LOSS = 30       # 单日最大亏损上限（USDT），达到后�
 RISK_MAX_DAILY_TRADES = 2      # 单日最大开仓次数
 RISK_CONSECUTIVE_LOSS_PAUSE = 3  # 连续亏损 N 次后暂停 24 小时
 RISK_PAUSE_HOURS = 24          # 暂停时长（小时）
-RISK_MAX_POSITION_PCT = 0.5    # 最大持仓占本金比例（50%，即最多同时1~2单）
-
-# ══════════════════════════════════════════════════════════════════
-#  资金费率套利
-# ══════════════════════════════════════════════════════════════════
-FUNDING_ARB_ENABLED = True     # 是否开启资金费率套利
-FUNDING_ARB_MIN_RATE = -0.05   # 负费率阈值（低于此值才开多吃费率，%/8h）
-FUNDING_ARB_STAKE = 50         # 费率套利单笔保证金（USDT）
-FUNDING_ARB_LEVERAGE = 20     # 费率套利杠杆（可以更高因为方向风险小）
-FUNDING_ARB_MAX_HOLD_HOURS = 9 # 最大持仓时间（跨过1次结算即可，8h+1h缓冲）
-FUNDING_ARB_STOP_LOSS_PCT = 1.5  # 费率套利硬止损（%，方向错了快跑）
-FUNDING_ARB_VOL_MIN = 1_000_000  # 费率套利成交量门槛（流动性要好）
-FUNDING_ARB_MAX_DAILY = 3     # 每日最多费率套利次数
+RISK_MAX_POSITION_PCT = 0.9    # 最大持仓占余额比例（90%，纯做空单策略允许接近满仓）
 
 # ══════════════════════════════════════════════════════════════════
 #  信号评分 & 动态仓位
@@ -124,8 +112,6 @@ SCORE_SKIP_THRESHOLD = 40      # <40分：跳过不开仓
 BTC_FILTER_ENABLED = True      # 是否启用 BTC 趋势过滤
 BTC_CRASH_THRESHOLD = -5.0     # BTC 24h 跌幅超过此值时暂停做空山寨（%）
 # 原因：BTC暴跌时山寨超跌严重，但反弹也猛，此时做空容易被反弹打止损
-BTC_LONG_CRASH_THRESHOLD = -8.0  # BTC 24h 跌幅超过此值时暂停做多抄底（%）
-# 原因：BTC暴跌>8%时山寨可能继续跌，不适合抄底
 BTC_PUMP_THRESHOLD = 8.0       # BTC 24h 涨幅超过此值时信号加分（牛市山寨更容易冲高回落）
 
 # ══════════════════════════════════════════════════════════════════
@@ -139,61 +125,16 @@ COMPOUND_MAX_STAKE = 300       # 单笔保证金上限（防止过度集中）
 #        但不超过 COMPOUND_MAX_STAKE
 
 # ══════════════════════════════════════════════════════════════════
-#  低风险日收策略
-# ══════════════════════════════════════════════════════════════════
-# Low-risk: general
-LOW_RISK_ENABLED = True
-LOW_RISK_DAILY_TARGET_PCT = 2.0    # daily profit target (% of account)
-LOW_RISK_MAX_DAILY_DRAWDOWN_PCT = 1.0  # max daily drawdown (% of account)
-LOW_RISK_MAX_POSITIONS = 5         # max simultaneous positions
-LOW_RISK_KELLY_FRACTION = 0.25     # quarter Kelly for safety
-
-# Low-risk: grid trading
-LOW_RISK_GRID_LEVELS = 5           # number of grid levels
-LOW_RISK_GRID_SPACING_PCT = 0.5    # spacing between grid levels (%)
-LOW_RISK_GRID_STAKE = 20           # per-grid-level stake (USDT)
-LOW_RISK_GRID_LEVERAGE = 5         # grid leverage
-LOW_RISK_GRID_MAX_HOLD_HOURS = 4   # max hold time per grid order
-
-# Low-risk: mean reversion
-LOW_RISK_MEAN_REVERSION_LOOKBACK = 24  # lookback hours
-LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS = 8  # max hold time for mean reversion trades
-LOW_RISK_MEAN_REVERSION_THRESHOLD = 1.5  # std devs from mean to trigger
-LOW_RISK_MEAN_REVERSION_STAKE = 30     # stake per mean reversion trade
-LOW_RISK_MEAN_REVERSION_LEVERAGE = 5
-LOW_RISK_MEAN_REVERSION_TARGET_PCT = 1.0  # target profit %
-LOW_RISK_MEAN_REVERSION_STOP_PCT = 1.5    # stop loss %
-
-# Low-risk: multi-coin funding
-LOW_RISK_FUNDING_MAX_COINS = 3     # max coins for simultaneous funding collection
-
-# Low-risk: symbol lists
-LOW_RISK_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT']
-LOW_RISK_FUNDING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT']
-
-# ══════════════════════════════════════════════════════════════════
-#  OKX 交易所配置（辅助数据源 + 交叉验证）
+#  OKX 交叉验证（仅用作数据源，不做交易）
 # ══════════════════════════════════════════════════════════════════
 OKX_ENABLED = True             # 是否启用 OKX 作为辅助数据源
-# ⚠️ OKX 实盘交易需要在 .env 中配置:
-#   OKX_API_KEY, OKX_SECRET, OKX_PASSPHRASE
-
 # OKX 费率参数（OKX 费率计算公式不同，阈值需独立设置）
 OKX_FUNDING_HOT = 0.02        # OKX 多头过热阈值（%/8h，比币安略低）
-OKX_FUNDING_ARB_MIN_RATE = -0.04  # OKX 负费率套利阈值（%/8h）
 OKX_OI_CHANGE_MIN = 0.20      # OKX OI 变化阈值（20%，比币安低因为OKX体量小）
-
-# 跨交易所套利
-OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10  # 两所费率差 > 0.1% 时视为套利机会
-OKX_CROSS_ARB_ENABLED = True         # 是否启用跨所费率套利发现
 
 # 交叉验证加分（两所数据一致时，信号评分额外加分）
 OKX_CROSS_VALIDATE_ENABLED = True    # 是否启用交叉验证
 OKX_CROSS_VALIDATE_BONUS = 8         # 交叉验证通过时额外加分（满分100中）
-
-# OKX 下单配置（未来支持 OKX 实盘时使用）
-OKX_LIVE_MODE = False          # OKX 实盘开关（独立于 Binance）
-OKX_DEFAULT_LEVERAGE = 10     # OKX 默认杠杆
 
 # ══════════════════════════════════════════════════════════════════
 #  候选池管理
@@ -205,13 +146,6 @@ CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清�
 # ══════════════════════════════════════════════════════════════════
 BACKTEST_SLIPPAGE_PCT = 0.1    # 滑点模拟（每笔交易 %）
 BACKTEST_FEE_PCT = 0.04        # taker 手续费（每边 %）
-
-# ══════════════════════════════════════════════════════════════════
-#  资金池分配
-# ══════════════════════════════════════════════════════════════════
-SHORT_STRATEGY_POOL_PCT = 60   # 60% 用于做空策略
-FUNDING_ARB_POOL_PCT = 20     # 20% 用于资金费率套利
-LOW_RISK_POOL_PCT = 20        # 20% 用于低风险策略
 
 # ══════════════════════════════════════════════════════════════════
 #  批量回测
@@ -239,20 +173,12 @@ WEEKLY_ROI_GRADE_B = 5         # 周ROI >= 5%  评级 B
 WEEKLY_ROI_GRADE_C = 0         # 周ROI >= 0%  评级 C（< 0% 为 F）
 
 # ══════════════════════════════════════════════════════════════════
-#  做多扫描器参数
+#  向后兼容（已废弃，保留防止旧代码引用报错）
 # ══════════════════════════════════════════════════════════════════
-LONG_BREAKOUT_LOOKBACK = 48
-LONG_PULLBACK_DEPTH_MAX = 0.03
-LONG_PULLBACK_RSI_MIN = 35
-LONG_PULLBACK_RSI_MAX = 60
-LONG_PULLBACK_VOL_SHRINK = 0.6
-LONG_PIN_SHADOW_RATIO = 3.0
-LONG_PIN_RSI_MAX = 25
-LONG_PIN_OI_INCREASE_MIN = 0.10
-LONG_PIN_VOL_MIN = 1_000_000
-LONG_STAKE = 50
-LONG_LEVERAGE = 10
-LONG_TP1_PCT = 0.05
-LONG_TP2_PCT = 0.10
-LONG_STOP_LOSS_PCT = 3.0
-LONG_MAX_HOLD_HOURS = 24
+FUNDING_ARB_STAKE = 50
+FUNDING_ARB_LEVERAGE = 20
+FUNDING_ARB_MAX_HOLD_HOURS = 9
+FUNDING_ARB_STOP_LOSS_PCT = 1.5
+SHORT_STRATEGY_POOL_PCT = 100   # 100% 用于做空策略
+FUNDING_ARB_POOL_PCT = 0
+LOW_RISK_POOL_PCT = 0
