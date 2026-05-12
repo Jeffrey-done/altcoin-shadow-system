@@ -44,10 +44,14 @@ class RiskState:
 
 
 def load_risk_state() -> RiskState:
-    """加载风控状态，如果日期变了则重置当日计数"""
+    """加载风控状态，如果日期变了则重置当日计数，并同步实际持仓"""
     data = load_json(RISK_FILE, {})
     if not data:
-        return RiskState()
+        state = RiskState()
+        # 首次加载：从交易文件同步实际持仓
+        state.total_open_stake = _calc_actual_open_stake()
+        save_risk_state(state)
+        return state
 
     state = RiskState.from_dict(data)
 
@@ -56,9 +60,41 @@ def load_risk_state() -> RiskState:
         state.date = today_str()
         state.daily_loss = 0.0
         state.daily_trades_opened = 0
+        # 每日重置时同步实际持仓（防止累积偏差）
+        state.total_open_stake = _calc_actual_open_stake()
         save_risk_state(state)
 
     return state
+
+
+def _calc_actual_open_stake() -> float:
+    """从所有交易文件计算实际持仓总保证金"""
+    from common import FUNDING_TRADES_FILE, LOW_RISK_TRADES_FILE
+
+    total = 0.0
+
+    # 做空/做多交易
+    trades = load_json(TRADES_FILE, [])
+    total += sum(
+        t.get('stake_remaining', t.get('stake', 0))
+        for t in trades if t.get('status') == 'open'
+    )
+
+    # 费率套利交易
+    funding_trades = load_json(FUNDING_TRADES_FILE, [])
+    total += sum(
+        t.get('stake', 0)
+        for t in funding_trades if t.get('status') == 'open'
+    )
+
+    # 低风险策略交易
+    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
+    total += sum(
+        t.get('stake', 0)
+        for t in low_risk_trades if t.get('status') == 'open'
+    )
+
+    return total
 
 
 def save_risk_state(state: RiskState) -> None:
@@ -105,6 +141,13 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short')
         return False, reason
 
     # 4. 检查最大持仓占比（基于资金池隔离）
+    # 先同步实际持仓（防止累积偏差导致误判）
+    actual_stake = _calc_actual_open_stake()
+    if state.total_open_stake != actual_stake:
+        logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake:.0f}U")
+        state.total_open_stake = actual_stake
+        save_risk_state(state)
+
     dynamic_bal = get_dynamic_balance()
     pool_pct_map = {
         'short': config.SHORT_STRATEGY_POOL_PCT,
@@ -185,15 +228,15 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE) -> None
 
 
 def refresh_open_stake() -> None:
-    """从交易文件重新计算当前持仓总额（用于启动时同步）"""
-    trades = load_json(TRADES_FILE, [])
-    total = sum(t.get('stake_remaining', t.get('stake', 0))
-                for t in trades if t.get('status') == 'open')
-
+    """从交易文件重新计算当前持仓总额（用于启动时同步或手动修正）"""
     state = load_risk_state()
-    state.total_open_stake = total
-    save_risk_state(state)
-    logger.info(f"🔄 同步持仓总额：{total:.0f}U")
+    actual = _calc_actual_open_stake()
+    if state.total_open_stake != actual:
+        logger.info(f"🔄 持仓修正：{state.total_open_stake:.0f}U → {actual:.0f}U")
+        state.total_open_stake = actual
+        save_risk_state(state)
+    else:
+        logger.info(f"🔄 持仓同步：{actual:.0f}U（无偏差）")
 
 
 def get_risk_summary() -> str:
