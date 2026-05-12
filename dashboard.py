@@ -911,7 +911,7 @@ function updateDashboard(data) {
     const allClosed = [...(st.closed||[]), ...(lt.closed||[])].sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
     closedTbody.innerHTML = allClosed.map(t => {
         const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
-        const closedAt = (t.closed_at || '').slice(0, 16).replace('T', ' ');
+        const closedAt = t.closed_at ? new Date(t.closed_at).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}) : '--';
         return `<tr><td><b>${t.symbol}</b></td><td>${t.direction||'SHORT'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
             <td>${(t.current_price||0).toFixed(6)}</td><td><b>${fmtPnl(pnl)}</b></td><td>${t.close_reason || '--'}</td><td>${closedAt}</td></tr>`;
     }).join('');
@@ -1049,7 +1049,7 @@ const binanceWS = {
 };
 
 function drawPnlChart(chartData) {
-    if (!chartData || !chartData.dates || chartData.dates.length < 2) return;
+    if (!chartData || !chartData.dates || chartData.dates.length < 1) return;
     const canvas = document.getElementById('pnl-chart');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -1060,6 +1060,18 @@ function drawPnlChart(chartData) {
     const padding = { top: 20, right: 20, bottom: 30, left: 50 };
     const chartW = w - padding.left - padding.right, chartH = h - padding.top - padding.bottom;
     ctx.fillStyle = '#161b22'; ctx.fillRect(0, 0, w, h);
+    // 只有1个数据点时显示单点+数值
+    if (n === 1) {
+        const val = cum[0] || 0;
+        ctx.fillStyle = val >= 0 ? '#3fb950' : '#f85149';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText(`${dates[0]}: ${val >= 0 ? '+' : ''}${val.toFixed(2)}U`, padding.left + 20, h/2 - 10);
+        ctx.fillStyle = '#8b949e'; ctx.font = '11px sans-serif';
+        ctx.fillText('（需要更多交易数据才能绘制完整曲线）', padding.left + 20, h/2 + 15);
+        ctx.beginPath(); ctx.arc(w/2, h/2 - 20, 6, 0, Math.PI*2);
+        ctx.fillStyle = val >= 0 ? '#3fb950' : '#f85149'; ctx.fill();
+        return;
+    }
     const allVals = [...cum, ...daily];
     const minVal = Math.min(...allVals, 0), maxVal = Math.max(...allVals, 0);
     const range = (maxVal - minVal) || 1;
@@ -1179,7 +1191,7 @@ fetch('/api/low-risk').then(r => r.json()).then(data => {
     html += `<div class="card"><div class="section-title">✅ 最近平仓</div><table>
         <thead><tr><th>币种</th><th>策略</th><th>方向</th><th>盈亏</th><th>原因</th><th>时间</th></tr></thead><tbody>`;
     (data.closed||[]).slice().reverse().slice(0,20).forEach(t => {
-        const closedAt = (t.closed_at||'').slice(0,16).replace('T',' ');
+        const closedAt = t.closed_at ? new Date(t.closed_at).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}) : '--';
         html += `<tr><td><b>${t.symbol}</b></td><td>${t.strategy}</td><td>${t.direction}</td>
             <td><b>${fmtPnl(t.pnl||0)}</b></td><td>${t.close_reason||'--'}</td><td>${closedAt}</td></tr>`;
     });
