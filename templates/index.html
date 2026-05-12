@@ -39,9 +39,9 @@
     </div>
 </div>
 
-<!-- 资金池分配 -->
+<!-- 资金池概览 -->
 <div class="card" style="margin-bottom:12px;">
-    <div class="section-title">💰 资金池分配</div>
+    <div class="section-title">💰 仓位使用</div>
     <div class="pool-bar" id="pool-bar"></div>
     <div class="grid grid-4" id="pool-details" style="margin-top:8px;"></div>
 </div>
@@ -151,18 +151,20 @@ function updateDashboard(data) {
     document.getElementById('win-rate').textContent = a.win_rate + '%';
     document.getElementById('win-rate').className = 'card-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
 
-    // Pool allocation
+    // Pool allocation (simplified: used vs available)
     const pool = data.pool || {};
+    const usedPct = pool.used_pct || 0;
+    const availPct = Math.max(0, 100 - usedPct);
+    const poolBarColor = usedPct > 80 ? 'var(--red)' : usedPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('pool-bar').innerHTML = `
-        <div class="pool-segment" style="width:${pool.short_pct||60}%;background:var(--red);">做空${pool.short_pct||60}%</div>
-        <div class="pool-segment" style="width:${pool.funding_arb_pct||20}%;background:var(--yellow);">费率${pool.funding_arb_pct||20}%</div>
-        <div class="pool-segment" style="width:${pool.low_risk_pct||20}%;background:var(--green);">低风险${pool.low_risk_pct||20}%</div>
+        <div class="pool-segment" style="width:${usedPct}%;background:${poolBarColor};">已用${usedPct.toFixed(0)}%</div>
+        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-tertiary);color:var(--text-secondary);">可用${availPct.toFixed(0)}%</div>
     `;
     document.getElementById('pool-details').innerHTML = `
-        <div><span class="card-sub">做空池：</span><b>${pool.short||0}U</b> <span class="card-sub">占用 ${pool.short_used||0}U</span></div>
-        <div><span class="card-sub">费率池：</span><b>${pool.funding_arb||0}U</b> <span class="card-sub">占用 ${pool.funding_used||0}U</span></div>
-        <div><span class="card-sub">低风险池：</span><b>${pool.low_risk||0}U</b> <span class="card-sub">占用 ${pool.low_risk_used||0}U</span></div>
-        <div><span class="card-sub">做多占用：</span><b>${pool.long_used||0}U</b></div>
+        <div><span class="card-sub">最大仓位：</span><b>${pool.max_position||0}U</b></div>
+        <div><span class="card-sub">做空占用：</span><b>${pool.short_used||0}U</b></div>
+        <div><span class="card-sub">可开仓：</span><b>${pool.available||0}U</b></div>
+        <div><span class="card-sub">单笔仓位：</span><b>${pool.compound_stake||'--'}U</b></div>
     `;
 
     // Short positions

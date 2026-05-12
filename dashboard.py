@@ -172,12 +172,19 @@ def get_dashboard_data() -> dict:
     # 持仓占用
     short_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_short)
     long_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_long)
+    total_used = short_used + long_used
+    max_position = dynamic_balance * config.RISK_MAX_POSITION_PCT
+    available = max(0, max_position - total_used)
 
     pool_allocation = {
         'total': round(dynamic_balance, 2),
+        'max_position': round(max_position, 2),
         'compound_stake': round(compound_stake, 2),
         'short_used': round(short_used, 2),
         'long_used': round(long_used, 2),
+        'total_used': round(total_used, 2),
+        'available': round(available, 2),
+        'used_pct': round(total_used / max_position * 100, 1) if max_position > 0 else 0,
     }
 
     # ── Yesterday PnL (for trend comparison) ──
