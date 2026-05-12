@@ -96,40 +96,42 @@ class TestCanOpenTrade:
 
     def test_position_limit_blocks(self, mock_config, monkeypatch):
         """持仓占比超限 -> 拒绝开仓"""
-        # ACCOUNT_BALANCE=1000, SHORT_STRATEGY_POOL_PCT=60, RISK_MAX_POSITION_PCT=0.5
-        # max_position = 1000 * 0.6 * 0.5 = 300
+        # ACCOUNT_BALANCE=1000, RISK_MAX_POSITION_PCT=0.5
+        # max_position = 1000 * 0.5 = 500
         state = RiskState(
             date=common.today_str(),
-            total_open_stake=280.0,
+            total_open_stake=480.0,
         )
         save_risk_state(state)
 
         # Mock _calc_actual_open_stake to return the state value
-        # (in production it reads trade files, which are empty in tests)
-        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 280.0)
+        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 480.0)
 
-        # 280 + 50 = 330 > 300 -> blocked
+        # 480 + 50 = 530 > 500 -> blocked
         allowed, reason = can_open_trade(50, strategy='short')
         assert allowed is False
         assert '持仓' in reason or '超限' in reason
 
-    def test_strategy_pool_isolation(self, mock_config):
+    def test_position_limit_allows(self, mock_config, monkeypatch):
         """
-        资金池隔离：funding_arb 使用 FUNDING_ARB_POOL_PCT。
-        ACCOUNT_BALANCE=1000, FUNDING_ARB_POOL_PCT=20, RISK_MAX_POSITION_PCT=0.5
-        max = 1000 * 0.2 * 0.5 = 100
-        stake=101 应被拒绝
+        持仓未超限 -> 允许开仓。
+        ACCOUNT_BALANCE=1000, RISK_MAX_POSITION_PCT=0.5
+        max = 1000 * 0.5 = 500
+        stake=99 with total_open_stake=0 should be allowed
         """
         state = RiskState(date=common.today_str(), total_open_stake=0)
         save_risk_state(state)
 
-        # 101 > 100 -> blocked
-        allowed, reason = can_open_trade(101, strategy='funding_arb')
-        assert allowed is False
+        allowed, reason = can_open_trade(99, strategy='short')
+        assert allowed is True
 
-        # 99 < 100 -> allowed
-        allowed2, reason2 = can_open_trade(99, strategy='funding_arb')
-        assert allowed2 is True
+        # 450 + 99 = 549 > 500 -> blocked
+        state2 = RiskState(date=common.today_str(), total_open_stake=450)
+        save_risk_state(state2)
+        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 450.0)
+
+        allowed2, reason2 = can_open_trade(99, strategy='short')
+        assert allowed2 is False
 
 
 class TestRecordTradeClosed:

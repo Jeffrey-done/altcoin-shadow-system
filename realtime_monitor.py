@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-实时止盈止损监控器 v1.0
+实时止盈止损监控器 v2.0
 通过 Binance WebSocket 7×24小时监控所有持仓价格，
 触及止盈/止损位时立即执行平仓。
 
@@ -10,7 +10,7 @@
 Docker：作为独立服务运行
 
 工作原理：
-  1. 每30秒读取所有交易文件，收集持仓中的币种
+  1. 每30秒读取交易文件，收集持仓中的币种
   2. 连接 Binance WebSocket miniTicker 流
   3. 每收到价格更新就检查是否触及止盈/止损
   4. 触发后立即执行 evaluate_trade() 平仓逻辑
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from common import (
-    TRADES_FILE, FUNDING_TRADES_FILE, LOW_RISK_TRADES_FILE,
+    TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     utcnow_iso, to_binance_symbol, LockedJsonFile,
 )
@@ -56,25 +56,9 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════
 
 def load_open_trades() -> list:
-    """加载所有持仓中的交易（做空+做多）"""
+    """加载所有持仓中的交易"""
     trades_raw = load_json(TRADES_FILE, [])
     trades = [Trade.from_dict(t) for t in trades_raw]
-    return [t for t in trades if t.status == 'open']
-
-
-def load_open_funding_trades() -> list:
-    """加载持仓中的费率套利交易"""
-    from models import FundingTrade
-    trades_raw = load_json(FUNDING_TRADES_FILE, [])
-    trades = [FundingTrade.from_dict(t) for t in trades_raw]
-    return [t for t in trades if t.status == 'open']
-
-
-def load_open_low_risk_trades() -> list:
-    """加载持仓中的低风险交易"""
-    from models import LowRiskTrade
-    trades_raw = load_json(LOW_RISK_TRADES_FILE, [])
-    trades = [LowRiskTrade.from_dict(t) for t in trades_raw]
     return [t for t in trades if t.status == 'open']
 
 
@@ -82,10 +66,6 @@ def get_all_open_symbols() -> set:
     """获取所有持仓中的币种集合"""
     symbols = set()
     for t in load_open_trades():
-        symbols.add(t.symbol)
-    for t in load_open_funding_trades():
-        symbols.add(t.symbol)
-    for t in load_open_low_risk_trades():
         symbols.add(t.symbol)
     symbols.discard('')
     return symbols
@@ -97,7 +77,7 @@ def get_all_open_symbols() -> set:
 
 def check_main_trades(symbol: str, price: float):
     """
-    检查做空/做多交易是否触发止盈止损。
+    检查交易是否触发止盈止损。
     触发后立即执行平仓并保存。
     使用 LockedJsonFile 确保 read-modify-write 原子性。
     """
@@ -131,117 +111,6 @@ def check_main_trades(symbol: str, price: float):
             save([t.to_dict() for t in trades])
 
 
-def check_funding_trades(symbol: str, price: float):
-    """检查费率套利交易的止损。使用 LockedJsonFile 确保原子性。"""
-    from models import FundingTrade
-
-    with LockedJsonFile(FUNDING_TRADES_FILE, default=[]) as (trades_raw, save):
-        trades = [FundingTrade.from_dict(t) for t in trades_raw]
-
-        any_updated = False
-        for trade in trades:
-            if trade.status != 'open' or trade.symbol != symbol:
-                continue
-
-            # 费率套利只有硬止损
-            entry = trade.entry_price
-            pnl_pct = (price - entry) / entry * 100  # 做多
-            notional = trade.stake * trade.leverage
-
-            # 止损检查
-            if trade.hard_stop_price and price <= trade.hard_stop_price:
-                pnl_usd = notional * pnl_pct / 100
-                trade.pnl = round(pnl_usd, 2)
-                trade.total_pnl = round(pnl_usd + trade.funding_income, 2)
-                trade.status = 'closed'
-                trade.closed_at = utcnow_iso()
-                trade.close_reason = f"实时止损（价格跌破{trade.hard_stop_price:.6f}）"
-                any_updated = True
-                logger.info(f"⚡ 费率止损: {trade.symbol} | PnL={trade.total_pnl:+.4f}U")
-                send_tg(
-                    f"🛑 <b>费率套利止损</b>\n\n"
-                    f"币种：{trade.symbol}\n"
-                    f"入场：{entry:.6f} → 现价：{price:.6f}\n"
-                    f"盈亏：<b>{trade.total_pnl:+.4f}U</b>"
-                )
-            else:
-                trade.current_price = price
-                trade.pnl = round(notional * pnl_pct / 100, 4)
-                trade.total_pnl = round(trade.pnl + trade.funding_income, 4)
-                any_updated = True
-
-        if any_updated:
-            save([t.to_dict() for t in trades])
-
-
-def check_low_risk_trades(symbol: str, price: float):
-    """检查低风险策略的止盈止损。使用 LockedJsonFile 确保原子性。"""
-    from models import LowRiskTrade
-    from common import hold_hours
-
-    with LockedJsonFile(LOW_RISK_TRADES_FILE, default=[]) as (trades_raw, save):
-        trades = [LowRiskTrade.from_dict(t) for t in trades_raw]
-
-        any_updated = False
-        for trade in trades:
-            if trade.status != 'open' or trade.symbol != symbol:
-                continue
-
-            # 计算盈亏
-            if trade.direction == 'LONG':
-                pnl_pct = (price - trade.entry_price) / trade.entry_price * 100
-            else:
-                pnl_pct = (trade.entry_price - price) / trade.entry_price * 100
-            pnl_usd = trade.notional * pnl_pct / 100
-
-            close_reason = None
-
-            # 止盈
-            if trade.direction == 'LONG' and price >= trade.target_price:
-                close_reason = f"实时止盈（价格达目标 {trade.target_price:.6f}）"
-            elif trade.direction == 'SHORT' and price <= trade.target_price:
-                close_reason = f"实时止盈（价格达目标 {trade.target_price:.6f}）"
-
-            # 止损
-            elif trade.direction == 'LONG' and price <= trade.stop_price:
-                close_reason = f"实时止损（价格跌破 {trade.stop_price:.6f}）"
-            elif trade.direction == 'SHORT' and price >= trade.stop_price:
-                close_reason = f"实时止损（价格突破 {trade.stop_price:.6f}）"
-
-            # 超时
-            elif hold_hours(trade.opened_at) >= trade.max_hold_hours:
-                close_reason = f"超时平仓（持仓 {hold_hours(trade.opened_at):.1f}h）"
-
-            if close_reason:
-                trade.status = 'closed'
-                trade.closed_at = utcnow_iso()
-                trade.close_reason = close_reason
-                trade.pnl = round(pnl_usd, 4)
-                trade.current_price = price
-                any_updated = True
-
-                emoji = "✅" if trade.pnl >= 0 else "❌"
-                logger.info(
-                    f"⚡ 低风险平仓: {trade.symbol} | {trade.strategy} | "
-                    f"{close_reason} | PnL={trade.pnl:+.4f}U"
-                )
-                send_tg(
-                    f"📊 <b>低风险实时平仓</b> {emoji}\n\n"
-                    f"币种：<b>{trade.symbol}</b>\n"
-                    f"策略：{trade.strategy}\n"
-                    f"原因：{close_reason}\n"
-                    f"入场：{trade.entry_price:.6f} → 现价：{price:.6f}\n"
-                    f"<b>盈亏：{trade.pnl:+.4f}U</b>"
-                )
-            else:
-                trade.current_price = price
-                trade.pnl = round(pnl_usd, 4)
-                any_updated = True
-
-        if any_updated:
-            save([t.to_dict() for t in trades])
-
-
 def on_price_update(symbol: str, price: float):
     """
     价格更新回调：检查所有持仓是否触发止盈止损。
@@ -249,8 +118,6 @@ def on_price_update(symbol: str, price: float):
     """
     try:
         check_main_trades(symbol, price)
-        check_funding_trades(symbol, price)
-        check_low_risk_trades(symbol, price)
     except Exception as e:
         logger.error(f"价格更新处理异常 ({symbol}): {e}")
 
@@ -401,7 +268,7 @@ def main():
     logger.info("=" * 50)
     logger.info("⚡ 实时止盈止损监控器启动")
     logger.info(f"   模式: {'WebSocket' if websocket else '轮询(5秒)'}")
-    logger.info(f"   监控: 做空/做多 + 费率套利 + 低风险策略")
+    logger.info(f"   监控: 做空交易")
     logger.info("=" * 50)
 
     if not websocket:

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-每日风控模块 v1.0
+每日风控模块 v2.0
 功能：
   - 单日最大亏损限制（达到后当日禁止开仓）
   - 单日最大开仓次数限制
   - 连续亏损暂停（连亏 N 次暂停 24h）
-  - 最大持仓占比限制
+  - 最大持仓占比限制（简化：max = dynamic_balance * 50%）
   - 所有检查通过才允许开仓
 """
 
@@ -68,30 +68,14 @@ def load_risk_state() -> RiskState:
 
 
 def _calc_actual_open_stake() -> float:
-    """从所有交易文件计算实际持仓总保证金"""
-    from common import FUNDING_TRADES_FILE, LOW_RISK_TRADES_FILE
-
+    """从交易文件计算实际持仓总保证金"""
     total = 0.0
 
-    # 做空/做多交易
+    # 做空交易
     trades = load_json(TRADES_FILE, [])
     total += sum(
         t.get('stake_remaining', t.get('stake', 0))
         for t in trades if t.get('status') == 'open'
-    )
-
-    # 费率套利交易
-    funding_trades = load_json(FUNDING_TRADES_FILE, [])
-    total += sum(
-        t.get('stake', 0)
-        for t in funding_trades if t.get('status') == 'open'
-    )
-
-    # 低风险策略交易
-    low_risk_trades = load_json(LOW_RISK_TRADES_FILE, [])
-    total += sum(
-        t.get('stake', 0)
-        for t in low_risk_trades if t.get('status') == 'open'
     )
 
     return total
@@ -108,7 +92,7 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short')
 
     参数:
       stake: 本次开仓保证金
-      strategy: 策略类型 ('short', 'funding_arb', 'low_risk')
+      strategy: 策略类型（保留参数向后兼容）
 
     返回: (allowed: bool, reason: str)
     """
@@ -140,7 +124,7 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short')
         logger.warning(f"🚫 {reason}")
         return False, reason
 
-    # 4. 检查最大持仓占比（基于资金池隔离）
+    # 4. 检查最大持仓占比（简化：max = dynamic_balance * RISK_MAX_POSITION_PCT）
     # 先同步实际持仓（防止累积偏差导致误判）
     actual_stake = _calc_actual_open_stake()
     if state.total_open_stake != actual_stake:
@@ -149,17 +133,11 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short')
         save_risk_state(state)
 
     dynamic_bal = get_dynamic_balance()
-    pool_pct_map = {
-        'short': config.SHORT_STRATEGY_POOL_PCT,
-        'funding_arb': config.FUNDING_ARB_POOL_PCT,
-        'low_risk': config.LOW_RISK_POOL_PCT,
-    }
-    pool_pct = pool_pct_map.get(strategy, config.SHORT_STRATEGY_POOL_PCT)
-    max_position = dynamic_bal * (pool_pct / 100) * config.RISK_MAX_POSITION_PCT
+    max_position = dynamic_bal * config.RISK_MAX_POSITION_PCT
     if state.total_open_stake + stake > max_position:
         reason = (
             f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
-            f"> 上限{max_position:.0f}U [{strategy}池]）"
+            f"> 上限{max_position:.0f}U）"
         )
         logger.warning(f"🚫 {reason}")
         return False, reason
