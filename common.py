@@ -137,6 +137,14 @@ def to_binance_symbol(symbol: str) -> str:
     return symbol.replace('/USDT', 'USDT').replace('/', '')
 
 
+def to_okx_symbol(symbol: str) -> str:
+    """
+    ccxt 格式 (BTC/USDT) → OKX 永续合约 instId 格式 (BTC-USDT-SWAP)
+    """
+    base = symbol.replace('/USDT', '').replace('/', '')
+    return f"{base}-USDT-SWAP"
+
+
 # ── 时间工具 ─────────────────────────────────────────────────────
 def utcnow() -> datetime:
     """返回带时区信息的 UTC 当前时间"""

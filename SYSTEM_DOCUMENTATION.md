@@ -1,10 +1,10 @@
 # 影子做空交易系统（Shadow Short Trading System）
 
-## 系统技术文档 v4.0
+## 系统技术文档 v5.0
 
 ---
 
-**文档版本**: 4.0  
+**文档版本**: 5.0  
 **最后更新**: 2025年  
 **系统名称**: 影子做空交易系统  
 **英文名称**: Altcoin Shadow Trading System  
@@ -84,6 +84,11 @@
 │       │           │           │           │            │         │
 │       ▼           ▼           ▼           ▼            ▼         │
 │  ┌─────────────────────────────────────────────────────────────┐ │
+│  │              exchange_manager.py (多交易所管理)                 │ │
+│  │         Binance + OKX 数据聚合 / 交叉验证 / 容错               │ │
+│  └───────────────────────────┬─────────────────────────────────┘ │
+│                              ▼                                    │
+│  ┌─────────────────────────────────────────────────────────────┐ │
 │  │                   signal_score.py (信号评分)                   │ │
 │  │              + BTC趋势过滤 + 4维评分(0~100)                    │ │
 │  └───────────────────────────┬─────────────────────────────────┘ │
@@ -115,7 +120,9 @@
 ### 2.2 数据流
 
 ```
-Binance API ──→ 行情/K线/OI/费率 ──→ 扫描模块
+Binance API ──→ 行情/K线/OI/费率 ──┐
+                                    ├──→ 扫描模块
+OKX API ────→ 费率/OI/行情 ────────┘
                                          │
                     ┌────────────────────┤
                     ▼                    ▼
@@ -137,6 +144,7 @@ Binance API ──→ 行情/K线/OI/费率 ──→ 扫描模块
 |------|----------|------|
 | 编程语言 | Python 3.11 | 主力语言 |
 | 交易所接口 | ccxt | 统一交易所抽象层 |
+| OKX接口 | ccxt + REST API | 辅助数据源 + 交叉验证 |
 | HTTP请求 | requests | Binance REST API调用 |
 | Web框架 | Flask + Flask-SocketIO | 仪表盘 |
 | 实时推送 | WebSocket (SocketIO) | 前端实时数据更新 |
@@ -170,6 +178,13 @@ Binance API ──→ 行情/K线/OI/费率 ──→ 扫描模块
    - 资金费率 ≥ 0.03%/8h → +1分
    - 24h涨幅 ≥ 30% → +1分
 6. 资金费率 > 0.05%/8h 跳过（空头成本太贵）
+
+**OKX交叉验证（扫描阶段）**
+
+当候选币在OKX也有永续合约时，自动查询OKX的费率和OI数据：
+- 两所费率都高 → 妖币评分额外+1
+- 两所OI都在涨 → 信号评分额外+4分
+- OKX无合约或数据获取失败 → 不影响主流程（优雅降级）
 
 **第二阶段：4H确认（每1小时执行）**
 
@@ -369,6 +384,21 @@ Binance合约每8小时结算一次资金费率。当费率为负时，空头付
 | 止损 | 1.5% | 方向错了快跑 |
 | 每日上限 | 3次 | 控制频率 |
 
+#### OKX交叉验证
+
+费率套利扫描时自动查询OKX费率：
+- 两所费率都为负 → 标记"OKX确认"，排序优先开仓
+- OKX确认的币信号更可靠（两个独立市场一致性确认）
+
+#### 跨交易所费率套利发现
+
+新增 `cross` 命令（`python3 funding_arb.py cross`）：
+- 聚合 Binance + OKX 全量费率数据
+- 发现两种机会：
+  1. 两所都极度负费率（做多信号极强）
+  2. 两所费率差 > 0.1%（跨所对冲机会）
+- 推送机会到TG，不自动开仓（需人工确认）
+
 ---
 
 ### 3.5 低风险日收策略（low_risk_strategy.py）
@@ -444,6 +474,7 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 | 妖币特征 | 0~25分 | yao_score映射: 0→0, 1→8, 2→16, 3→25 |
 | 触发方式 | 0~25分 | 弃盘点25 > 弃盘点(无OI)20 > 4h回落15 |
 | 市场热度 | 0~25分 | OI涨幅(0~10) + 费率(0~8) + BTC趋势(0~7) |
+| OKX交叉验证 | 0~8分(额外) | 两所费率/OI一致时加分 |
 
 **评级规则**：
 
@@ -470,6 +501,45 @@ kelly_pct = (win_rate × avg_win - (1-win_rate) × avg_loss) / avg_win
 | 跌 > 8% | 暂停做空 | 暂停做多 |
 | 涨 > 8% | 信号加分+7 | 加分+20 |
 | 涨 3~8% | 加分+4 | 最佳环境(+25) |
+
+---
+
+### 3.7 多交易所管理（exchange_manager.py）
+
+#### 设计原则
+
+- **Binance为主**：下单 + 主数据源
+- **OKX为辅**：交叉验证 + 品种补充 + 数据容错
+- **优雅降级**：任一交易所故障不影响系统运行
+
+#### 功能列表
+
+| 功能 | 说明 |
+|------|------|
+| 费率交叉验证 | 对比两所费率，方向一致时信号加强 |
+| OI交叉验证 | 对比两所OI变化，同步增长确认主力动向 |
+| 品种覆盖检查 | 检查OKX是否有某币永续合约 |
+| 聚合费率数据 | 合并两所全量费率，计算平均 |
+| 跨所套利发现 | 发现费率差异大的对冲机会 |
+| BTC多源容错 | Binance挂了自动切OKX获取BTC价格 |
+
+#### 交叉验证逻辑
+
+费率交叉验证：
+  Binance费率 ≥ 0.03% 且 OKX费率 ≥ 0.02% → signal_boost = True
+  Binance费率 ≤ -0.05% 且 OKX费率 ≤ -0.04% → both_negative = True
+
+OI交叉验证：
+  Binance OI变化 ≥ 30% 且 OKX OI变化 ≥ 20% → signal_boost = True
+
+#### OKX参数（独立于Binance）
+
+OKX体量较小，阈值需独立设置：
+| 参数 | Binance值 | OKX值 | 说明 |
+|------|-----------|--------|------|
+| 费率过热 | 0.03% | 0.02% | OKX费率波动相对小 |
+| 费率套利 | -0.05% | -0.04% | OKX更容易出现极端费率 |
+| OI变化 | 30% | 20% | OKX体量小，OI变化幅度不同 |
 
 ---
 
@@ -982,6 +1052,21 @@ effective_stake = DEFAULT_STAKE + (total_realized_pnl // 50) × 25
 | WEEKLY_ROI_GRADE_B | 5 | B级ROI阈值(%) |
 | WEEKLY_ROI_GRADE_C | 0 | C级ROI阈值(%) |
 
+### 8.16 OKX多交易所配置
+
+| 参数名 | 值 | 说明 |
+|--------|------|------|
+| OKX_ENABLED | True | OKX辅助数据源总开关 |
+| OKX_FUNDING_HOT | 0.02 | OKX多头过热阈值(%/8h) |
+| OKX_FUNDING_ARB_MIN_RATE | -0.04 | OKX负费率套利阈值 |
+| OKX_OI_CHANGE_MIN | 0.20 | OKX OI变化阈值(20%) |
+| OKX_CROSS_ARB_MIN_DIVERGENCE | 0.10 | 跨所费率差套利阈值(%) |
+| OKX_CROSS_ARB_ENABLED | True | 跨所套利发现开关 |
+| OKX_CROSS_VALIDATE_ENABLED | True | 交叉验证开关 |
+| OKX_CROSS_VALIDATE_BONUS | 8 | 交叉验证通过加分值 |
+| OKX_LIVE_MODE | False | OKX实盘开关 |
+| OKX_DEFAULT_LEVERAGE | 10 | OKX默认杠杆 |
+
 ---
 
 
@@ -1169,6 +1254,10 @@ TG_CHAT_ID=your_chat_id
 # 实盘模式需要（默认关闭）：
 # BINANCE_API_KEY=your_api_key
 # BINANCE_SECRET=your_secret
+# OKX实盘需要（默认关闭）：
+# OKX_API_KEY=your_okx_api_key
+# OKX_SECRET=your_okx_secret
+# OKX_PASSPHRASE=your_okx_passphrase
 ```
 
 #### 手动运行各模块
@@ -1194,6 +1283,9 @@ python3 funding_arb.py scan
 
 # 费率套利平仓检查
 python3 funding_arb.py check
+
+# 跨交易所费率套利发现
+python3 funding_arb.py cross
 
 # 低风险策略扫描
 python3 low_risk_strategy.py scan
@@ -1249,6 +1341,24 @@ DEFAULT_STAKE = 20  # 先用20U测试
 - 运行1周无异常后逐步增加
 - 始终保持风控参数不变
 - 定期检查周报评级
+
+#### OKX实盘切换
+
+如果使用OKX账户实盘交易：
+
+```python
+# config.py 中修改：
+LIVE_MODE = False           # 关闭Binance实盘
+OKX_LIVE_MODE = True        # 开启OKX实盘
+OKX_DEFAULT_LEVERAGE = 10   # OKX杠杆
+
+# .env 中添加：
+OKX_API_KEY=your_key
+OKX_SECRET=your_secret
+OKX_PASSPHRASE=your_passphrase
+```
+
+注意：数据分析仍使用两所公共API，执行下单走OKX。
 
 ### 10.3 策略调优建议
 
@@ -1347,7 +1457,8 @@ rm -f risk_state.json weekly_report.json
 | config.py | ~180 | 参数配置中心 |
 | common.py | ~170 | 公共工具（JSON/TG/时间/复利） |
 | models.py | ~180 | 数据模型（Trade/FundingTrade） |
-| live_executor.py | ~150 | 实盘执行器 |
+| live_executor.py | ~300 | 实盘执行器（Binance+OKX双交易所） |
+| exchange_manager.py | ~320 | 多交易所管理（Binance+OKX数据/验证/执行） |
 | health_check.py | ~130 | 健康检查 |
 
 ### B. 关键算法说明
@@ -1395,4 +1506,4 @@ RSI = 100 - 100/(1 + avg_gain/avg_loss)
 
 *文档结束*
 
-*本文档基于系统代码v4.0自动生成，如有参数变更请同步更新。*
+*本文档基于系统代码v5.0自动生成，如有参数变更请同步更新。*

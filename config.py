@@ -172,6 +172,30 @@ LOW_RISK_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 
 LOW_RISK_FUNDING_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT']
 
 # ══════════════════════════════════════════════════════════════════
+#  OKX 交易所配置（辅助数据源 + 交叉验证）
+# ══════════════════════════════════════════════════════════════════
+OKX_ENABLED = True             # 是否启用 OKX 作为辅助数据源
+# ⚠️ OKX 实盘交易需要在 .env 中配置:
+#   OKX_API_KEY, OKX_SECRET, OKX_PASSPHRASE
+
+# OKX 费率参数（OKX 费率计算公式不同，阈值需独立设置）
+OKX_FUNDING_HOT = 0.02        # OKX 多头过热阈值（%/8h，比币安略低）
+OKX_FUNDING_ARB_MIN_RATE = -0.04  # OKX 负费率套利阈值（%/8h）
+OKX_OI_CHANGE_MIN = 0.20      # OKX OI 变化阈值（20%，比币安低因为OKX体量小）
+
+# 跨交易所套利
+OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10  # 两所费率差 > 0.1% 时视为套利机会
+OKX_CROSS_ARB_ENABLED = True         # 是否启用跨所费率套利发现
+
+# 交叉验证加分（两所数据一致时，信号评分额外加分）
+OKX_CROSS_VALIDATE_ENABLED = True    # 是否启用交叉验证
+OKX_CROSS_VALIDATE_BONUS = 8         # 交叉验证通过时额外加分（满分100中）
+
+# OKX 下单配置（未来支持 OKX 实盘时使用）
+OKX_LIVE_MODE = False          # OKX 实盘开关（独立于 Binance）
+OKX_DEFAULT_LEVERAGE = 10     # OKX 默认杠杆
+
+# ══════════════════════════════════════════════════════════════════
 #  候选池管理
 # ══════════════════════════════════════════════════════════════════
 CANDIDATE_EXPIRE_DAYS = 1      # 已触发候选保留天数（超过自动清理）
