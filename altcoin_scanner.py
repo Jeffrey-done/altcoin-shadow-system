@@ -24,6 +24,11 @@ from common import (
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened
 from signal_score import calculate_signal_score, check_btc_filter
+from exchange_manager import (
+    get_binance, get_okx,
+    cross_validate_funding, cross_validate_oi,
+    okx_has_swap,
+)
 
 logger = setup_logger("altcoin_scanner")
 
@@ -270,6 +275,22 @@ def scan_daily():
                 logger.info(f"  ⛔ 跳过: {symbol} 资金费率过高({funding:.4f}%)")
                 continue
 
+            # ── OKX 交叉验证 ──
+            okx_cross_info = ""
+            if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(symbol):
+                funding_cv = cross_validate_funding(symbol, funding)
+                oi_cv = cross_validate_oi(symbol, oi_change)
+
+                if funding_cv["available"]:
+                    okx_cross_info += f" | OKX费率={funding_cv['okx_rate']:.4f}%"
+                    # 两所费率都高 → 妖币评分+1
+                    if funding_cv["signal_boost"]:
+                        yao_score = min(3, yao_score + 1)
+                        okx_cross_info += "(✓双验证)"
+
+                if oi_cv["available"] and oi_cv["signal_boost"]:
+                    okx_cross_info += f" | OKX_OI={oi_cv['okx_oi_change']*100:.0f}%(✓双验证)"
+
             candidates[symbol] = Candidate(
                 symbol=symbol,
                 price=price,
@@ -285,7 +306,7 @@ def scan_daily():
             logger.info(
                 f"  ✅ {yao_tag}: {symbol} | 日线RSI={rsi_1d} | "
                 f"24h={pct24h:.1f}% | OI={oi_change*100:.0f}% | "
-                f"FR={funding:.4f}% | 评分={yao_score}"
+                f"FR={funding:.4f}% | 评分={yao_score}{okx_cross_info}"
             )
 
         time.sleep(0.1)
@@ -374,6 +395,21 @@ def check_candidates():
 
         # ── 信号评分 ──
         abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
+
+        # OKX 交叉验证加分
+        cross_validate_bonus = 0
+        okx_cv_info = ""
+        if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
+            funding_cv = cross_validate_funding(c.symbol, c.funding_rate)
+            oi_cv = cross_validate_oi(c.symbol, c.oi_change / 100)  # oi_change 在 candidate 是百分比
+
+            if funding_cv.get("signal_boost"):
+                cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+                okx_cv_info += "费率✓ "
+            if oi_cv.get("signal_boost"):
+                cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+                okx_cv_info += "OI✓"
+
         score_result = calculate_signal_score(
             rsi_1d=c.rsi_1d,
             rsi_4h=rsi_4h,
@@ -385,6 +421,7 @@ def check_candidates():
             trigger_type='abandon' if trigger_abandon else '4h_rsi',
             abandon_oi_declining=abandon_oi,
             btc_24h_pct=btc_pct,
+            cross_validate_bonus=cross_validate_bonus,
         )
 
         # 评分太低跳过
@@ -459,7 +496,8 @@ def check_candidates():
             f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
             f"妖={score_result['details'].get('yao',0):.0f} "
             f"触发={score_result['details'].get('trigger',0):.0f} "
-            f"热度={score_result['details'].get('heat',0):.0f}\n\n"
+            f"热度={score_result['details'].get('heat',0):.0f}"
+            f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}\n\n"
             f"入场价：{price:.6f} U\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
             f"止盈一档：{trade.take_profit_1:.6f}（-5%，+{trade.notional*0.05*0.5:.1f}U）\n"

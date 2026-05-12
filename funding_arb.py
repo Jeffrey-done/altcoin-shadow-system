@@ -30,6 +30,12 @@ from common import (
 )
 from models import FundingTrade
 from risk_control import can_open_trade, record_trade_opened, record_trade_closed
+from exchange_manager import (
+    get_okx_all_funding_rates,
+    cross_validate_funding,
+    find_cross_exchange_arb_opportunities,
+    okx_has_swap,
+)
 
 logger = setup_logger("funding_arb")
 
@@ -130,11 +136,23 @@ def scan_negative_funding():
         if vol < config.FUNDING_ARB_VOL_MIN:
             continue
 
+        # OKX 交叉验证：两所费率都负 → 信号更强
+        ccxt_sym = symbol.replace('USDT', '/USDT')
+        okx_confirmed = False
+        okx_rate = 0.0
+        if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(ccxt_sym):
+            cv = cross_validate_funding(ccxt_sym, rate)
+            if cv["available"]:
+                okx_rate = cv["okx_rate"]
+                okx_confirmed = cv["both_negative"]
+
         candidates.append({
             'symbol': symbol,
             'rate': rate,
             'volume': vol,
             'mark_price': float(item.get('markPrice', 0)),
+            'okx_rate': okx_rate,
+            'okx_confirmed': okx_confirmed,
         })
         time.sleep(0.05)
 
@@ -142,15 +160,17 @@ def scan_negative_funding():
         logger.info("未找到符合条件的负费率币")
         return
 
-    # 按费率从低到高排序（越负越好）
-    candidates.sort(key=lambda x: x['rate'])
+    # 按费率从低到高排序（越负越好），OKX确认的优先
+    candidates.sort(key=lambda x: (not x['okx_confirmed'], x['rate']))
 
     # 已持仓的币不重复开
     open_symbols = {t.symbol for t in trades if t.status == 'open'}
 
     logger.info(f"找到 {len(candidates)} 个负费率候选：")
     for c in candidates[:10]:
-        logger.info(f"  {c['symbol']}: {c['rate']:.4f}%/8h | vol={c['volume']:,.0f}U")
+        okx_tag = " ✓OKX" if c['okx_confirmed'] else ""
+        okx_info = f" | OKX={c['okx_rate']:.4f}%" if c['okx_rate'] != 0 else ""
+        logger.info(f"  {c['symbol']}: {c['rate']:.4f}%/8h{okx_info}{okx_tag} | vol={c['volume']:,.0f}U")
 
     # 开仓（取费率最负的1个）
     opened = 0
@@ -187,17 +207,24 @@ def scan_negative_funding():
 
         logger.info(
             f"  ✅ 开多: {ccxt_symbol} @ {price:.6f} | "
-            f"费率={c['rate']:.4f}% | 预期收入={trade.expected_income:.4f}U"
+            f"费率={c['rate']:.4f}%"
+            f"{(' | OKX=' + str(round(c['okx_rate'],4)) + '%✓') if c['okx_confirmed'] else ''}"
+            f" | 预期收入={trade.expected_income:.4f}U"
         )
 
         # TG 推送
+        okx_line = ""
+        if c['okx_rate'] != 0:
+            okx_line = f"\nOKX费率：{c['okx_rate']:.4f}%/8h {'✅双验证' if c['okx_confirmed'] else ''}\n"
+
         send_tg(
             f"💰 <b>费率套利开仓</b>\n\n"
             f"币种：<b>{ccxt_symbol}</b>\n"
             f"方向：做多（吃负费率）\n"
             f"入场价：{price:.6f}\n"
             f"保证金：{trade.stake}U × {trade.leverage}x = {trade.notional}U\n"
-            f"当前费率：{c['rate']:.4f}%/8h\n"
+            f"Binance费率：{c['rate']:.4f}%/8h\n"
+            f"{okx_line}"
             f"预期收入：{trade.expected_income:.4f}U\n"
             f"止损价：{trade.hard_stop_price:.6f}（-{config.FUNDING_ARB_STOP_LOSS_PCT}%）\n\n"
             f"结算后自动平仓 ⏰"
@@ -292,6 +319,53 @@ def check_positions():
 
 
 # ══════════════════════════════════════════════════════════════════
+#  跨交易所费率套利扫描
+# ══════════════════════════════════════════════════════════════════
+
+def scan_cross_exchange():
+    """
+    扫描跨交易所费率套利机会：
+    - 两所费率差 > OKX_CROSS_ARB_MIN_DIVERGENCE → 可对冲
+    - 两所都极度负费率 → 做多信号更强（优先开仓）
+
+    这是额外的"发现"功能，不直接开仓，而是推送机会给 TG。
+    """
+    if not config.OKX_CROSS_ARB_ENABLED or not config.OKX_ENABLED:
+        logger.info("跨所费率套利发现已关闭")
+        return
+
+    logger.info("=== 扫描跨交易所费率套利机会 ===")
+
+    opportunities = find_cross_exchange_arb_opportunities()
+
+    if not opportunities:
+        logger.info("未发现跨所套利机会")
+        return
+
+    logger.info(f"发现 {len(opportunities)} 个跨所机会：")
+    msg_lines = [f"🔀 <b>跨交易所费率套利机会</b>\n"]
+
+    for opp in opportunities[:5]:
+        type_tag = "📉两所负费率" if opp['type'] == 'both_negative' else "📊费率分歧"
+        strength_tag = {"strong": "💪强", "medium": "⚡中", "weak": "📌弱"}.get(opp['signal_strength'], '')
+
+        logger.info(
+            f"  {opp['symbol']}: Binance={opp['binance_rate']:.4f}% | "
+            f"OKX={opp['okx_rate']:.4f}% | 差={opp['divergence']:.4f}% | {opp['type']}"
+        )
+
+        msg_lines.append(
+            f"\n{type_tag} <b>{opp['symbol']}</b> {strength_tag}\n"
+            f"  Binance: {opp['binance_rate']:.4f}%/8h\n"
+            f"  OKX: {opp['okx_rate']:.4f}%/8h\n"
+            f"  差值: {opp['divergence']:.4f}%"
+        )
+
+    if opportunities:
+        send_tg("\n".join(msg_lines))
+
+
+# ══════════════════════════════════════════════════════════════════
 #  状态查看
 # ══════════════════════════════════════════════════════════════════
 
@@ -332,8 +406,10 @@ if __name__ == '__main__':
         scan_negative_funding()
     elif mode == 'check':
         check_positions()
+    elif mode == 'cross':
+        scan_cross_exchange()
     elif mode == 'status':
         show_status()
     else:
-        print(f"用法: {sys.argv[0]} [scan|check|status]")
+        print(f"用法: {sys.argv[0]} [scan|check|cross|status]")
         sys.exit(1)

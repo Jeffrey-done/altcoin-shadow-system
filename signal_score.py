@@ -13,6 +13,7 @@ import requests
 
 import config
 from common import setup_logger, to_binance_symbol
+from exchange_manager import get_btc_24h_change_multi
 
 logger = setup_logger("signal_score")
 
@@ -22,19 +23,8 @@ logger = setup_logger("signal_score")
 # ══════════════════════════════════════════════════════════════════
 
 def get_btc_24h_change() -> float:
-    """获取 BTC/USDT 24h 涨跌幅（%）"""
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            params={"symbol": "BTCUSDT"},
-            timeout=5,
-        )
-        if r.status_code != 200:
-            return 0.0
-        return float(r.json().get('priceChangePercent', 0))
-    except Exception as e:
-        logger.warning(f"获取 BTC 涨跌幅失败: {e}")
-        return 0.0
+    """获取 BTC/USDT 24h 涨跌幅（%），多源容错（Binance → OKX）"""
+    return get_btc_24h_change_multi()
 
 
 def check_btc_filter() -> tuple:
@@ -76,6 +66,7 @@ def calculate_signal_score(
     trigger_type: str,        # 'abandon' | '4h_rsi'
     abandon_oi_declining: bool = False,
     btc_24h_pct: float = 0.0,
+    cross_validate_bonus: int = 0,
 ) -> dict:
     """
     综合评分 0~100。
@@ -85,6 +76,7 @@ def calculate_signal_score(
       2. 妖币特征（0~25）：yao_score 映射
       3. 触发方式（0~25）：弃盘点 > 4h RSI 回落
       4. 市场热度（0~25）：OI 变化 + 资金费率 + BTC 趋势加分
+      5. OKX 交叉验证加分（额外 0~8）：两所数据一致时奖励
 
     返回:
       {
@@ -156,8 +148,8 @@ def calculate_signal_score(
 
     heat_score = min(25, heat_score)
 
-    # ── 总分 ──
-    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score)
+    # ── 总分（含 OKX 交叉验证加分）──
+    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus)
     total_score = max(0, min(100, total_score))
 
     # ── 评级 & 仓位 ──
@@ -177,6 +169,7 @@ def calculate_signal_score(
         "yao": round(yao_dim_score, 1),
         "trigger": round(trigger_score, 1),
         "heat": round(heat_score, 1),
+        "cross_validate": cross_validate_bonus,
     }
 
     reason_parts = []
@@ -188,6 +181,8 @@ def calculate_signal_score(
         reason_parts.append(f"弃盘点触发")
     if heat_score >= 15:
         reason_parts.append(f"市场热度高")
+    if cross_validate_bonus > 0:
+        reason_parts.append(f"OKX交叉验证(+{cross_validate_bonus})")
 
     reason = " + ".join(reason_parts) if reason_parts else "信号一般"
 
@@ -202,8 +197,9 @@ def calculate_signal_score(
     logger.info(
         f"  📊 评分={total_score} [{grade}] | "
         f"RSI={rsi_score:.0f} 妖={yao_dim_score:.0f} "
-        f"触发={trigger_score:.0f} 热度={heat_score:.0f} | "
-        f"仓位={stake}U | {reason}"
+        f"触发={trigger_score:.0f} 热度={heat_score:.0f}"
+        f"{f' OKX=+{cross_validate_bonus}' if cross_validate_bonus > 0 else ''}"
+        f" | 仓位={stake}U | {reason}"
     )
 
     return result
