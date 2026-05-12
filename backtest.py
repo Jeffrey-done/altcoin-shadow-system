@@ -635,6 +635,21 @@ def print_result(result: BacktestResult):
 
     print("\n" + "=" * 60)
 
+    # 平仓原因分布
+    if result.trades:
+        from collections import Counter
+        reasons = Counter(t.exit_reason for t in result.trades)
+        print("\n  📊 平仓原因分布:")
+        total = len(result.trades)
+        for reason, count in reasons.most_common():
+            pct = count / total * 100
+            # 计算该原因的平均盈亏
+            avg_pnl = sum(t.pnl_usd for t in result.trades if t.exit_reason == reason) / count
+            bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+            print(f"    {reason:<12} {count:>3}笔 ({pct:>5.1f}%) [{bar}] 均盈亏:{avg_pnl:>+.1f}U")
+
+    print()
+
     # 实盘建议
     if result.win_rate >= 50 and result.profit_loss_ratio >= 1.5:
         print("  ✅ 参数达标！可以考虑小仓实盘验证")
@@ -965,6 +980,17 @@ def print_batch_report(report: dict, results: List[BacktestResult] = None):
         for r in results:
             all_trades.extend(r.trades)
         if all_trades:
+            # 平仓原因分布（全币种汇总）
+            from collections import Counter
+            reasons = Counter(t.exit_reason for t in all_trades)
+            total = len(all_trades)
+            print(f"\n  📊 平仓原因分布（全币种 {total} 笔）:")
+            for reason, count in reasons.most_common():
+                pct = count / total * 100
+                avg_pnl = sum(t.pnl_usd for t in all_trades if t.exit_reason == reason) / count
+                bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+                print(f"    {reason:<12} {count:>3}笔 ({pct:>5.1f}%) [{bar}] 均盈亏:{avg_pnl:>+.1f}U")
+
             print_monthly_breakdown(all_trades, "全币种汇总")
 
     print("\n" + "=" * 70 + "\n")
