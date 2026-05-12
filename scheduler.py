@@ -81,8 +81,8 @@ def main_loop():
         minute = now.minute
         day = now.day
 
-        # ── 每4小时：日线扫描（0, 4, 8, 12, 16, 20）──
-        if hour % 4 == 0 and minute == 0 and hour != last_scan_hour:
+        # ── 每小时整点：日线扫描 ──
+        if minute == 0 and hour != last_scan_hour:
             last_scan_hour = hour
             from altcoin_scanner import scan_daily
             run_task("日线扫描", scan_daily)

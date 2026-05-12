@@ -410,14 +410,21 @@ def scan_daily():
         else:
             existing[sym] = cand
 
-    # 清理过期候选
+    # 清理过期候选（已触发的立即删除 + 超时未触发的也删除）
     now = utcnow()
     to_remove = []
     for sym, c in existing.items():
+        added = parse_iso(c.added_at)
+        age_hours = (now - added).total_seconds() / 3600
+
         if c.triggered:
-            added = parse_iso(c.added_at)
-            if (now - added).days > config.CANDIDATE_EXPIRE_DAYS:
-                to_remove.append(sym)
+            # 已触发开仓的：直接移除，不占位
+            to_remove.append(sym)
+        elif age_hours > config.CANDIDATE_EXPIRE_HOURS:
+            # 超时未触发：超买窗口已过，信号失效
+            to_remove.append(sym)
+            logger.info(f"  🗑️ 移除过期候选: {sym}（已等待{age_hours:.0f}h未触发）")
+
     for sym in to_remove:
         del existing[sym]
 
