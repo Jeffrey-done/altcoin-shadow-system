@@ -41,9 +41,21 @@ logger = setup_logger("live_executor")
 # ══════════════════════════════════════════════════════════════════
 
 def get_live_exchange():
-    """创建已认证的 Binance 合约交易所实例"""
-    api_key = os.environ.get('BINANCE_API_KEY', '')
-    secret = os.environ.get('BINANCE_SECRET', '')
+    """创建已认证的 Binance 合约交易所实例
+
+    凭证优先级：admin_secrets.json > .env 环境变量
+    （admin panel 修改后立即生效，无需重启进程）
+    """
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('binance')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+    except Exception as e:
+        # admin_secrets 导入/读取失败时的 fallback
+        logger.debug(f"admin_secrets 不可用，fallback 到环境变量: {e}")
+        api_key = os.environ.get('BINANCE_API_KEY', '')
+        secret = os.environ.get('BINANCE_SECRET', '')
 
     if not api_key or not secret:
         logger.error("BINANCE_API_KEY 或 BINANCE_SECRET 未设置！无法实盘交易")

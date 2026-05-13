@@ -137,6 +137,13 @@ def main_loop():
     while True:
         now = datetime.now(timezone.utc)
 
+        # ── 热加载 runtime_config（admin panel 改了配置后 30s 内生效）──
+        try:
+            from runtime_config import apply_overrides as _apply_rc
+            _apply_rc()
+        except Exception as e:
+            logger.debug(f"runtime_config 应用异常（非致命）: {e}")
+
         # ── 每小时 :00 日线扫描 ──
         if _due_for_hourly('scan_daily', now, 0):
             from altcoin_scanner import scan_daily

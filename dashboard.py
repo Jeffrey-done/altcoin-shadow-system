@@ -52,7 +52,36 @@ if not _secret:
     import secrets as _secrets
     _secret = _secrets.token_urlsafe(32)
 app.config['SECRET_KEY'] = _secret
+# Session cookie 安全加固（admin panel 依赖 session 存登录态）
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
+# 只在请求本身是 https 时才把 cookie 标 Secure，免得本地 http 测试拿不到 cookie
+if os.environ.get('DASHBOARD_FORCE_HTTPS_COOKIE', '').lower() in ('1', 'true', 'yes'):
+    app.config['SESSION_COOKIE_SECURE'] = True
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# ══════════════════════════════════════════════════════════════════
+#  Admin Panel (挂载在 /<ADMIN_URL_SECRET>/ 下)
+# ══════════════════════════════════════════════════════════════════
+# 关键安全设计：如果 ADMIN_URL_SECRET 环境变量未设置，整个 blueprint 不加载。
+# 这意味着:
+#   - 任何 /admin /login /config 之类的 GET 都会走 Flask 默认的 404 处理
+#   - 互联网扫描器扫不到任何 admin 相关路径
+#   - 要访问面板必须：① 知道精确的 secret 前缀 ② 知道完整 URL
+# 生成 secret: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+_admin_url_secret = os.environ.get('ADMIN_URL_SECRET', '').strip()
+if _admin_url_secret:
+    if len(_admin_url_secret) < 16:
+        print(f"⚠️  ADMIN_URL_SECRET 长度仅 {len(_admin_url_secret)}，强烈建议 ≥32 字节随机串")
+        print(f"    生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+    try:
+        from admin_panel import create_blueprint as _create_admin_bp
+        app.register_blueprint(_create_admin_bp(_admin_url_secret))
+        print(f"🔐 Admin Panel 已挂载: /<ADMIN_URL_SECRET>/  (secret 长度={len(_admin_url_secret)})")
+    except Exception as _e:
+        print(f"⚠️  Admin Panel 加载失败: {_e}")
+else:
+    print(f"🔐 Admin Panel 未启用（ADMIN_URL_SECRET 未设置）")
 
 BATCH_BACKTEST_RESULTS_FILE = os.path.join(SCRIPT_DIR, 'batch_backtest_results.json')
 
@@ -460,6 +489,12 @@ def signal_scores_page():
 @app.route('/api/data')
 @check_api_token
 def api_data():
+    # Admin panel 改了配置后，下一次 /api/data 就能反映最新值
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc()
+    except Exception:
+        pass
     data = get_dashboard_data()
     data = _inject_live_prices(data)
     return jsonify(data)

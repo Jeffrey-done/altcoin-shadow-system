@@ -1,0 +1,406 @@
+{% extends "admin/_base.html" %}
+{% block title %}Admin Panel{% endblock %}
+{% block content %}
+<div class="header">
+  <h1>⚙️ 实盘配置面板</h1>
+  <div>
+    <span id="session-info" class="muted" style="margin-right: 16px;"></span>
+    <form method="post" action="logout" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn-secondary">退出</button>
+    </form>
+  </div>
+</div>
+
+<div id="alert-box"></div>
+
+<!-- ═══ 实盘开关 ═══ -->
+<div class="card">
+  <h2>🔀 实盘开关 & 路由</h2>
+  <div class="warn-banner">
+    ⚠️ <b>LIVE_MODE / OKX_LIVE_MODE 一旦开启，下一个信号会真实下单。</b>
+    修改后立即跨所有进程生效（scheduler / realtime_monitor / dashboard 每 30 秒内同步）。
+  </div>
+
+  <div class="row">
+    <label>Binance 实盘 (LIVE_MODE)</label>
+    <div><input type="checkbox" id="cfg-LIVE_MODE"></div>
+    <div class="muted" style="flex:1;">需要已配置 Binance API 凭证</div>
+  </div>
+
+  <div class="row">
+    <label>OKX 实盘 (OKX_LIVE_MODE)</label>
+    <div><input type="checkbox" id="cfg-OKX_LIVE_MODE"></div>
+    <div class="muted" style="flex:1;">需要已配置 OKX API 凭证</div>
+  </div>
+
+  <div class="row">
+    <label>路由模式 (PRIMARY_EXCHANGE)</label>
+    <select id="cfg-PRIMARY_EXCHANGE">
+      <option value="binance">binance — 只在币安下单</option>
+      <option value="okx">okx — 只在 OKX 下单</option>
+      <option value="both">both — 两所同时开仓，保证金 50/50</option>
+      <option value="auto">auto — 按币种覆盖自动选</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label>auto 模式 fallback</label>
+    <select id="cfg-PRIMARY_EXCHANGE_FALLBACK">
+      <option value="binance">binance</option>
+      <option value="okx">okx</option>
+    </select>
+    <div class="muted" style="flex:1;">仅 auto 模式且两所都有合约时生效</div>
+  </div>
+</div>
+
+<!-- ═══ API 凭证 ═══ -->
+<div class="card">
+  <h2>🔑 交易所 API 凭证</h2>
+  <div class="warn-banner">
+    保存后立即加密存入 <code>admin_secrets.json</code>（权限 0600）。
+    当前凭证只显示前 6 位 + 后 4 位（脱敏），输入框留空则不改。
+  </div>
+
+  <h3>Binance</h3>
+  <div id="bn-status" class="muted" style="margin-bottom: 8px;"></div>
+  <div class="row">
+    <label>API Key</label>
+    <input type="password" id="bn-api_key" placeholder="留空表示不改">
+  </div>
+  <div class="row">
+    <label>API Secret</label>
+    <input type="password" id="bn-secret" placeholder="留空表示不改">
+  </div>
+  <div>
+    <button onclick="saveCredentials('binance')">保存 Binance 凭证</button>
+    <button class="btn-danger" onclick="clearCredentials('binance')"
+            style="margin-left: 8px;">清除凭证（会关闭 LIVE_MODE）</button>
+  </div>
+
+  <h3 style="margin-top: 24px;">OKX</h3>
+  <div id="okx-status" class="muted" style="margin-bottom: 8px;"></div>
+  <div class="row">
+    <label>API Key</label>
+    <input type="password" id="okx-api_key" placeholder="留空表示不改">
+  </div>
+  <div class="row">
+    <label>API Secret</label>
+    <input type="password" id="okx-secret" placeholder="留空表示不改">
+  </div>
+  <div class="row">
+    <label>Passphrase</label>
+    <input type="password" id="okx-passphrase" placeholder="留空表示不改">
+  </div>
+  <div>
+    <button onclick="saveCredentials('okx')">保存 OKX 凭证</button>
+    <button class="btn-danger" onclick="clearCredentials('okx')"
+            style="margin-left: 8px;">清除凭证（会关闭 OKX_LIVE_MODE）</button>
+  </div>
+</div>
+
+<!-- ═══ 仓位与杠杆 ═══ -->
+<div class="card">
+  <h2>💰 仓位 & 杠杆</h2>
+  <div class="row">
+    <label>单笔保证金 (DEFAULT_STAKE, U)</label>
+    <input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1">
+  </div>
+  <div class="row">
+    <label>Binance 杠杆 (LEVERAGE)</label>
+    <input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1">
+  </div>
+  <div class="row">
+    <label>OKX 杠杆 (OKX_DEFAULT_LEVERAGE)</label>
+    <input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1">
+  </div>
+</div>
+
+<!-- ═══ 止盈止损 ═══ -->
+<div class="card">
+  <h2>🎯 止盈止损</h2>
+  <div class="row">
+    <label>TP1 乘数 (0.80~1.00)</label>
+    <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01">
+    <div class="muted" style="flex:1;">例如 0.95 = 价格跌 5% 触发 TP1</div>
+  </div>
+  <div class="row">
+    <label>TP2 乘数 (0.70~1.00)</label>
+    <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01">
+  </div>
+  <div class="row">
+    <label>TP1 平仓比例 (0.1~0.9)</label>
+    <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1">
+  </div>
+  <div class="row">
+    <label>硬止损 (HARD_STOP_LOSS_PCT, %)</label>
+    <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5">
+  </div>
+  <div class="row">
+    <label>滑点告警阈值 (SLIPPAGE_ALERT_PCT, %)</label>
+    <input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1">
+  </div>
+</div>
+
+<!-- ═══ 风控 ═══ -->
+<div class="card">
+  <h2>🛡️ 风控</h2>
+  <div class="row">
+    <label>单日最大亏损 (U)</label>
+    <input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1">
+  </div>
+  <div class="row">
+    <label>单日最大开仓次数</label>
+    <input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1">
+  </div>
+  <div class="row">
+    <label>连亏暂停次数</label>
+    <input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1">
+  </div>
+  <div class="row">
+    <label>最大持仓占比 (0.1~1.0)</label>
+    <input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1">
+  </div>
+  <div class="row">
+    <label>止损后冷却期 (h)</label>
+    <input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1">
+  </div>
+</div>
+
+<div style="margin: 24px 0;">
+  <button onclick="saveConfig()" style="padding: 12px 28px; font-size: 15px;">
+    💾 保存所有配置
+  </button>
+</div>
+
+<!-- ═══ 审计日志 ═══ -->
+<div class="card">
+  <h2>📋 审计日志</h2>
+  <div id="audit-list" class="muted">加载中...</div>
+</div>
+
+<!-- ═══ TOTP 弹窗 ═══ -->
+<div id="totp-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7);
+     z-index:1000; align-items:center; justify-content:center;">
+  <div class="card" style="width: 360px;">
+    <h3 style="margin-top:0;">需要 TOTP 验证</h3>
+    <p class="muted">写操作需要新鲜的 6 位动态码，请输入 Google Authenticator 当前数字：</p>
+    <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6"
+           inputmode="numeric" autocomplete="off" autofocus>
+    <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end;">
+      <button class="btn-secondary" onclick="closeTotpModal()">取消</button>
+      <button onclick="submitTotp()">验证</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const CSRF_TOKEN = "{{ csrf_token }}";
+
+let pendingAction = null;  // TOTP 通过后要执行的函数
+
+// ── API helpers ──
+async function api(method, path, body) {
+  const headers = {'X-Admin-CSRF': CSRF_TOKEN};
+  if (body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (data.error === 'totp_required') {
+      return {needTotp: true};
+    }
+    throw new Error(data.error || data.message || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+function alertBox(msg, level) {
+  const el = document.getElementById('alert-box');
+  const cls = level === 'error' ? 'error' : 'ok';
+  el.innerHTML = `<div class="${cls}">${msg}</div>`;
+  setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+// ── TOTP 弹窗 ──
+function openTotpModal(action) {
+  pendingAction = action;
+  document.getElementById('totp-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('totp-code').focus(), 50);
+}
+function closeTotpModal() {
+  pendingAction = null;
+  document.getElementById('totp-modal').style.display = 'none';
+  document.getElementById('totp-code').value = '';
+}
+async function submitTotp() {
+  const code = document.getElementById('totp-code').value.trim();
+  try {
+    await api('POST', 'api/verify-totp', {totp: code});
+    closeTotpModal();
+    if (pendingAction) {
+      const fn = pendingAction;
+      pendingAction = null;
+      await fn();
+    }
+  } catch (e) {
+    alertBox('TOTP 验证失败: ' + e.message, 'error');
+  }
+}
+
+// ── 加载状态 ──
+async function loadState() {
+  try {
+    const s = await api('GET', 'api/state');
+
+    // 填充配置
+    for (const [k, v] of Object.entries(s.config)) {
+      const el = document.getElementById('cfg-' + k);
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
+    }
+
+    // 凭证状态
+    const bn = s.exchanges.binance;
+    document.getElementById('bn-status').textContent = bn.has_credentials
+      ? `✓ 已配置 | key=${bn.masked.api_key || '(empty)'} | secret=${bn.masked.secret || '(empty)'}`
+      : '⚠ 未配置';
+    const okx = s.exchanges.okx;
+    document.getElementById('okx-status').textContent = okx.has_credentials
+      ? `✓ 已配置 | key=${okx.masked.api_key || '(empty)'} | passphrase=${okx.masked.passphrase || '(empty)'}`
+      : '⚠ 未配置';
+
+    // session 信息
+    const sess = s.session;
+    const mins = Math.floor(sess.idle_remaining_sec / 60);
+    const totpStatus = sess.totp_enabled
+      ? (sess.fresh_totp ? '🟢 TOTP 已验证' : '🟡 TOTP 需要刷新')
+      : '⚪ 2FA 未启用';
+    document.getElementById('session-info').textContent
+      = `剩余 ${mins} 分钟 · ${totpStatus}`;
+  } catch (e) {
+    alertBox('加载状态失败: ' + e.message, 'error');
+  }
+}
+
+// ── 保存配置 ──
+function saveConfig() {
+  const doSave = async () => {
+    const changes = {};
+    const keys = [
+      'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK',
+      'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
+      'TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'TP1_CLOSE_RATIO',
+      'HARD_STOP_LOSS_PCT', 'SLIPPAGE_ALERT_PCT',
+      'RISK_MAX_DAILY_LOSS', 'RISK_MAX_DAILY_TRADES',
+      'RISK_CONSECUTIVE_LOSS_PAUSE', 'RISK_MAX_POSITION_PCT', 'COOLDOWN_HOURS',
+    ];
+    for (const key of keys) {
+      const el = document.getElementById('cfg-' + key);
+      if (!el) continue;
+      if (el.type === 'checkbox') changes[key] = el.checked;
+      else if (el.type === 'number') changes[key] = parseFloat(el.value);
+      else changes[key] = el.value;
+    }
+    try {
+      const r = await api('POST', 'api/config', {changes});
+      if (r.needTotp) { openTotpModal(doSave); return; }
+      alertBox(`✓ 已保存 ${Object.keys(r.applied || {}).length} 项变更，立即生效`, 'ok');
+      loadState();
+      loadAudit();
+    } catch (e) {
+      alertBox('保存失败: ' + e.message, 'error');
+    }
+  };
+  doSave();
+}
+
+// ── 保存凭证 ──
+function saveCredentials(exchange) {
+  const doSave = async () => {
+    const body = {};
+    body.api_key = document.getElementById(exchange + '-api_key').value;
+    body.secret = document.getElementById(exchange + '-secret').value;
+    if (exchange === 'okx') {
+      body.passphrase = document.getElementById('okx-passphrase').value;
+    }
+    try {
+      const r = await api('POST', 'api/credentials/' + exchange, body);
+      if (r.needTotp) { openTotpModal(doSave); return; }
+      alertBox(`✓ ${exchange.toUpperCase()} 凭证已保存`, 'ok');
+      // 清空输入框
+      document.getElementById(exchange + '-api_key').value = '';
+      document.getElementById(exchange + '-secret').value = '';
+      if (exchange === 'okx') document.getElementById('okx-passphrase').value = '';
+      loadState();
+      loadAudit();
+    } catch (e) {
+      alertBox('保存失败: ' + e.message, 'error');
+    }
+  };
+  doSave();
+}
+
+// ── 清除凭证 ──
+function clearCredentials(exchange) {
+  const doClear = async () => {
+    if (!confirm(`确定清除 ${exchange.toUpperCase()} 凭证？这会同时关闭该交易所的实盘开关。`)) return;
+    try {
+      const r = await api('DELETE', 'api/credentials/' + exchange);
+      if (r.needTotp) { openTotpModal(doClear); return; }
+      alertBox(`✓ ${exchange.toUpperCase()} 凭证已清除`, 'ok');
+      loadState();
+      loadAudit();
+    } catch (e) {
+      alertBox('操作失败: ' + e.message, 'error');
+    }
+  };
+  doClear();
+}
+
+// ── 审计 ──
+async function loadAudit() {
+  try {
+    const r = await api('GET', 'api/audit');
+    const el = document.getElementById('audit-list');
+    if (!r.events || !r.events.length) {
+      el.innerHTML = '<div class="muted">暂无审计记录</div>';
+      return;
+    }
+    const rows = r.events.slice(0, 50).map(e => {
+      const ts = (e.ts || '').replace('T', ' ').slice(0, 19);
+      const ip = e.ip || '';
+      const extra = Object.entries(e)
+        .filter(([k]) => !['ts', 'event', 'ip'].includes(k))
+        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+        .join(' ');
+      return `<div style="font-family:monospace;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);">
+        <span class="muted">${ts}</span>
+        <span style="color:var(--accent);">${e.event}</span>
+        <span class="muted">${ip}</span>
+        ${extra ? `<span style="color:var(--text-dim);">${extra}</span>` : ''}
+      </div>`;
+    }).join('');
+    el.innerHTML = rows;
+  } catch (e) {
+    document.getElementById('audit-list').textContent = '加载失败: ' + e.message;
+  }
+}
+
+// TOTP 码自动提交（输满 6 位）
+document.addEventListener('DOMContentLoaded', () => {
+  loadState();
+  loadAudit();
+  setInterval(loadState, 30000);   // 30s 刷新 session 剩余时间
+
+  document.getElementById('totp-code').addEventListener('input', (e) => {
+    if (e.target.value.replace(/\D/g, '').length === 6) submitTotp();
+  });
+});
+</script>
+{% endblock %}

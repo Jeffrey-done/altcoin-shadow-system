@@ -70,11 +70,19 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
                 return None
         return _okx_instance
 
-    # 认证版本
-    import os
-    api_key = os.environ.get('OKX_API_KEY', '')
-    secret = os.environ.get('OKX_SECRET', '')
-    passphrase = os.environ.get('OKX_PASSPHRASE', '')
+    # 认证版本（admin_secrets.json 优先于 .env）
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('okx')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+        passphrase = creds.get('passphrase', '')
+    except Exception as e:
+        logger.debug(f"admin_secrets 不可用，fallback 到环境变量: {e}")
+        import os
+        api_key = os.environ.get('OKX_API_KEY', '')
+        secret = os.environ.get('OKX_SECRET', '')
+        passphrase = os.environ.get('OKX_PASSPHRASE', '')
     if not api_key or not secret or not passphrase:
         logger.warning("OKX API 凭证未配置，无法使用认证接口")
         return None

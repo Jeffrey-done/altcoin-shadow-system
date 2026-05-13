@@ -57,11 +57,18 @@ def check_binance() -> bool:
     if not config.LIVE_MODE:
         _pr_warn("config.LIVE_MODE=False，当前处于纸上模式。继续检查 API 凭证可用性...")
 
-    api_key = os.environ.get('BINANCE_API_KEY', '')
-    secret = os.environ.get('BINANCE_SECRET', '')
+    # 凭证优先级：admin_secrets.json > .env
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('binance')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+    except Exception:
+        api_key = os.environ.get('BINANCE_API_KEY', '')
+        secret = os.environ.get('BINANCE_SECRET', '')
 
     if not api_key or not secret:
-        _pr_fail("BINANCE_API_KEY 或 BINANCE_SECRET 未配置（.env）")
+        _pr_fail("BINANCE_API_KEY 或 BINANCE_SECRET 未配置（.env 或 admin panel）")
         return False
     _pr_ok(f"API 凭证已配置（key 前缀={api_key[:6]}...）")
 
@@ -133,15 +140,22 @@ def check_okx() -> bool:
     if not config.OKX_LIVE_MODE:
         _pr_warn("config.OKX_LIVE_MODE=False，当前 OKX 不会真实下单。继续检查 API 凭证可用性...")
 
-    api_key = os.environ.get('OKX_API_KEY', '')
-    secret = os.environ.get('OKX_SECRET', '')
-    passphrase = os.environ.get('OKX_PASSPHRASE', '')
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('okx')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+        passphrase = creds.get('passphrase', '')
+    except Exception:
+        api_key = os.environ.get('OKX_API_KEY', '')
+        secret = os.environ.get('OKX_SECRET', '')
+        passphrase = os.environ.get('OKX_PASSPHRASE', '')
 
     missing = [n for n, v in [
         ('OKX_API_KEY', api_key), ('OKX_SECRET', secret), ('OKX_PASSPHRASE', passphrase)
     ] if not v]
     if missing:
-        _pr_fail(f"以下环境变量未配置: {', '.join(missing)}")
+        _pr_fail(f"以下凭证未配置（.env 或 admin panel）: {', '.join(missing)}")
         return False
     _pr_ok(f"API 凭证已配置（key 前缀={api_key[:6]}...）")
 
