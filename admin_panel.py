@@ -491,6 +491,18 @@ def create_blueprint(url_secret: str) -> Blueprint:
         for key, (t, _v, label) in runtime_config.ALLOWED.items():
             fields_meta[key] = {'type': t.__name__, 'label': label}
 
+        # 复利实时数据
+        try:
+            from common import get_compound_stake, get_dynamic_balance
+            import config as _cfg
+            compound_stake = round(get_compound_stake(), 2)
+            dynamic_balance = round(get_dynamic_balance(), 2)
+            compound_enabled = getattr(_cfg, 'AUTO_COMPOUND_ENABLED', True)
+        except Exception:
+            compound_stake = current.get('DEFAULT_STAKE', 50)
+            dynamic_balance = current.get('ACCOUNT_BALANCE', 100)
+            compound_enabled = True
+
         # 账户信息
         accounts = admin_secrets.list_accounts()
         active_id = admin_secrets.get_active_account_id()
@@ -498,6 +510,11 @@ def create_blueprint(url_secret: str) -> Blueprint:
         data = {
             'config': current,
             'fields_meta': fields_meta,
+            'compound': {
+                'current_stake': compound_stake,
+                'dynamic_balance': dynamic_balance,
+                'enabled': compound_enabled,
+            },
             'exchanges': {
                 'binance': {
                     'has_credentials': bool(bn_masked.get('api_key')),
