@@ -1,18 +1,46 @@
 #!/usr/bin/env python3
 """
-数据模型定义 v4.0
+数据模型定义 v4.1
 用 dataclass 明确字段，防止拼写错误导致的静默失败。
-新增：杠杆字段、硬止损、FundingTrade 模型
+新增：杠杆字段、硬止损、CloseType 枚举
+
+v4.1 语义约定：
+  - Trade.pnl = "剩余仓位"的盈亏（不含 tp1_locked_pnl）
+  - 总盈亏 = tp1_locked_pnl + pnl（见 total_realized_pnl 属性）
+  - Trade.close_type = 机器可读的关闭原因枚举（close_reason 为展示字符串）
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, asdict
+from enum import Enum
 from typing import Optional
 
 from common import utcnow_iso
 import config
+
+
+class CloseType(str, Enum):
+    """
+    交易关闭原因枚举（机器可读）。
+    继承 str 以便 JSON 序列化时直接写成字符串。
+    """
+    HARD_STOP = 'hard_stop'
+    TP1 = 'tp1'              # 仅用于标注，TP1 本身不关闭交易
+    TP2 = 'tp2'
+    TRAIL_STOP = 'trail_stop'
+    BREAKEVEN_STOP = 'breakeven_stop'
+    TIME_STOP = 'time_stop'
+    MANUAL = 'manual'
+
+    @classmethod
+    def is_stop_loss(cls, value) -> bool:
+        """判断是否为止损类平仓（用于冷却期逻辑）"""
+        if value is None:
+            return False
+        v = value.value if isinstance(value, cls) else str(value)
+        return v in (cls.HARD_STOP.value, cls.TRAIL_STOP.value, cls.TIME_STOP.value)
 
 
 @dataclass
@@ -83,6 +111,7 @@ class Trade:
     current_price: Optional[float] = None
     closed_at: Optional[str] = None
     close_reason: Optional[str] = None
+    close_type: Optional[str] = None   # CloseType 枚举值（机器可读），用于冷却期/统计
 
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',
@@ -137,168 +166,9 @@ class Trade:
         return cls(**filtered)
 
 
-@dataclass
-class FundingTrade:
-    """资金费率套利交易"""
-    id: str
-    symbol: str
-    direction: str = 'LONG'          # 通常做多吃负费率
-    entry_price: float = 0.0
-    stake: float = config.FUNDING_ARB_STAKE
-    leverage: int = config.FUNDING_ARB_LEVERAGE
-    notional: float = 0.0
-    funding_rate: float = 0.0        # 开仓时的费率（%/8h）
-    expected_income: float = 0.0     # 预期费率收入
-    opened_at: str = field(default_factory=utcnow_iso)
-    status: str = 'open'             # open | closed
-    strategy: str = 'funding_arb'
-
-    # 止损
-    hard_stop_price: Optional[float] = None
-    max_hold_hours: float = config.FUNDING_ARB_MAX_HOLD_HOURS
-
-    # 结算
-    pnl: float = 0.0                 # 方向性盈亏
-    funding_income: float = 0.0      # 费率收入
-    total_pnl: float = 0.0           # 总盈亏 = pnl + funding_income
-    current_price: Optional[float] = None
-    closed_at: Optional[str] = None
-    close_reason: Optional[str] = None
-
-    @classmethod
-    def create_long(cls, symbol: str, price: float, funding_rate: float,
-                    stake: float = config.FUNDING_ARB_STAKE,
-                    leverage: int = config.FUNDING_ARB_LEVERAGE) -> FundingTrade:
-        """工厂方法：做多吃负费率"""
-        notional = stake * leverage
-        # 止损价：价格下跌 FUNDING_ARB_STOP_LOSS_PCT% 触发
-        hard_stop = round(price * (1 - config.FUNDING_ARB_STOP_LOSS_PCT / 100), 6)
-        # 预期费率收入 = 名义仓位 × |费率|（空头付给多头）
-        expected_income = round(notional * abs(funding_rate) / 100, 4)
-        return cls(
-            id=f"FUND-LONG-{symbol.replace('/USDT', '').replace('/', '')}-{int(time.time())}",
-            symbol=symbol,
-            direction='LONG',
-            entry_price=price,
-            stake=stake,
-            leverage=leverage,
-            notional=notional,
-            funding_rate=funding_rate,
-            expected_income=expected_income,
-            hard_stop_price=hard_stop,
-        )
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> FundingTrade:
-        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in d.items() if k in valid_fields}
-        return cls(**filtered)
-
-
-
-@dataclass
-class LowRiskTrade:
-    """低风险策略交易记录"""
-    id: str
-    symbol: str
-    strategy: str                     # grid | mean_reversion | funding_multi
-    direction: str                    # LONG | SHORT
-    entry_price: float
-    stake: float
-    leverage: int
-    notional: float = 0.0             # stake * leverage
-    grid_level: Optional[int] = None  # 网格层级（仅grid策略）
-    target_price: float = 0.0
-    stop_price: float = 0.0
-    max_hold_hours: float = 4.0
-    opened_at: str = field(default_factory=utcnow_iso)
-    status: str = 'open'              # open | closed
-    pnl: float = 0.0
-    current_price: Optional[float] = None
-    closed_at: Optional[str] = None
-    close_reason: Optional[str] = None
-
-    @classmethod
-    def create_grid(cls, symbol: str, price: float, direction: str,
-                    grid_level: int, target_price: float, stop_price: float,
-                    stake: float = None, leverage: int = None) -> 'LowRiskTrade':
-        """工厂方法：创建网格交易"""
-        import time
-        stake = stake or config.LOW_RISK_GRID_STAKE
-        leverage = leverage or config.LOW_RISK_GRID_LEVERAGE
-        notional = stake * leverage
-        return cls(
-            id=f"LR-GRID-{symbol.replace('/USDT', '').replace('/', '')}-L{grid_level}-{int(time.time())}",
-            symbol=symbol,
-            strategy='grid',
-            direction=direction,
-            entry_price=price,
-            stake=stake,
-            leverage=leverage,
-            notional=notional,
-            grid_level=grid_level,
-            target_price=target_price,
-            stop_price=stop_price,
-            max_hold_hours=config.LOW_RISK_GRID_MAX_HOLD_HOURS,
-        )
-
-    @classmethod
-    def create_mean_reversion(cls, symbol: str, price: float, direction: str,
-                              target_price: float, stop_price: float,
-                              stake: float = None, leverage: int = None) -> 'LowRiskTrade':
-        """工厂方法：创建均值回归交易"""
-        import time
-        stake = stake or config.LOW_RISK_MEAN_REVERSION_STAKE
-        leverage = leverage or config.LOW_RISK_MEAN_REVERSION_LEVERAGE
-        notional = stake * leverage
-        return cls(
-            id=f"LR-MEAN-{symbol.replace('/USDT', '').replace('/', '')}-{int(time.time())}",
-            symbol=symbol,
-            strategy='mean_reversion',
-            direction=direction,
-            entry_price=price,
-            stake=stake,
-            leverage=leverage,
-            notional=notional,
-            target_price=target_price,
-            stop_price=stop_price,
-            max_hold_hours=config.LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS,
-        )
-
-    @classmethod
-    def create_funding(cls, symbol: str, price: float, funding_rate: float,
-                       stake: float = None, leverage: int = None) -> 'LowRiskTrade':
-        """工厂方法：创建多币费率收割交易"""
-        import time
-        stake = stake or config.LOW_RISK_GRID_STAKE
-        leverage = leverage or config.LOW_RISK_GRID_LEVERAGE
-        notional = stake * leverage
-        # 做多吃负费率，止损1.5%
-        stop_price = round(price * (1 - 1.5 / 100), 6)
-        # 目标：跨过结算即可
-        target_price = round(price * (1 + 0.5 / 100), 6)
-        return cls(
-            id=f"LR-FUND-{symbol.replace('/USDT', '').replace('/', '')}-{int(time.time())}",
-            symbol=symbol,
-            strategy='funding_multi',
-            direction='LONG',
-            entry_price=price,
-            stake=stake,
-            leverage=leverage,
-            notional=notional,
-            target_price=target_price,
-            stop_price=stop_price,
-            max_hold_hours=9.0,
-        )
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> 'LowRiskTrade':
-        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in d.items() if k in valid_fields}
-        return cls(**filtered)
+# ══════════════════════════════════════════════════════════════════
+#  已废弃：FundingTrade / LowRiskTrade
+# ══════════════════════════════════════════════════════════════════
+# 这两个策略在 v4.1 之前被整体移除（见 README：当前仅做空策略）。
+# 保留的 Python 源码和 config 已废弃字段都已清理。
+# 如果需要旧数据的归档读取，字段在历史 commit 中仍可查阅。

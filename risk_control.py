@@ -296,10 +296,14 @@ def refresh_open_stake() -> None:
 def is_in_cooldown(symbol: str) -> tuple:
     """
     检查某币种是否在止损平仓后的冷却期内。
-    
+
+    使用 close_type 枚举判断（而非硬编码中文字符串），
+    旧数据如果没有 close_type 字段，则回退到 close_reason 字符串匹配。
+
     Returns: (bool, str) - (是否冷却中, 原因描述)
     """
     from datetime import timedelta
+    from models import CloseType
     trades = load_json(TRADES_FILE, [])
     now = utcnow()
     cooldown_hours = config.COOLDOWN_HOURS
@@ -309,9 +313,18 @@ def is_in_cooldown(symbol: str) -> tuple:
             continue
         if t.get('status') != 'closed':
             continue
-        close_reason = t.get('close_reason', '').lower()
-        if '止损' not in close_reason and 'stop' not in close_reason:
-            continue
+
+        # 优先用 close_type 枚举判断
+        ct = t.get('close_type')
+        if ct is not None:
+            if not CloseType.is_stop_loss(ct):
+                continue
+        else:
+            # 旧数据回退：字符串包含 '止损' / 'stop'
+            close_reason = t.get('close_reason', '').lower()
+            if '止损' not in close_reason and 'stop' not in close_reason:
+                continue
+
         # 找到了止损平仓记录，检查时间
         closed_at = t.get('closed_at', '')
         if not closed_at:

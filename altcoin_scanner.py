@@ -66,9 +66,17 @@ def calc_rsi_wilder(closes: list, period: int = config.RSI_PERIOD) -> float:
 
 
 def get_rsi(exchange, symbol: str, timeframe: str, limit: int = 50) -> float:
-    """获取指定时间框架的 RSI"""
+    """
+    获取指定时间框架的 RSI。
+
+    丢弃最后一根 K 线：Binance 返回的最后一根是"正在形成"的，
+    用它算 RSI 会在收盘前闪烁，产生假信号。
+    """
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        # 多取一根，扔掉未收盘的那根
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit + 1)
+        if len(ohlcv) >= 2:
+            ohlcv = ohlcv[:-1]
         closes = [c[4] for c in ohlcv]
         return calc_rsi_wilder(closes)
     except Exception as e:
@@ -78,9 +86,12 @@ def get_rsi(exchange, symbol: str, timeframe: str, limit: int = 50) -> float:
 
 def get_rsi_peak(exchange, symbol: str, timeframe: str = '4h',
                  lookback: int = config.H4_RSI_PEAK_LOOKBACK) -> float:
-    """获取近期 RSI 峰值（O(n) Wilder 递推）"""
+    """获取近期 RSI 峰值（O(n) Wilder 递推，丢弃未收盘 K 线）"""
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback + config.RSI_PERIOD + 5)
+        # 多取一根丢弃未收盘
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback + config.RSI_PERIOD + 6)
+        if len(ohlcv) >= 2:
+            ohlcv = ohlcv[:-1]
         closes = [c[4] for c in ohlcv]
         if len(closes) < config.RSI_PERIOD + 1:
             return 50.0
@@ -166,9 +177,14 @@ def detect_abandon_signal(exchange, symbol: str) -> dict:
     """
     检测 1H K 线弃盘点信号：
     连续 N 根 1H K 线实体下跌 > ABANDON_BODY_DROP_PCT% + OI 同步下降
+
+    丢弃最后一根未收盘 K 线（避免 intra-bar 跳动触发假信号）。
     """
     try:
-        h1 = exchange.fetch_ohlcv(symbol, '1h', limit=6)
+        # 多取一根，丢弃最后的未收盘 K
+        h1 = exchange.fetch_ohlcv(symbol, '1h', limit=7)
+        if len(h1) >= 2:
+            h1 = h1[:-1]
         if len(h1) < 3:
             return {"signal": False, "reason": "数据不足"}
 
@@ -248,7 +264,10 @@ def detect_volume_divergence(exchange, symbol: str) -> dict:
     """
     result = {"divergence": False, "shrink_ratio": 1.0, "score_bonus": 0, "reason": ""}
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=24)
+        # 多取一根丢弃未收盘
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=25)
+        if len(ohlcv) >= 2:
+            ohlcv = ohlcv[:-1]
         if len(ohlcv) < 10:
             return result
 
@@ -413,39 +432,41 @@ def scan_daily():
 
         time.sleep(0.1)
 
-    # 合并已有候选池
-    existing_list = load_json(CANDIDATES_FILE, [])
-    existing = {c['symbol']: Candidate.from_dict(c) for c in existing_list}
+    # 合并已有候选池（持锁 RMW 防止与 check_candidates 并发覆盖）
+    with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing_list, save_candidates):
+        existing = {c['symbol']: Candidate.from_dict(c) for c in existing_list}
 
-    for sym, cand in candidates.items():
-        if sym in existing:
-            existing[sym].rsi_1d = cand.rsi_1d
-            existing[sym].price = cand.price
-            existing[sym].vol24h = cand.vol24h
-            existing[sym].pct24h = cand.pct24h
-        else:
-            existing[sym] = cand
+        for sym, cand in candidates.items():
+            if sym in existing:
+                existing[sym].rsi_1d = cand.rsi_1d
+                existing[sym].price = cand.price
+                existing[sym].vol24h = cand.vol24h
+                existing[sym].pct24h = cand.pct24h
+            else:
+                existing[sym] = cand
 
-    # 清理过期候选（已触发的立即删除 + 超时未触发的也删除）
-    now = utcnow()
-    to_remove = []
-    for sym, c in existing.items():
-        added = parse_iso(c.added_at)
-        age_hours = (now - added).total_seconds() / 3600
+        # 清理过期候选（已触发的立即删除 + 超时未触发的也删除）
+        now = utcnow()
+        to_remove = []
+        for sym, c in existing.items():
+            added = parse_iso(c.added_at)
+            age_hours = (now - added).total_seconds() / 3600
 
-        if c.triggered:
-            # 已触发开仓的：直接移除，不占位
-            to_remove.append(sym)
-        elif age_hours > config.CANDIDATE_EXPIRE_HOURS:
-            # 超时未触发：超买窗口已过，信号失效
-            to_remove.append(sym)
-            logger.info(f"  🗑️ 移除过期候选: {sym}（已等待{age_hours:.0f}h未触发）")
+            if c.triggered:
+                # 已触发开仓的：直接移除，不占位
+                to_remove.append(sym)
+            elif age_hours > config.CANDIDATE_EXPIRE_HOURS:
+                # 超时未触发：超买窗口已过，信号失效
+                to_remove.append(sym)
+                logger.info(f"  🗑️ 移除过期候选: {sym}（已等待{age_hours:.0f}h未触发）")
 
-    for sym in to_remove:
-        del existing[sym]
+        for sym in to_remove:
+            del existing[sym]
 
-    atomic_write_json(CANDIDATES_FILE, [c.to_dict() for c in existing.values()])
-    logger.info(f"日线扫描完成，共检查 {checked} 个标的，候选池 {len(existing)} 个")
+        save_candidates([c.to_dict() for c in existing.values()])
+        final_count = len(existing)
+
+    logger.info(f"日线扫描完成，共检查 {checked} 个标的，候选池 {final_count} 个")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -580,6 +601,30 @@ def check_candidates():
                 c.triggered = False
                 continue
 
+        # ── 实盘下单（LIVE_MODE=True 时实际发单并用成交价记账）──
+        live_amount = 0.0
+        if config.LIVE_MODE:
+            from live_executor import execute_open_short as _live_open
+            # client_order_id = 幂等键；用 symbol+timestamp 拼出唯一标识
+            ts = int(time.time() * 1000)
+            coid = f"short-{c.symbol.replace('/USDT','').replace('/','')}-{ts}"[:36]
+            live_result = _live_open(c.symbol, actual_stake,
+                                     leverage=config.LEVERAGE,
+                                     client_order_id=coid)
+            if not live_result["success"]:
+                logger.error(f"  ❌ 实盘下单失败 {c.symbol}: {live_result['error']}")
+                send_tg(
+                    f"❌ <b>实盘下单失败</b>\n\n"
+                    f"币种：{c.symbol}\n"
+                    f"原因：{live_result['error']}\n"
+                    f"本次跳过，不记录风控扣账。"
+                )
+                continue
+            # 用成交均价作为 entry_price（关键：影子模式下会是 0，回退到 ticker）
+            if live_result["price"] > 0:
+                price = live_result["price"]
+            live_amount = live_result["amount"]
+
         c.triggered = True
         triggered_any = True
 
@@ -661,8 +706,13 @@ def check_candidates():
 
         time.sleep(0.1)
 
-    # 保存候选池更新
-    atomic_write_json(CANDIDATES_FILE, [c.to_dict() for c in candidates])
+    # 保存候选池更新（持锁 RMW，避免与 scan_daily 并发覆盖）
+    with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing_raw, save_candidates):
+        # 用 symbol 映射合并：保留 scan_daily 期间新加入的候选
+        by_symbol = {c.get('symbol'): c for c in existing_raw if c.get('symbol')}
+        for c in candidates:
+            by_symbol[c.symbol] = c.to_dict()
+        save_candidates(list(by_symbol.values()))
 
     if not triggered_any:
         logger.info("候选池无触发信号")

@@ -205,3 +205,82 @@ class TestPnlCalculation:
         assert abs(result.pnl_pct - (-2.0)) < 0.01
         # pnl_usd = 100 * 10 * (-2) / 100 = -20
         assert abs(result.pnl_usd - (-20.0)) < 0.01
+
+
+
+class TestTp1DoubleCountRegression:
+    """
+    回归测试：v4.1 修复 TP1 双计数 bug。
+
+    场景：TP1 触发后剩余 50% 仓位最终因硬止损平仓。
+    验证：trade.pnl（剩余仓位的实现盈亏）与 tp1_locked_pnl 分开记账，
+         tp1_locked_pnl + pnl 等于真实的总盈亏，不会出现 TP1 被算两次。
+    """
+
+    def test_tp1_then_hard_stop_total_pnl_correct(self, mock_config):
+        """
+        entry=100, stake=100, leverage=10, TP1=95, hard_stop=103
+        流程：
+          1) price=94 → TP1 触发：locked_pnl = 100 * 0.5 * 10 * 6/100 = 30U
+             stake_remaining=50，trade.pnl 应该 = 剩余50仓位浮动盈亏 = 50*10*6/100 = 30U
+          2) price=104 → 硬止损：pnl_pct = (100-104)/100 * 100 = -4%
+             remaining_pnl = 50 * 10 * -4/100 = -20U
+             total = tp1_locked_pnl(30) + remaining_pnl(-20) = 10U
+        期望：trade.pnl（剩余仓位实现）== -20，tp1_locked_pnl == 30，合计 10。
+        """
+        trade = _make_trade(
+            direction='SHORT', entry_price=100.0,
+            stake=100, leverage=10,
+            tp1=95.0, tp2=85.0, hard_stop=103.0,
+        )
+        # TP1 触发
+        evaluate_trade(trade, current_price=94.0)
+        assert trade.tp1_triggered is True
+        assert abs(trade.tp1_locked_pnl - 30.0) < 0.01
+        assert abs(trade.stake_remaining - 50.0) < 0.01
+        # TP1 触发后 trade.pnl 应该是剩余仓位的浮动盈亏，不包含 tp1_locked
+        assert abs(trade.pnl - 30.0) < 0.01
+
+        # 硬止损触发
+        result = evaluate_trade(trade, current_price=104.0)
+        assert result.closed is True
+        # trade.pnl 是剩余仓位的实现盈亏（约 -20U）
+        assert abs(trade.pnl - (-20.0)) < 0.01
+        # TP1 锁定的利润不变
+        assert abs(trade.tp1_locked_pnl - 30.0) < 0.01
+        # 合计盈亏 = tp1_locked + pnl = 10U
+        total = trade.tp1_locked_pnl + trade.pnl
+        assert abs(total - 10.0) < 0.01
+        # result.pnl_usd 也应该等于合计
+        assert abs(result.pnl_usd - 10.0) < 0.01
+        # close_type 已设为枚举值（机器可读）
+        assert trade.close_type == 'hard_stop'
+
+    def test_tp1_tp2_close_type_is_tp2(self, mock_config):
+        """TP2 全仓平仓后 close_type 应为 'tp2'"""
+        trade = _make_trade(
+            direction='SHORT', entry_price=100.0,
+            stake=100, leverage=10,
+            tp1=95.0, tp2=90.0, hard_stop=110.0,
+        )
+        evaluate_trade(trade, current_price=94.0)  # TP1
+        result = evaluate_trade(trade, current_price=89.0)  # TP2
+        assert result.closed is True
+        assert trade.close_type == 'tp2'
+
+    def test_hard_stop_without_tp1_total_pnl_correct(self, mock_config):
+        """
+        没 TP1 过就硬止损：tp1_locked_pnl=0, trade.pnl = 整笔亏损。
+        entry=100, price=104 → pnl_pct = -4%，亏 100*10*4/100 = 40U
+        """
+        trade = _make_trade(
+            direction='SHORT', entry_price=100.0,
+            stake=100, leverage=10,
+            tp1=90.0, tp2=85.0, hard_stop=103.0,
+        )
+        result = evaluate_trade(trade, current_price=104.0)
+        assert result.closed is True
+        assert trade.tp1_locked_pnl == 0.0
+        assert abs(trade.pnl - (-40.0)) < 0.01
+        assert abs(result.pnl_usd - (-40.0)) < 0.01
+        assert trade.close_type == 'hard_stop'

@@ -77,8 +77,7 @@ def collect_weekly_trades(week_start, week_end):
     加载交易文件，筛选在 [week_start, week_end] 内平仓的交易。
 
     Returns:
-        tuple: (short_trades: list[Trade], funding_trades: list, low_risk_trades: list)
-        Note: funding_trades and low_risk_trades are always empty (kept for API compat)
+        list[Trade]: 本周已平仓的做空交易列表
     """
     # 加载做空交易
     raw_trades = load_json(TRADES_FILE, [])
@@ -92,14 +91,14 @@ def collect_weekly_trades(week_start, week_end):
         if week_start <= closed_dt <= week_end:
             short_trades.append(t)
 
-    return short_trades, [], []
+    return short_trades
 
 
 # ══════════════════════════════════════════════════════════════════
 #  统计计算
 # ══════════════════════════════════════════════════════════════════
 
-def calculate_weekly_stats(short_trades, funding_trades=None, low_risk_trades=None):
+def calculate_weekly_stats(short_trades):
     """
     计算周度统计数据。
 
@@ -367,11 +366,11 @@ def main():
     logger.info(f"周报范围: {week_start.isoformat()} ~ {week_end.isoformat()}")
 
     # 收集交易数据
-    short_trades, funding_trades, low_risk_trades = collect_weekly_trades(week_start, week_end)
+    short_trades = collect_weekly_trades(week_start, week_end)
     logger.info(f"本周交易: 做空 {len(short_trades)} 笔")
 
     # 计算统计
-    stats = calculate_weekly_stats(short_trades, funding_trades, low_risk_trades)
+    stats = calculate_weekly_stats(short_trades)
 
     # 生成建议
     suggestions = generate_suggestions(stats)

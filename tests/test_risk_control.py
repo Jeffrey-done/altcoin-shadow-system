@@ -21,13 +21,9 @@ def patch_risk_files(monkeypatch, tmp_path):
     """为每个测试重定向 RISK_FILE 和 TRADES_FILE 到临时目录"""
     risk_file = str(tmp_path / "risk_state.json")
     trades_file = str(tmp_path / "trades.json")
-    funding_trades_file = str(tmp_path / "funding_trades.json")
-    low_risk_trades_file = str(tmp_path / "low_risk_trades.json")
 
     monkeypatch.setattr(common, 'RISK_FILE', risk_file)
     monkeypatch.setattr(common, 'TRADES_FILE', trades_file)
-    monkeypatch.setattr(common, 'FUNDING_TRADES_FILE', funding_trades_file)
-    monkeypatch.setattr(common, 'LOW_RISK_TRADES_FILE', low_risk_trades_file)
     monkeypatch.setattr(risk_control, 'RISK_FILE', risk_file)
     monkeypatch.setattr(risk_control, 'TRADES_FILE', trades_file)
 

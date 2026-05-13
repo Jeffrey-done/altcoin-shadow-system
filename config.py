@@ -86,10 +86,10 @@ TIME_STOP_MIN_PROFIT_PCT = 3   # 超时但盈利超过此 % 则不平
 #  每日风控
 # ══════════════════════════════════════════════════════════════════
 RISK_MAX_DAILY_LOSS = 30       # 单日最大亏损上限（USDT），达到后当日停止开仓
-RISK_MAX_DAILY_TRADES = 2      # 单日最大开仓次数
+RISK_MAX_DAILY_TRADES = 3      # 单日最大开仓次数（留出同日补位空间，避免第1笔止损后一天报废）
 RISK_CONSECUTIVE_LOSS_PAUSE = 3  # 连续亏损 N 次后暂停 24 小时
 RISK_PAUSE_HOURS = 24          # 暂停时长（小时）
-RISK_MAX_POSITION_PCT = 0.9    # 最大持仓占余额比例（90%，纯做空单策略允许接近满仓）
+RISK_MAX_POSITION_PCT = 0.5    # 最大持仓占余额比例（50%），同一时刻最多只把一半本金压在持仓里
 
 # ══════════════════════════════════════════════════════════════════
 #  信号评分 & 动态仓位
@@ -135,6 +135,10 @@ OKX_OI_CHANGE_MIN = 0.20      # OKX OI 变化阈值（20%，比币安低因为OK
 # 交叉验证加分（两所数据一致时，信号评分额外加分）
 OKX_CROSS_VALIDATE_ENABLED = True    # 是否启用交叉验证
 OKX_CROSS_VALIDATE_BONUS = 8         # 交叉验证通过时额外加分（满分100中）
+
+# OKX 实盘交易（目前仅做空策略，默认关闭）
+OKX_LIVE_MODE = False          # True=通过 OKX API 真实下单（需配置 OKX_API_KEY/SECRET/PASSPHRASE）
+OKX_DEFAULT_LEVERAGE = 10      # OKX 默认杠杆倍数
 
 # ══════════════════════════════════════════════════════════════════
 #  候选池管理
@@ -202,21 +206,10 @@ TRADES_ARCHIVE_FILE = 'altcoin_trades_archive.json'
 WS_DISCONNECT_ALERT_MINUTES = 5  # WebSocket断线超过N分钟告警
 
 # ══════════════════════════════════════════════════════════════════
-#  向后兼容（已废弃，保留防止旧代码引用报错）
+#  OKX 费率相关（用于交叉验证，仅数据源，非交易参数）
 # ══════════════════════════════════════════════════════════════════
-FUNDING_ARB_STAKE = 50
-FUNDING_ARB_LEVERAGE = 20
-FUNDING_ARB_MAX_HOLD_HOURS = 9
-FUNDING_ARB_STOP_LOSS_PCT = 1.5
-FUNDING_ARB_MIN_RATE = -0.03          # Binance 负费率做多阈值（%/8h）
-OKX_FUNDING_ARB_MIN_RATE = -0.02      # OKX 负费率做多阈值
-OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10   # 跨所费率差异阈值（%）
-LOW_RISK_GRID_STAKE = 50
-LOW_RISK_GRID_LEVERAGE = 5
-LOW_RISK_GRID_MAX_HOLD_HOURS = 48
-LOW_RISK_MEAN_REVERSION_STAKE = 50
-LOW_RISK_MEAN_REVERSION_LEVERAGE = 5
-LOW_RISK_MEAN_REVERSION_MAX_HOLD_HOURS = 24
-SHORT_STRATEGY_POOL_PCT = 100   # 100% 用于做空策略
-FUNDING_ARB_POOL_PCT = 0
-LOW_RISK_POOL_PCT = 0
+# exchange_manager.cross_validate_funding / find_cross_exchange_arb_opportunities
+# 用这些阈值判断"两所费率都极端负"或"两所费率差过大"的数据信号（不下单）。
+FUNDING_ARB_MIN_RATE = -0.03          # Binance 极端负费率阈值（%/8h）
+OKX_FUNDING_ARB_MIN_RATE = -0.02      # OKX 极端负费率阈值
+OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10   # 两所费率差异显著阈值（%）

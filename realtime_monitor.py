@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-实时止盈止损监控器 v2.0
+实时止盈止损监控器 v2.1
 通过 Binance WebSocket 7×24小时监控所有持仓价格，
 触及止盈/止损位时立即执行平仓。
 
@@ -10,11 +10,19 @@
 Docker：作为独立服务运行
 
 工作原理：
-  1. 每30秒读取交易文件，收集持仓中的币种
+  1. 每30秒读取交易文件，把持仓的关键阈值（TP1/TP2/硬止损/trail）
+     缓存到内存（不含 best_pnl_pct 等浮动字段）
   2. 连接 Binance WebSocket miniTicker 流
-  3. 每收到价格更新就检查是否触及止盈/止损
+  3. 每收到价格更新：
+     - 先在内存里用缓存阈值做"是否可能触发"快速判断（零磁盘 IO）
+     - 只有价格确实进入触发区间时，才抢文件锁做完整 evaluate_trade
   4. 触发后立即执行 evaluate_trade() 平仓逻辑
   5. 持仓变化时自动更新订阅列表
+
+v2.1 优化：
+  - 回调中不再每 tick 都读写 JSON 文件（原来 5 持仓 × 1Hz ≈ 每秒 5 次磁盘 IO）
+  - best_pnl_pct 这类纯统计字段由 snapshot 刷新线程批量 flush
+  - 触发判断在内存完成，磁盘 IO 从"每 tick 一次"降到"每次真正触发一次"
 """
 
 import json
@@ -52,7 +60,98 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  持仓加载
+#  内存快照：避免每 tick 都读磁盘
+# ══════════════════════════════════════════════════════════════════
+
+# 内存快照：{symbol: [thresholds_dict, ...]}  多个 trade 共享同一个 symbol 时也覆盖
+_snapshot_lock = threading.Lock()
+_trade_snapshots: dict = {}  # symbol -> list of threshold dicts
+
+
+def _build_trade_snapshot(trade: Trade) -> dict:
+    """把一笔持仓的"触发阈值"提炼成内存字典（不含浮动字段）"""
+    return {
+        'id': trade.id,
+        'symbol': trade.symbol,
+        'direction': trade.direction,
+        'entry_price': trade.entry_price,
+        'tp1': trade.take_profit_1,
+        'tp2': trade.take_profit_2,
+        'tp1_triggered': trade.tp1_triggered,
+        'hard_stop': trade.hard_stop_price,
+        'trail_stop': trade.trail_stop_price,
+    }
+
+
+def refresh_snapshot():
+    """扫描 trades 文件，重建内存快照。每 30s 调用一次即可。"""
+    try:
+        trades_raw = load_json(TRADES_FILE, [])
+    except Exception as e:
+        logger.warning(f"读取 trades 失败: {e}")
+        return
+
+    snapshots: dict = {}
+    for t in trades_raw:
+        if t.get('status') != 'open':
+            continue
+        try:
+            trade = Trade.from_dict(t)
+            snap = _build_trade_snapshot(trade)
+            snapshots.setdefault(trade.symbol, []).append(snap)
+        except Exception as e:
+            logger.debug(f"构建快照失败: {e}")
+
+    with _snapshot_lock:
+        _trade_snapshots.clear()
+        _trade_snapshots.update(snapshots)
+
+
+def _price_crosses_threshold(snap: dict, price: float) -> bool:
+    """
+    内存快速判断：当前价格是否进入任何关闭/TP 触发区间。
+    命中则回 True，上层才会去抢锁做完整 evaluate。
+    """
+    direction = snap['direction']
+
+    # 硬止损
+    hs = snap.get('hard_stop')
+    if hs:
+        if direction == 'SHORT' and price >= hs:
+            return True
+        if direction == 'LONG' and price <= hs:
+            return True
+
+    # 移动止损（只有设置过才算）
+    ts = snap.get('trail_stop')
+    if ts:
+        if direction == 'SHORT' and price >= ts:
+            return True
+        if direction == 'LONG' and price <= ts:
+            return True
+
+    # TP1（未触发才判）
+    if not snap.get('tp1_triggered'):
+        tp1 = snap.get('tp1')
+        if tp1:
+            if direction == 'SHORT' and price <= tp1:
+                return True
+            if direction == 'LONG' and price >= tp1:
+                return True
+    else:
+        # TP1 已触发，继续看 TP2
+        tp2 = snap.get('tp2')
+        if tp2:
+            if direction == 'SHORT' and price <= tp2:
+                return True
+            if direction == 'LONG' and price >= tp2:
+                return True
+
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  持仓加载（用于 WebSocket 订阅列表）
 # ══════════════════════════════════════════════════════════════════
 
 def load_open_trades() -> list:
@@ -64,11 +163,8 @@ def load_open_trades() -> list:
 
 def get_all_open_symbols() -> set:
     """获取所有持仓中的币种集合"""
-    symbols = set()
-    for t in load_open_trades():
-        symbols.add(t.symbol)
-    symbols.discard('')
-    return symbols
+    with _snapshot_lock:
+        return set(_trade_snapshots.keys())
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -128,10 +224,20 @@ def check_main_trades(symbol: str, price: float):
 
 def on_price_update(symbol: str, price: float):
     """
-    价格更新回调：检查所有持仓是否触发止盈止损。
-    由 WebSocket 消息处理调用。
+    价格更新回调：先做内存快速判断，只有价格进入触发区间才抢锁做完整评估。
+    由 WebSocket 消息处理调用，每秒可能数次，必须零磁盘 IO 在无触发路径。
     """
     try:
+        with _snapshot_lock:
+            snaps = list(_trade_snapshots.get(symbol, []))
+        if not snaps:
+            return
+
+        # 快速过滤：任一 snap 命中才继续
+        if not any(_price_crosses_threshold(s, price) for s in snaps):
+            return
+
+        # 命中了 — 抢锁做完整 evaluate_trade + 可能的平仓
         check_main_trades(symbol, price)
     except Exception as e:
         logger.error(f"价格更新处理异常 ({symbol}): {e}")
@@ -252,8 +358,15 @@ def polling_mode():
     """
     logger.info("启动轮询模式（每5秒检查一次）")
 
+    last_refresh = 0
     while True:
         try:
+            # 每 30s 刷新一次内存快照
+            now_ts = time.time()
+            if now_ts - last_refresh > 30:
+                refresh_snapshot()
+                last_refresh = now_ts
+
             symbols = get_all_open_symbols()
             if not symbols:
                 time.sleep(30)
@@ -288,10 +401,13 @@ def polling_mode():
 def main():
     """实时监控主入口"""
     logger.info("=" * 50)
-    logger.info("⚡ 实时止盈止损监控器启动")
+    logger.info("⚡ 实时止盈止损监控器启动 v2.1")
     logger.info(f"   模式: {'WebSocket' if websocket else '轮询(5秒)'}")
     logger.info(f"   监控: 做空交易")
     logger.info("=" * 50)
+
+    # 先做一次快照，否则首次 WebSocket 连接时拿不到 symbols
+    refresh_snapshot()
 
     if not websocket:
         # 无 WebSocket 库，使用轮询模式
@@ -300,11 +416,13 @@ def main():
 
     monitor = BinanceWSMonitor()
 
-    # 每30秒检查持仓变化，必要时重新连接
-    last_symbols = set()
+    # 每30秒刷新 snapshot + 检查持仓变化
+    last_symbols: set = set()
 
     while monitor.running:
         try:
+            # 每轮都刷新内存快照（已平仓的会被 tracker 写出，refresh 时自动剔除）
+            refresh_snapshot()
             current_symbols = get_all_open_symbols()
 
             if current_symbols != last_symbols:
