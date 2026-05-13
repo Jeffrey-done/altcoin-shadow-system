@@ -263,6 +263,7 @@ tr:hover td { background: var(--bg-card-hover); }
 .pool-segment {
     display: flex; align-items: center; justify-content: center;
     font-size: 0.68rem; font-weight: 600; color: #fff; border-radius: var(--radius-sm);
+    overflow: hidden; white-space: nowrap; min-width: 0;
 }
 
 /* ── Filter Tabs ──────────────────────────────────────────────── */
