@@ -187,12 +187,12 @@ select { cursor: pointer; }
       </div>
       <div class="form-row">
         <label>Binance 实盘 (LIVE_MODE)</label>
-        <input type="checkbox" id="cfg-LIVE_MODE">
+        <input type="checkbox" id="cfg-LIVE_MODE" onchange="toggleLiveMode('LIVE_MODE', this)">
         <span class="badge" id="badge-live-bn">OFF</span>
       </div>
       <div class="form-row">
         <label>OKX 实盘 (OKX_LIVE_MODE)</label>
-        <input type="checkbox" id="cfg-OKX_LIVE_MODE">
+        <input type="checkbox" id="cfg-OKX_LIVE_MODE" onchange="toggleLiveMode('OKX_LIVE_MODE', this)">
         <span class="badge" id="badge-live-okx">OFF</span>
       </div>
       <div class="form-row">
@@ -403,6 +403,22 @@ function updateAccountUI() {
   if (active) { document.getElementById('active-account-name').textContent = active.name; document.getElementById('active-account-id').textContent = currentActiveId; document.getElementById('account-avatar').textContent = active.name.charAt(0).toUpperCase(); }
   const sel = document.getElementById('account-switcher'); sel.innerHTML = '';
   currentAccounts.forEach(acc => { const opt = document.createElement('option'); opt.value = acc.id; opt.textContent = acc.name + (acc.id === currentActiveId ? ' *' : ''); opt.selected = acc.id === currentActiveId; sel.appendChild(opt); });
+}
+
+function toggleLiveMode(key, el) {
+  const label = key === 'LIVE_MODE' ? 'Binance 实盘' : 'OKX 实盘';
+  const action = el.checked ? '开启' : '关闭';
+  if (!confirm(`⚠️ 确认${action} ${label}？\n\n${el.checked ? '开启后下一个信号将执行真实订单！' : '关闭后将回到影子模式。'}`)) {
+    el.checked = !el.checked; return;
+  }
+  const doToggle = async () => {
+    try {
+      const r = await api('POST', 'api/config', {changes: {[key]: el.checked}});
+      if (r.needTotp) { openTotpModal(doToggle); return; }
+      alertBox(`${label} 已${action}`, el.checked ? 'warning' : 'ok');
+      loadState();
+    } catch (e) { el.checked = !el.checked; alertBox('切换失败: ' + e.message, 'error'); }
+  }; doToggle();
 }
 
 function saveConfig() {
