@@ -3,8 +3,6 @@ RSI 计算测试
 测试 altcoin_scanner.calc_rsi_wilder() 和 backtest.calc_rsi_series()
 """
 
-import pytest
-
 from altcoin_scanner import calc_rsi_wilder
 from backtest import calc_rsi_series
 
