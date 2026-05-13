@@ -667,6 +667,267 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return jsonify({'ok': True})
 
     # ══════════════════════════════════════════════════════════════════
+    #  API：实盘自检（Preflight Check）
+    # ══════════════════════════════════════════════════════════════════
+
+    @bp.route('/api/preflight-check', methods=['POST'])
+    @_require_login
+    @_require_csrf
+    def api_preflight_check():
+        """
+        运行实盘自检，返回结构化 JSON 结果。
+        不下任何真实订单，仅做只读查询 + 试设杠杆。
+        请求体可选: {"exchanges": ["binance", "okx"]} 不传则检查所有已配凭证的。
+        """
+        import config as _cfg
+
+        data = request.get_json(silent=True) or {}
+        targets = data.get('exchanges') or []
+        if not targets:
+            # 自动检测已配凭证的交易所
+            bn_creds = admin_secrets.get_exchange_credentials('binance')
+            okx_creds = admin_secrets.get_exchange_credentials('okx')
+            if bn_creds.get('api_key'):
+                targets.append('binance')
+            if okx_creds.get('api_key'):
+                targets.append('okx')
+
+        if not targets:
+            return jsonify({
+                'ok': False,
+                'error': '没有已配置凭证的交易所，请先在上方保存 API 凭证',
+                'results': {},
+                'routing': _build_routing_summary(_cfg),
+            })
+
+        results = {}
+        if 'binance' in targets:
+            results['binance'] = _run_binance_check(_cfg)
+        if 'okx' in targets:
+            results['okx'] = _run_okx_check(_cfg)
+
+        all_pass = all(r['pass'] for r in results.values())
+
+        _audit('preflight_check',
+               targets=targets,
+               all_pass=all_pass)
+
+        return jsonify({
+            'ok': all_pass,
+            'results': results,
+            'routing': _build_routing_summary(_cfg),
+        })
+
+    def _build_routing_summary(_cfg) -> dict:
+        """构造路由摘要信息"""
+        binance_on = _cfg.LIVE_MODE
+        okx_on = _cfg.OKX_LIVE_MODE
+        mode = getattr(_cfg, 'PRIMARY_EXCHANGE', 'binance').lower()
+
+        if not binance_on and not okx_on:
+            behavior = "纸上交易（不会下任何真实单）"
+        elif binance_on and not okx_on:
+            behavior = "所有信号只在 Binance 下单"
+        elif okx_on and not binance_on:
+            behavior = "所有信号只在 OKX 下单"
+        else:
+            if mode == 'both':
+                behavior = "Binance + OKX 同时开仓（保证金各 50%）"
+            elif mode in ('binance', 'okx'):
+                behavior = f"两所都启用，但信号只在 {mode.upper()} 下单"
+            elif mode == 'auto':
+                behavior = f"两所都启用，按币种覆盖自动选择（fallback={getattr(_cfg, 'PRIMARY_EXCHANGE_FALLBACK', 'binance')}）"
+            else:
+                behavior = f"未知路由模式: {mode}"
+
+        return {
+            'LIVE_MODE': binance_on,
+            'OKX_LIVE_MODE': okx_on,
+            'PRIMARY_EXCHANGE': mode,
+            'DEFAULT_STAKE': _cfg.DEFAULT_STAKE,
+            'LEVERAGE': _cfg.LEVERAGE,
+            'OKX_DEFAULT_LEVERAGE': _cfg.OKX_DEFAULT_LEVERAGE,
+            'behavior': behavior,
+        }
+
+    def _run_binance_check(_cfg) -> dict:
+        """Binance 实盘自检，返回结构化结果"""
+        checks = []
+
+        # 1. 凭证
+        try:
+            creds = admin_secrets.get_exchange_credentials('binance')
+            api_key = creds.get('api_key', '')
+            secret_key = creds.get('secret', '')
+        except Exception:
+            api_key = os.environ.get('BINANCE_API_KEY', '')
+            secret_key = os.environ.get('BINANCE_SECRET', '')
+
+        if not api_key or not secret_key:
+            checks.append({'name': 'API 凭证', 'status': 'fail',
+                           'msg': '未配置 API Key 或 Secret'})
+            return {'pass': False, 'checks': checks}
+
+        checks.append({'name': 'API 凭证', 'status': 'pass',
+                       'msg': f'已配置（key 前缀={api_key[:6]}...）'})
+
+        # 初始化 ccxt
+        try:
+            import ccxt
+            exchange = ccxt.binance({
+                'apiKey': api_key,
+                'secret': secret_key,
+                'enableRateLimit': True,
+                'options': {'defaultType': 'future'},
+            })
+        except ImportError:
+            checks.append({'name': '依赖库', 'status': 'fail',
+                           'msg': 'ccxt 未安装'})
+            return {'pass': False, 'checks': checks}
+        except Exception as e:
+            checks.append({'name': '连接初始化', 'status': 'fail',
+                           'msg': str(e)})
+            return {'pass': False, 'checks': checks}
+
+        # 2. 余额
+        try:
+            balance = exchange.fetch_balance({'type': 'future'})
+            usdt = balance.get('USDT', {})
+            total = float(usdt.get('total', 0))
+            free = float(usdt.get('free', 0))
+            if total < _cfg.DEFAULT_STAKE:
+                checks.append({'name': '合约余额', 'status': 'warn',
+                               'msg': f'总={total:.2f}U / 可用={free:.2f}U（低于 DEFAULT_STAKE={_cfg.DEFAULT_STAKE}U）'})
+            else:
+                checks.append({'name': '合约余额', 'status': 'pass',
+                               'msg': f'总={total:.2f}U / 可用={free:.2f}U'})
+        except Exception as e:
+            checks.append({'name': '合约余额', 'status': 'fail',
+                           'msg': f'查询失败: {e}'})
+            return {'pass': False, 'checks': checks}
+
+        # 3. 持仓模式
+        try:
+            result = exchange.fapiPrivateGetPositionSideDual()
+            dual_side = bool(result.get('dualSidePosition', False))
+            if dual_side:
+                checks.append({'name': '持仓模式', 'status': 'pass',
+                               'msg': 'Hedge Mode（对冲模式）✓'})
+            else:
+                checks.append({'name': '持仓模式', 'status': 'fail',
+                               'msg': '当前为单向模式！需切换为「对冲模式 / Hedge Mode」'})
+                return {'pass': False, 'checks': checks}
+        except Exception as e:
+            checks.append({'name': '持仓模式', 'status': 'warn',
+                           'msg': f'查询失败（不一定致命）: {e}'})
+
+        # 4. 杠杆接口
+        try:
+            exchange.set_leverage(_cfg.LEVERAGE, 'BTC/USDT')
+            checks.append({'name': '杠杆接口', 'status': 'pass',
+                           'msg': f'可用（BTC/USDT 杠杆={_cfg.LEVERAGE}x 已试设）'})
+        except Exception as e:
+            checks.append({'name': '杠杆接口', 'status': 'warn',
+                           'msg': f'异常（可能是权限问题）: {e}'})
+
+        all_pass = all(c['status'] != 'fail' for c in checks)
+        return {'pass': all_pass, 'checks': checks}
+
+    def _run_okx_check(_cfg) -> dict:
+        """OKX 实盘自检，返回结构化结果"""
+        checks = []
+
+        # 1. 凭证
+        try:
+            creds = admin_secrets.get_exchange_credentials('okx')
+            api_key = creds.get('api_key', '')
+            secret_key = creds.get('secret', '')
+            passphrase = creds.get('passphrase', '')
+        except Exception:
+            api_key = os.environ.get('OKX_API_KEY', '')
+            secret_key = os.environ.get('OKX_SECRET', '')
+            passphrase = os.environ.get('OKX_PASSPHRASE', '')
+
+        missing = [n for n, v in [
+            ('API Key', api_key), ('Secret', secret_key), ('Passphrase', passphrase)
+        ] if not v]
+        if missing:
+            checks.append({'name': 'API 凭证', 'status': 'fail',
+                           'msg': f'缺少: {", ".join(missing)}'})
+            return {'pass': False, 'checks': checks}
+
+        checks.append({'name': 'API 凭证', 'status': 'pass',
+                       'msg': f'已配置（key 前缀={api_key[:6]}...）'})
+
+        # 初始化 ccxt
+        try:
+            import ccxt
+            exchange = ccxt.okx({
+                'apiKey': api_key,
+                'secret': secret_key,
+                'password': passphrase,
+                'enableRateLimit': True,
+            })
+        except ImportError:
+            checks.append({'name': '依赖库', 'status': 'fail',
+                           'msg': 'ccxt 未安装'})
+            return {'pass': False, 'checks': checks}
+        except Exception as e:
+            checks.append({'name': '连接初始化', 'status': 'fail',
+                           'msg': str(e)})
+            return {'pass': False, 'checks': checks}
+
+        # 2. 余额
+        try:
+            balance = exchange.fetch_balance({'type': 'swap'})
+            usdt = balance.get('USDT', {})
+            total = float(usdt.get('total', 0))
+            free = float(usdt.get('free', 0))
+            if total < _cfg.DEFAULT_STAKE:
+                checks.append({'name': '合约余额', 'status': 'warn',
+                               'msg': f'总={total:.2f}U / 可用={free:.2f}U（低于 DEFAULT_STAKE={_cfg.DEFAULT_STAKE}U）'})
+            else:
+                checks.append({'name': '合约余额', 'status': 'pass',
+                               'msg': f'总={total:.2f}U / 可用={free:.2f}U'})
+        except Exception as e:
+            checks.append({'name': '合约余额', 'status': 'fail',
+                           'msg': f'查询失败: {e}'})
+            return {'pass': False, 'checks': checks}
+
+        # 3. 持仓模式
+        try:
+            result = exchange.privateGetAccountConfig()
+            data_list = result.get('data', [{}])
+            acct_data = data_list[0] if data_list else {}
+            pos_mode = acct_data.get('posMode', '')
+            if pos_mode == 'long_short_mode':
+                checks.append({'name': '持仓模式', 'status': 'pass',
+                               'msg': 'long_short_mode（双向持仓）✓'})
+            elif pos_mode == 'net_mode':
+                checks.append({'name': '持仓模式', 'status': 'fail',
+                               'msg': '当前为 net_mode（单向净持仓）！需切换为「双向持仓」'})
+                return {'pass': False, 'checks': checks}
+            else:
+                checks.append({'name': '持仓模式', 'status': 'warn',
+                               'msg': f'未知模式: {pos_mode}，请手动确认'})
+        except Exception as e:
+            checks.append({'name': '持仓模式', 'status': 'warn',
+                           'msg': f'查询失败（不一定致命）: {e}'})
+
+        # 4. 杠杆接口
+        try:
+            exchange.set_leverage(_cfg.OKX_DEFAULT_LEVERAGE, 'BTC/USDT',
+                                  params={'mgnMode': 'cross'})
+            checks.append({'name': '杠杆接口', 'status': 'pass',
+                           'msg': f'可用（BTC/USDT 杠杆={_cfg.OKX_DEFAULT_LEVERAGE}x 已试设）'})
+        except Exception as e:
+            checks.append({'name': '杠杆接口', 'status': 'warn',
+                           'msg': f'异常（可能是权限或品种问题）: {e}'})
+
+        all_pass = all(c['status'] != 'fail' for c in checks)
+        return {'pass': all_pass, 'checks': checks}
+
+    # ══════════════════════════════════════════════════════════════════
     #  API：审计日志查询
     # ══════════════════════════════════════════════════════════════════
 

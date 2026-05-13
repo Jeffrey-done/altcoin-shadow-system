@@ -99,6 +99,30 @@
   </div>
 </div>
 
+<!-- ═══ 实盘自检 ═══ -->
+<div class="card">
+  <h2>🩺 实盘自检（Preflight Check）</h2>
+  <div class="muted" style="margin-bottom: 12px;">
+    不会下任何真实订单。检查 API 凭证、余额、持仓模式（对冲/双向）、杠杆接口是否正常。<br>
+    <b>建议：开启 LIVE_MODE 前必须先跑一次自检，全部通过再打开。</b>
+  </div>
+
+  <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+    <button onclick="runPreflightCheck()" id="btn-preflight" style="padding: 10px 20px;">
+      ▶ 运行实盘自检
+    </button>
+    <span id="preflight-status" class="muted"></span>
+  </div>
+
+  <div id="preflight-results" style="display: none;">
+    <!-- 路由摘要 -->
+    <div id="preflight-routing" style="margin-bottom: 14px; padding: 10px; border-radius: 6px;
+         background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #333);"></div>
+    <!-- 各交易所检查结果 -->
+    <div id="preflight-exchanges"></div>
+  </div>
+</div>
+
 <!-- ═══ 仓位与杠杆 ═══ -->
 <div class="card">
   <h2>💰 仓位 & 杠杆</h2>
@@ -252,6 +276,118 @@ async function submitTotp() {
   }
 }
 
+// ── 实盘自检 ──
+let lastPreflightResult = null;
+
+async function runPreflightCheck(exchanges) {
+  const btn = document.getElementById('btn-preflight');
+  const statusEl = document.getElementById('preflight-status');
+  const resultsEl = document.getElementById('preflight-results');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 检查中...';
+  statusEl.textContent = '正在连接交易所 API，可能需要几秒...';
+  resultsEl.style.display = 'none';
+
+  try {
+    const body = exchanges ? {exchanges} : {};
+    const r = await api('POST', 'api/preflight-check', body);
+
+    lastPreflightResult = r;
+    resultsEl.style.display = 'block';
+
+    // 路由摘要
+    const routing = r.routing || {};
+    document.getElementById('preflight-routing').innerHTML = `
+      <div style="font-weight:600; margin-bottom:6px;">📡 路由配置</div>
+      <div style="font-family:monospace; font-size:13px; line-height:1.8;">
+        LIVE_MODE = ${routing.LIVE_MODE ? '✅ True' : '❌ False'}<br>
+        OKX_LIVE_MODE = ${routing.OKX_LIVE_MODE ? '✅ True' : '❌ False'}<br>
+        PRIMARY_EXCHANGE = ${routing.PRIMARY_EXCHANGE || 'N/A'}<br>
+        DEFAULT_STAKE = ${routing.DEFAULT_STAKE || 'N/A'}U<br>
+        LEVERAGE = ${routing.LEVERAGE || 'N/A'}x / OKX = ${routing.OKX_DEFAULT_LEVERAGE || 'N/A'}x
+      </div>
+      <div style="margin-top:8px; padding:6px 10px; border-radius:4px;
+           background:${r.ok ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)'};
+           color:${r.ok ? '#4caf50' : '#f44336'};">
+        → ${routing.behavior || '未知'}
+      </div>
+    `;
+
+    // 各交易所结果
+    const exchEl = document.getElementById('preflight-exchanges');
+    if (r.error && !Object.keys(r.results || {}).length) {
+      exchEl.innerHTML = `<div style="color:#f44336; padding:8px;">⚠ ${r.error}</div>`;
+    } else {
+      let html = '';
+      for (const [name, result] of Object.entries(r.results || {})) {
+        const icon = result.pass ? '✅' : '❌';
+        html += `<div style="margin-top:12px;">
+          <div style="font-weight:600; font-size:14px;">${icon} ${name.toUpperCase()}</div>
+          <div style="margin-top:6px;">`;
+        for (const check of (result.checks || [])) {
+          let statusIcon = '✓', statusColor = '#4caf50';
+          if (check.status === 'fail') { statusIcon = '✗'; statusColor = '#f44336'; }
+          else if (check.status === 'warn') { statusIcon = '!'; statusColor = '#ff9800'; }
+          html += `<div style="padding:4px 0; font-size:13px; font-family:monospace;">
+            <span style="color:${statusColor}; font-weight:bold;">${statusIcon}</span>
+            <span style="color:var(--text-dim, #999);">${check.name}</span>：${check.msg}
+          </div>`;
+        }
+        html += '</div></div>';
+      }
+      exchEl.innerHTML = html;
+    }
+
+    // 顶部状态
+    if (r.ok) {
+      statusEl.innerHTML = '<span style="color:#4caf50;">✓ 全部通过，可以安全开启实盘</span>';
+    } else {
+      statusEl.innerHTML = '<span style="color:#f44336;">✗ 存在问题，请修复后再开启 LIVE_MODE</span>';
+    }
+
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:#f44336;">请求失败: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ 运行实盘自检';
+  }
+}
+
+// ── LIVE_MODE 开关保护 ──
+function setupLiveModeGuard() {
+  const bnCheck = document.getElementById('cfg-LIVE_MODE');
+  const okxCheck = document.getElementById('cfg-OKX_LIVE_MODE');
+
+  if (bnCheck) {
+    bnCheck.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        _promptPreflightBeforeLive('binance', e.target);
+      }
+    });
+  }
+  if (okxCheck) {
+    okxCheck.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        _promptPreflightBeforeLive('okx', e.target);
+      }
+    });
+  }
+}
+
+function _promptPreflightBeforeLive(exchange, checkbox) {
+  // 如果上一次自检已经全通过，不再阻拦
+  if (lastPreflightResult && lastPreflightResult.ok) return;
+
+  const msg = `⚠️ 建议先运行「实盘自检」确认 ${exchange.toUpperCase()} 的 API、持仓模式等正常后再打开。\n\n点击「确定」立即运行自检；点击「取消」继续打开（风险自负）。`;
+  if (confirm(msg)) {
+    checkbox.checked = false;  // 先关掉，等自检通过后手动打开
+    runPreflightCheck([exchange]);
+    // 滚动到自检卡片
+    document.getElementById('btn-preflight').scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+}
+
 // ── 加载状态 ──
 async function loadState() {
   try {
@@ -396,6 +532,7 @@ async function loadAudit() {
 document.addEventListener('DOMContentLoaded', () => {
   loadState();
   loadAudit();
+  setupLiveModeGuard();
   setInterval(loadState, 30000);   // 30s 刷新 session 剩余时间
 
   document.getElementById('totp-code').addEventListener('input', (e) => {
