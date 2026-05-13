@@ -38,6 +38,7 @@ from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
     WEEKLY_REPORT_FILE,
     load_json, utcnow_iso, today_str, get_dynamic_balance, get_compound_stake,
+    get_current_account_id, filter_trades_by_account,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -128,8 +129,10 @@ def check_api_token(f):
 # ══════════════════════════════════════════════════════════════════
 
 def get_dashboard_data() -> dict:
-    """汇总所有数据供前端展示"""
+    """汇总所有数据供前端展示（按活跃账户过滤）"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     candidates = load_json(CANDIDATES_FILE, [])
     risk_state = load_json(RISK_FILE, {})
 
@@ -314,6 +317,8 @@ def _extract_events() -> list:
     """
     events = []
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     risk_state = load_json(RISK_FILE, {})
 
     # Trade open/close events
@@ -528,6 +533,8 @@ def api_trades_filtered():
     status_filter = request.args.get('status', 'all').lower()
 
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
 
     # Filter by mode (shadow vs live)
     if mode == 'shadow':
@@ -576,6 +583,8 @@ def api_pnl_compare():
     Used for the comparison chart on the dashboard.
     """
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
 
     shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow' and t.get('status') == 'closed']
     live_trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow' and t.get('status') == 'closed']
@@ -689,6 +698,8 @@ def api_weekly_report():
 def api_signal_scores():
     """返回最近交易的策略评分详情"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     scored_trades = []
     for t in trades[-50:]:
         entry = {

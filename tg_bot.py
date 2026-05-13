@@ -27,6 +27,7 @@ from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
     setup_logger, load_json, today_str, utcnow_iso,
     get_dynamic_balance, get_compound_stake,
+    get_current_account_id, filter_trades_by_account,
     TG_BOT_TOKEN, TG_CHAT_ID,
 )
 
@@ -56,6 +57,8 @@ def cmd_help() -> str:
 def cmd_balance() -> str:
     """账户余额"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     closed = [t for t in trades if t.get('status') == 'closed']
 
     today = today_str()
@@ -130,6 +133,8 @@ def cmd_balance() -> str:
 def cmd_positions() -> str:
     """持仓详情"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     open_trades = [t for t in trades if t.get('status') == 'open']
 
     if not open_trades:
@@ -242,6 +247,8 @@ def cmd_risk() -> str:
 def cmd_status() -> str:
     """综合状态（持仓概览 + 风控）"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
     open_trades = [t for t in trades if t.get('status') == 'open']
 
     # 持仓概览
@@ -290,6 +297,8 @@ def cmd_status() -> str:
 def cmd_compare() -> str:
     """影子 vs 实盘盈亏对比"""
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
 
     shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow']
     live_trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow']

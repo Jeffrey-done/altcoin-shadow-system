@@ -243,18 +243,50 @@ def today_str() -> str:
     return utcnow().strftime('%Y-%m-%d')
 
 
+def get_current_account_id() -> str:
+    """
+    获取当前活跃账户 ID。
+    用于给新交易打标和按账户过滤数据。
+    如果 admin_secrets 未初始化（单账户模式），返回空字符串。
+    """
+    try:
+        from admin_secrets import get_active_account_id
+        return get_active_account_id() or ''
+    except Exception:
+        return ''
+
+
+def filter_trades_by_account(trades: list, account_id: str = None) -> list:
+    """
+    按账户 ID 过滤交易列表。
+    - 如果 account_id 为空或 None，返回所有交易（单账户兼容模式）
+    - 否则只返回匹配该 account_id 的交易，以及没有 account_id 字段的历史交易
+    """
+    if not account_id:
+        return trades
+    return [
+        t for t in trades
+        if t.get('account_id', '') == account_id or t.get('account_id', '') == ''
+    ]
+
+
 
 def get_compound_stake() -> float:
     """
     自动复利：根据累计已实现盈亏动态调整单笔保证金。
     公式：stake = DEFAULT_STAKE + (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
     上限：COMPOUND_MAX_STAKE
+
+    只计算当前活跃账户的交易。
     """
     import config
     if not config.AUTO_COMPOUND_ENABLED:
         return config.DEFAULT_STAKE
 
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
+
     total_pnl = sum(
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
         for t in trades if t.get('status') == 'closed'
@@ -274,6 +306,8 @@ def get_dynamic_balance() -> float:
     """
     计算动态账户余额 = 初始本金 + 已实现盈亏 + TP1已锁定利润。
 
+    只计算当前活跃账户的交易。
+
     TP1锁定利润说明：
       当 TP1 触发时，50%仓位已平仓并锁定利润（tp1_locked_pnl），
       但交易 status 仍为 'open'（剩余50%等TP2）。
@@ -281,6 +315,8 @@ def get_dynamic_balance() -> float:
     """
     import config
     trades = load_json(TRADES_FILE, [])
+    account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
 
     total_pnl = 0.0
     for t in trades:

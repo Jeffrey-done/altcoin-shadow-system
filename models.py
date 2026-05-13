@@ -118,6 +118,9 @@ class Trade:
     live_order_id: Optional[str] = None   # 开仓的交易所订单 ID（纸上交易为 None）
     close_order_id: Optional[str] = None  # 平仓的交易所订单 ID
 
+    # 多账户隔离（v4.3）
+    account_id: str = ''              # 所属账户 ID（空=旧数据/单账户兼容）
+
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',
                      stake: float = config.DEFAULT_STAKE,
@@ -125,6 +128,7 @@ class Trade:
                      exchange: str = 'shadow',
                      live_order_id: Optional[str] = None) -> Trade:
         """工厂方法：创建做空交易（带杠杆 + 硬止损）"""
+        from common import get_current_account_id
         notional = stake * leverage
         hard_stop = round(price * (1 + config.HARD_STOP_LOSS_PCT / 100), 6)
         # ID 加交易所后缀，避免 both 模式下两所同币同秒 ID 冲突
@@ -147,6 +151,7 @@ class Trade:
             max_hold_days=config.MAX_HOLD_DAYS,
             exchange=exchange,
             live_order_id=live_order_id,
+            account_id=get_current_account_id(),
         )
 
     @property
@@ -177,6 +182,9 @@ class Trade:
         # 兼容无 exchange 字段的旧数据（v4.2 之前）
         if 'exchange' not in filtered:
             filtered['exchange'] = 'shadow'
+        # 兼容无 account_id 字段的旧数据（v4.3 之前）
+        if 'account_id' not in filtered:
+            filtered['account_id'] = ''
         return cls(**filtered)
 
 
