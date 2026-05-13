@@ -81,11 +81,10 @@ TRAIL_STOP_RETRACE_RATIO = 0.4 # 从最高盈利回撤此比例触发平仓（0.
 #   → trail_stop_price = entry * (1 - 0.03) = entry * 0.97
 #   比硬止损 entry*1.05 先触发 → 保护已有浮盈
 #
-# 旧语义（TRAIL_STOP_DRAWDOWN_PCT=0.10，"绝对点数回撤"）存在 bug：
-#   best=3%, drawdown=10% → trail_stop = entry*(1-(0.03-0.10)) = entry*1.07
-#   > 硬止损 entry*1.05 → 移动止损被硬止损截胡，从未生效
-# 保留字段仅为向后兼容，不再使用：
-TRAIL_STOP_DRAWDOWN_PCT = 0.10 # [DEPRECATED] 旧字段（绝对点数回撤，语义有误），保留防外部引用崩溃
+# 历史注记：旧字段 TRAIL_STOP_DRAWDOWN_PCT（"绝对点数回撤"语义）已于 M5 移除，
+# 因为该语义存在 bug：best=3%, drawdown=10% → trail_stop = entry*1.07 > 硬止损
+# entry*1.05，导致移动止损被硬止损截胡永远不生效。新字段 TRAIL_STOP_RETRACE_RATIO
+# 采用"相对回撤比例"语义，与硬止损解耦。
 
 # ══════════════════════════════════════════════════════════════════
 #  时间止损
