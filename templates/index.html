@@ -46,6 +46,17 @@
     <div class="grid grid-4" id="pool-details" style="margin-top:8px;"></div>
 </div>
 
+<!-- 模式筛选 -->
+<div class="card" style="margin-bottom:12px;">
+    <div class="section-title">🔀 交易模式筛选</div>
+    <div class="filter-tabs" id="mode-filter">
+        <button class="filter-tab active" data-mode="all">全部</button>
+        <button class="filter-tab" data-mode="shadow">🌑 影子</button>
+        <button class="filter-tab" data-mode="live">⚡ 实盘</button>
+    </div>
+    <div id="mode-summary" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);"></div>
+</div>
+
 <!-- 做空持仓 -->
 <div class="card" id="short-positions-table" data-direction="SHORT">
     <div class="section-title">🔴 做空持仓 <span class="card-sub" id="short-pnl-info"></span></div>
@@ -99,6 +110,19 @@
     </div>
 </div>
 
+<!-- Shadow vs Live Comparison Chart -->
+<div class="card" style="margin-top:12px;">
+    <div class="section-title">📊 影子 vs 实盘 盈亏对比</div>
+    <div id="compare-summary" style="margin-bottom:8px;font-size:0.8rem;"></div>
+    <div style="height:240px;position:relative;">
+        <canvas id="compare-chart"></canvas>
+        <div class="chart-tooltip" id="compare-tooltip"></div>
+    </div>
+    <div style="margin-top:6px;font-size:0.7rem;color:var(--text-secondary);">
+        <span style="color:var(--yellow);">● 影子</span> &nbsp; <span style="color:var(--green);">● 实盘</span>
+    </div>
+</div>
+
 <!-- Closed Trades -->
 <div class="card" style="margin-top:12px;">
     <div class="section-title">✅ 最近平仓记录</div>
@@ -116,10 +140,40 @@
 <script src="{{ url_for('static', filename='js/positions.js') }}"></script>
 <script src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
 <script src="{{ url_for('static', filename='js/funnel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/compare.js') }}"></script>
 <script>
 // SocketIO connection
 const socket = io();
 let lastDashboardData = null;
+let currentMode = 'all'; // 'all', 'shadow', 'live'
+
+// ── Mode Filter ──
+function initModeFilter() {
+    document.querySelectorAll('#mode-filter .filter-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#mode-filter .filter-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentMode = btn.dataset.mode;
+            if (lastDashboardData) updateDashboard(lastDashboardData);
+        });
+    });
+}
+function filterTradesByMode(trades, mode) {
+    if (mode === 'all') return trades;
+    if (mode === 'shadow') return trades.filter(t => (t.exchange || 'shadow') === 'shadow');
+    if (mode === 'live') return trades.filter(t => (t.exchange || 'shadow') !== 'shadow');
+    return trades;
+}
+function updateModeSummary(data) {
+    const allTrades = [...(data.short_trades?.open || []), ...(data.short_trades?.closed || [])];
+    const shadowCount = allTrades.filter(t => (t.exchange || 'shadow') === 'shadow').length;
+    const liveCount = allTrades.filter(t => (t.exchange || 'shadow') !== 'shadow').length;
+    const el = document.getElementById('mode-summary');
+    if (!el) return;
+    if (currentMode === 'all') el.innerHTML = `显示全部 | 🌑 影子: ${shadowCount} 笔 | ⚡ 实盘: ${liveCount} 笔`;
+    else if (currentMode === 'shadow') el.innerHTML = `🌑 仅显示影子交易 (${shadowCount} 笔)`;
+    else el.innerHTML = `⚡ 仅显示实盘交易 (${liveCount} 笔)`;
+}
 
 function updateDashboard(data) {
     lastDashboardData = data;
@@ -151,7 +205,7 @@ function updateDashboard(data) {
     document.getElementById('win-rate').textContent = a.win_rate + '%';
     document.getElementById('win-rate').className = 'card-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
 
-    // Pool allocation (simplified: used vs available)
+    // Pool allocation
     const pool = data.pool || {};
     const usedPct = pool.used_pct || 0;
     const availPct = Math.max(0, 100 - usedPct);
@@ -167,10 +221,14 @@ function updateDashboard(data) {
         <div><span class="card-sub">单笔仓位：</span><b>${pool.compound_stake||'--'}U</b></div>
     `;
 
-    // Short positions
+    // Short positions (filtered by mode)
     const st = data.short_trades || {};
+    const filteredOpen = filterTradesByMode(st.open || [], currentMode);
     document.getElementById('short-pnl-info').innerHTML = `今日 ${App.fmtPnl(st.today_pnl||0)} | 累计 ${App.fmtPnl(st.total_pnl||0)}`;
-    PositionTable.render(st.open, 'short-trades', 'short-empty', 'SHORT', data.config);
+    PositionTable.render(filteredOpen, 'short-trades', 'short-empty', 'SHORT', data.config);
+
+    // Update mode summary
+    updateModeSummary(data);
 
     // Risk control
     const risk = data.risk || {};
@@ -224,12 +282,16 @@ function updateDashboard(data) {
     }
     CandidateFunnel.render(data.candidates);
 
-    // Closed trades
+    // Closed trades (filtered by mode)
     const closedTbody = document.getElementById('closed-trades');
-    const allClosed = (st.closed||[]).sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
+    const allClosed = filterTradesByMode(st.closed || [], currentMode)
+        .sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
     closedTbody.innerHTML = allClosed.map(t => {
         const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
-        return `<tr><td><b>${t.symbol}</b></td><td>${t.direction||'SHORT'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
+        const modeTag = (t.exchange || 'shadow') === 'shadow'
+            ? '<span class="badge" style="background:var(--bg-tertiary);font-size:0.6rem;">影子</span>'
+            : '<span class="badge" style="background:var(--green);color:#000;font-size:0.6rem;">实盘</span>';
+        return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction||'SHORT'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
             <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
             <td>${t.close_reason || '--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
     }).join('');
@@ -265,9 +327,12 @@ BinanceWS.onPriceUpdate = function(symbol, price) {
 // Init chart and sort headers
 document.addEventListener('DOMContentLoaded', () => {
     PnlChart.init('pnl-chart', 'chart-tooltip');
+    CompareChart.init('compare-chart', 'compare-tooltip');
+    initModeFilter();
     PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
         if (lastDashboardData) {
-            PositionTable.render(lastDashboardData.short_trades?.open, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
+            const filtered = filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode);
+            PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
         }
     });
 });

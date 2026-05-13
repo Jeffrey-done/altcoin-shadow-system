@@ -515,6 +515,132 @@ def api_events():
     return jsonify({'events': events})
 
 
+@app.route('/api/trades/filtered')
+@check_api_token
+def api_trades_filtered():
+    """
+    Return trades filtered by mode: shadow or live.
+    Query params:
+      - mode: 'shadow' | 'live' | 'all' (default: 'all')
+      - status: 'open' | 'closed' | 'all' (default: 'all')
+    """
+    mode = request.args.get('mode', 'all').lower()
+    status_filter = request.args.get('status', 'all').lower()
+
+    trades = load_json(TRADES_FILE, [])
+
+    # Filter by mode (shadow vs live)
+    if mode == 'shadow':
+        trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow']
+    elif mode == 'live':
+        trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow']
+
+    # Filter by status
+    if status_filter == 'open':
+        trades = [t for t in trades if t.get('status') == 'open']
+    elif status_filter == 'closed':
+        trades = [t for t in trades if t.get('status') == 'closed']
+
+    # Compute summary
+    open_trades = [t for t in trades if t.get('status') == 'open']
+    closed_trades = [t for t in trades if t.get('status') == 'closed']
+    total_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_trades)
+    total_pnl += sum(t.get('tp1_locked_pnl', 0) for t in open_trades if t.get('tp1_triggered'))
+
+    today = today_str()
+    today_closed = [t for t in closed_trades if t.get('closed_at', '').startswith(today)]
+    today_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in today_closed)
+
+    wins = sum(1 for t in closed_trades if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
+    win_rate = round(wins / len(closed_trades) * 100, 1) if closed_trades else 0
+
+    return jsonify({
+        'mode': mode,
+        'open': open_trades,
+        'closed': closed_trades[-30:],
+        'summary': {
+            'total_pnl': round(total_pnl, 2),
+            'today_pnl': round(today_pnl, 2),
+            'open_count': len(open_trades),
+            'closed_count': len(closed_trades),
+            'win_rate': win_rate,
+        }
+    })
+
+
+@app.route('/api/pnl/compare')
+@check_api_token
+def api_pnl_compare():
+    """
+    Return PnL comparison data: shadow vs live cumulative curves.
+    Used for the comparison chart on the dashboard.
+    """
+    trades = load_json(TRADES_FILE, [])
+
+    shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow' and t.get('status') == 'closed']
+    live_trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow' and t.get('status') == 'closed']
+
+    def build_pnl_curve(trade_list):
+        daily = {}
+        for t in trade_list:
+            closed_at = t.get('closed_at', '')
+            if not closed_at:
+                continue
+            day = closed_at[:10]
+            pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            daily[day] = daily.get(day, 0) + pnl
+
+        sorted_days = sorted(daily.keys())
+        cum = 0
+        cumulative = []
+        for d in sorted_days:
+            cum += daily[d]
+            cumulative.append(round(cum, 2))
+        return {
+            'dates': sorted_days,
+            'daily_pnl': [round(daily[d], 2) for d in sorted_days],
+            'cumulative': cumulative,
+        }
+
+    shadow_curve = build_pnl_curve(shadow_trades)
+    live_curve = build_pnl_curve(live_trades)
+
+    # Merge dates for aligned comparison
+    all_dates = sorted(set(shadow_curve['dates'] + live_curve['dates']))
+
+    # Build aligned cumulative arrays
+    def align_cumulative(curve, all_dates):
+        date_cum_map = {}
+        cum = 0
+        for i, d in enumerate(curve['dates']):
+            cum = curve['cumulative'][i]
+            date_cum_map[d] = cum
+        aligned = []
+        last_val = 0
+        for d in all_dates:
+            if d in date_cum_map:
+                last_val = date_cum_map[d]
+            aligned.append(last_val)
+        return aligned
+
+    shadow_aligned = align_cumulative(shadow_curve, all_dates)
+    live_aligned = align_cumulative(live_curve, all_dates)
+
+    return jsonify({
+        'dates': all_dates,
+        'shadow': {
+            'cumulative': shadow_aligned,
+            'total_pnl': shadow_aligned[-1] if shadow_aligned else 0,
+            'trade_count': len(shadow_trades),
+        },
+        'live': {
+            'cumulative': live_aligned,
+            'total_pnl': live_aligned[-1] if live_aligned else 0,
+            'trade_count': len(live_trades),
+        },
+    })
+
+
 @app.route('/api/backtest')
 @check_api_token
 def api_backtest():

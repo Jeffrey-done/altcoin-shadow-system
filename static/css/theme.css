@@ -508,3 +508,31 @@ tr.danger-row {
     }
     th.sortable { min-height: 44px; }
 }
+
+
+/* ── Filter Tabs (Shadow/Live mode filter) ────────────────────── */
+.filter-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.filter-tab {
+    padding: 6px 16px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+.filter-tab:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+.filter-tab.active {
+    background: var(--accent);
+    color: var(--nav-active-text);
+    border-color: var(--accent);
+}

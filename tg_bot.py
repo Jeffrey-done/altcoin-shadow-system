@@ -9,6 +9,7 @@ Telegram Bot 交互指令模块
   /positions  - 所有持仓详情（入场价、浮盈、止损位）
   /candidates - 候选池（等待触发的币）
   /risk       - 风控状态详情
+  /compare    - 影子 vs 实盘盈亏对比
   /help       - 显示所有可用指令
 """
 
@@ -47,6 +48,7 @@ def cmd_help() -> str:
         "/positions - 所有持仓详情\n"
         "/candidates - 候选池（等待触发）\n"
         "/risk - 风控状态详情\n"
+        "/compare - 影子 vs 实盘盈亏对比\n"
         "/help - 显示本帮助\n"
     )
 
@@ -160,9 +162,12 @@ def cmd_positions() -> str:
 
         emoji = "🟢" if pnl_pct > 0 else "🔴"
         tp1_tag = " ✅TP1" if t.get('tp1_triggered') else ""
-        # 交易所标签：shadow 不显示，实盘显示 [BINANCE] / [OKX]
+        # 交易所标签：shadow 显示 [影子]，实盘显示 [BINANCE] / [OKX]
         ex = t.get('exchange', 'shadow')
-        ex_tag = f" <code>[{ex.upper()}]</code>" if ex != 'shadow' else ""
+        if ex == 'shadow':
+            ex_tag = " <code>[🌑影子]</code>"
+        else:
+            ex_tag = f" <code>[⚡{ex.upper()}]</code>"
 
         lines.append(
             f"{emoji} <b>{symbol}</b> {direction}{ex_tag}{tp1_tag}\n"
@@ -259,7 +264,9 @@ def cmd_status() -> str:
             total_pnl += pnl_usd + t.get('tp1_locked_pnl', 0)
 
             emoji = "🟢" if pnl_pct > 0 else "🔴"
-            position_lines.append(f"  {emoji} {t.get('symbol')} {pnl_pct:+.1f}% ({pnl_usd:+.1f}U)")
+            ex = t.get('exchange', 'shadow')
+            mode_tag = "[🌑]" if ex == 'shadow' else f"[⚡{ex.upper()[:2]}]"
+            position_lines.append(f"  {emoji} {t.get('symbol')} {mode_tag} {pnl_pct:+.1f}% ({pnl_usd:+.1f}U)")
 
         pos_text = "\n".join(position_lines)
         header = f"📊 <b>持仓 {len(open_trades)} 笔 | 浮盈 {total_pnl:+.2f}U</b>\n{pos_text}"
@@ -280,6 +287,64 @@ def cmd_status() -> str:
     )
 
 
+def cmd_compare() -> str:
+    """影子 vs 实盘盈亏对比"""
+    trades = load_json(TRADES_FILE, [])
+
+    shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow']
+    live_trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow']
+
+    shadow_closed = [t for t in shadow_trades if t.get('status') == 'closed']
+    live_closed = [t for t in live_trades if t.get('status') == 'closed']
+
+    shadow_open = [t for t in shadow_trades if t.get('status') == 'open']
+    live_open = [t for t in live_trades if t.get('status') == 'open']
+
+    # 盈亏计算
+    shadow_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in shadow_closed)
+    shadow_pnl += sum(t.get('tp1_locked_pnl', 0) for t in shadow_open if t.get('tp1_triggered'))
+
+    live_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in live_closed)
+    live_pnl += sum(t.get('tp1_locked_pnl', 0) for t in live_open if t.get('tp1_triggered'))
+
+    # 今日盈亏
+    today = today_str()
+    shadow_today = sum(
+        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        for t in shadow_closed if t.get('closed_at', '').startswith(today)
+    )
+    live_today = sum(
+        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        for t in live_closed if t.get('closed_at', '').startswith(today)
+    )
+
+    # 胜率
+    shadow_wins = sum(1 for t in shadow_closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
+    live_wins = sum(1 for t in live_closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
+    shadow_wr = round(shadow_wins / len(shadow_closed) * 100, 1) if shadow_closed else 0
+    live_wr = round(live_wins / len(live_closed) * 100, 1) if live_closed else 0
+
+    # 差异
+    diff = live_pnl - shadow_pnl
+    diff_emoji = "📈" if diff > 0 else ("📉" if diff < 0 else "➡️")
+
+    return (
+        f"📊 <b>影子 vs 实盘 对比</b>\n\n"
+        f"🌑 <b>影子交易</b>\n"
+        f"   累计盈亏：<b>{shadow_pnl:+.2f}U</b>\n"
+        f"   今日盈亏：{shadow_today:+.2f}U\n"
+        f"   持仓/已平：{len(shadow_open)}/{len(shadow_closed)} 笔\n"
+        f"   胜率：{shadow_wr}%\n\n"
+        f"⚡ <b>实盘交易</b>\n"
+        f"   累计盈亏：<b>{live_pnl:+.2f}U</b>\n"
+        f"   今日盈亏：{live_today:+.2f}U\n"
+        f"   持仓/已平：{len(live_open)}/{len(live_closed)} 笔\n"
+        f"   胜率：{live_wr}%\n\n"
+        f"{diff_emoji} <b>差异：{diff:+.2f}U</b>"
+        f"{'（实盘优于影子）' if diff > 0 else ('（影子优于实盘）' if diff < 0 else '（持平）')}"
+    )
+
+
 # ══════════════════════════════════════════════════════════════════
 #  指令路由
 # ══════════════════════════════════════════════════════════════════
@@ -290,6 +355,7 @@ COMMANDS = {
     '/positions': cmd_positions,
     '/candidates': cmd_candidates,
     '/risk': cmd_risk,
+    '/compare': cmd_compare,
     '/help': cmd_help,
     '/start': cmd_help,  # TG bot 首次 /start 也显示帮助
 }
