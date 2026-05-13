@@ -14,6 +14,8 @@
 """
 
 import os
+from typing import Optional
+
 import ccxt
 
 import config
@@ -44,7 +46,8 @@ def get_live_exchange():
     return exchange
 
 
-def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE) -> dict:
+def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
+                       client_order_id: Optional[str] = None) -> dict:
     """
     实盘开空单。
 
@@ -52,97 +55,126 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
       symbol: ccxt 格式 (如 'PEPE/USDT')
       stake: 保证金 (USDT)
       leverage: 杠杆倍数
+      client_order_id: 幂等键（newClientOrderId），网络重试时避免重复下单
 
     返回:
-      {"success": True/False, "order_id": str, "price": float, "error": str}
+      {"success": True/False, "order_id": str, "price": float, "amount": float, "error": str}
+
+    影子模式（LIVE_MODE=False）:
+      直接返回 success=True, price=0，上层会用 ticker 价记账。
     """
     if not config.LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW", "price": 0, "amount": 0, "error": ""}
 
     exchange = get_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
     try:
-        # 设置杠杆
-        binance_symbol = to_binance_symbol(symbol)
-        exchange.fapiPrivate_post_leverage({
-            'symbol': binance_symbol,
-            'leverage': leverage,
-        })
+        # 设置杠杆（失败时仅告警，由交易所返回错误中断流程）
+        try:
+            exchange.set_leverage(leverage, symbol)
+        except Exception as e:
+            logger.warning(f"set_leverage 失败 ({symbol}): {e}")
 
-        # 计算下单数量
+        # 获取下单前 ticker（作为滑点校验基准，不作为成交价）
         ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
+        ref_price = ticker['last']
         notional = stake * leverage
-        amount = notional / price
+        amount = notional / ref_price
 
-        # 市价做空
+        params = {'positionSide': 'SHORT'}
+        if client_order_id:
+            # Binance 合约使用 newClientOrderId 幂等键
+            params['newClientOrderId'] = client_order_id
+
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side='sell',
-            amount=amount,
-            params={'positionSide': 'SHORT'},
+            symbol=symbol, type='market', side='sell',
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ 实盘开空: {symbol} | 数量={amount:.4f} | 杠杆={leverage}x | 订单={order['id']}")
+        # 必须用成交均价作为 entry_price，而不是 ref_price
+        fill_price = float(order.get('average') or order.get('price') or ref_price)
+        filled_amount = float(order.get('filled') or amount)
+
+        # 滑点校验：成交价与 ticker 偏差 > 0.5% 告警（但不回滚）
+        if ref_price > 0:
+            slippage_pct = abs(fill_price - ref_price) / ref_price * 100
+            if slippage_pct > 0.5:
+                logger.warning(
+                    f"⚠️ 滑点异常 {symbol}: ticker={ref_price:.6f} 成交={fill_price:.6f} "
+                    f"({slippage_pct:.2f}%)"
+                )
+
+        logger.info(
+            f"✅ 实盘开空: {symbol} | 成交={fill_price:.6f} | "
+            f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', price)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
         logger.error(f"❌ 实盘开空失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE) -> dict:
+def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE,
+                      client_order_id: Optional[str] = None) -> dict:
     """
-    实盘开多单。
+    实盘开多单（当前做空系统未使用，保留给未来扩展）。
     """
     if not config.LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW", "price": 0, "amount": 0, "error": ""}
 
     exchange = get_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
     try:
-        binance_symbol = to_binance_symbol(symbol)
-        exchange.fapiPrivate_post_leverage({
-            'symbol': binance_symbol,
-            'leverage': leverage,
-        })
+        try:
+            exchange.set_leverage(leverage, symbol)
+        except Exception as e:
+            logger.warning(f"set_leverage 失败 ({symbol}): {e}")
 
         ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
+        ref_price = ticker['last']
         notional = stake * leverage
-        amount = notional / price
+        amount = notional / ref_price
+
+        params = {'positionSide': 'LONG'}
+        if client_order_id:
+            params['newClientOrderId'] = client_order_id
 
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side='buy',
-            amount=amount,
-            params={'positionSide': 'LONG'},
+            symbol=symbol, type='market', side='buy',
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ 实盘开多: {symbol} | 数量={amount:.4f} | 杠杆={leverage}x | 订单={order['id']}")
+        fill_price = float(order.get('average') or order.get('price') or ref_price)
+        filled_amount = float(order.get('filled') or amount)
+
+        logger.info(
+            f"✅ 实盘开多: {symbol} | 成交={fill_price:.6f} | "
+            f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', price)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
         logger.error(f"❌ 实盘开多失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
 def execute_close_position(symbol: str, direction: str, amount: float) -> dict:

@@ -24,10 +24,6 @@ RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
 WEEKLY_REPORT_FILE = os.path.join(SCRIPT_DIR, 'weekly_report.json')
 TRADES_ARCHIVE_FILE = os.path.join(SCRIPT_DIR, 'altcoin_trades_archive.json')
 
-# 向后兼容：保留常量定义以便旧数据加载不报错
-FUNDING_TRADES_FILE = os.path.join(SCRIPT_DIR, 'funding_arb_trades.json')
-LOW_RISK_TRADES_FILE = os.path.join(SCRIPT_DIR, 'low_risk_trades.json')
-
 
 # ── 环境变量 ─────────────────────────────────────────────────────
 def load_env():

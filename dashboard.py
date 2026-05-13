@@ -18,6 +18,7 @@ Features:
 """
 
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -44,7 +45,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__,
             template_folder=os.path.join(SCRIPT_DIR, 'templates'),
             static_folder=os.path.join(SCRIPT_DIR, 'static'))
-app.config['SECRET_KEY'] = 'shadow-system-dashboard'
+# SECRET_KEY 从环境变量读取；未设置时用 token_urlsafe 生成临时随机值（重启后会变，
+# 导致已登录 session 失效，但本系统 Dashboard 主要是只读接口，影响可忽略）。
+_secret = os.environ.get('DASHBOARD_SECRET_KEY', '')
+if not _secret:
+    import secrets as _secrets
+    _secret = _secrets.token_urlsafe(32)
+app.config['SECRET_KEY'] = _secret
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 BATCH_BACKTEST_RESULTS_FILE = os.path.join(SCRIPT_DIR, 'batch_backtest_results.json')
@@ -58,7 +65,13 @@ def check_api_token(f):
     """
     Simple token-based auth decorator.
     Checks X-Dashboard-Token header against DASHBOARD_TOKEN env var.
-    If DASHBOARD_TOKEN is not set, authentication is skipped.
+    If DASHBOARD_TOKEN is not set, authentication is skipped (development mode).
+
+    Security notes:
+      - Uses hmac.compare_digest for constant-time comparison (prevents timing attacks)
+      - Warns on startup if token is shorter than 16 chars
+      - Recommend 32+ byte random token in production: secrets.token_urlsafe(32)
+      - Requires HTTPS when exposed to public network (e.g. behind nginx/caddy)
     """
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -67,7 +80,8 @@ def check_api_token(f):
             # No token configured, skip auth
             return f(*args, **kwargs)
         provided_token = request.headers.get('X-Dashboard-Token', '')
-        if provided_token != expected_token:
+        # Constant-time comparison
+        if not hmac.compare_digest(provided_token, expected_token):
             return jsonify({'error': 'Unauthorized', 'message': 'Invalid or missing X-Dashboard-Token'}), 401
         return f(*args, **kwargs)
     return decorated
@@ -556,10 +570,17 @@ if __name__ == '__main__':
         if idx + 1 < len(sys.argv):
             port = int(sys.argv[idx + 1])
 
-    print(f"🚀 Dashboard v4.0 启动: http://localhost:{port}")
+    print(f"🚀 Dashboard v4.1 启动: http://localhost:{port}")
     print(f"   架构: Flask + Jinja2 Templates + Modular Static Files")
     print(f"   页面: 主面板 | 周报 | 批量回测 | 单币回测 | 策略评分")
-    print(f"   API认证: {'已启用 (DASHBOARD_TOKEN)' if os.environ.get('DASHBOARD_TOKEN') else '未设置 (开放访问)'}")
+    _token = os.environ.get('DASHBOARD_TOKEN', '')
+    if _token:
+        if len(_token) < 16:
+            print(f"   ⚠️  DASHBOARD_TOKEN 长度仅 {len(_token)}，建议 ≥32 字节随机串")
+            print(f"       生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        print(f"   API认证: 已启用（X-Dashboard-Token，常量时间比较）")
+    else:
+        print(f"   API认证: ⚠️  未设置 DASHBOARD_TOKEN（开放访问，仅限局域网）")
     print(f"   实时推送间隔: 10秒")
     print(f"   按 Ctrl+C 停止")
 

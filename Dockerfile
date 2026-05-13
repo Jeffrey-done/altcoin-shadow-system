@@ -2,15 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir ccxt python-dotenv requests flask flask-socketio websocket-client eventlet
+# Install runtime dependencies first (better layer caching)
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# Copy source code (excluding what's in .dockerignore)
 COPY . .
 
-# Create data directory
-RUN mkdir -p /app/backtest_cache
+# Data directory is expected to be mounted at runtime
+RUN mkdir -p /app/backtest_cache /app/data
 
-# Default: run dashboard
 EXPOSE 8080
+# Default: run dashboard. docker-compose overrides with `command:` per service
 CMD ["python3", "dashboard.py"]

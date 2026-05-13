@@ -1,35 +1,44 @@
 version: '3.8'
 
+# 代码通过 Dockerfile 的 COPY 打进镜像。
+# 只把数据目录和 .env 作为 volume 挂入，避免三个容器共享源代码/__pycache__ 冲突。
+#
+# 数据目录 ./ 仍然作为默认（历史兼容），因为 common.py 里的
+# CANDIDATES_FILE / TRADES_FILE / RISK_FILE 等都是相对 SCRIPT_DIR。
+# 生产部署建议改到 ./data/ 并相应修改 common.py 路径常量。
+
+x-common-app: &common-app
+  build: .
+  volumes:
+    # 运行时数据文件（持仓/风控/候选池）
+    - ./altcoin_shadow_trades.json:/app/altcoin_shadow_trades.json
+    - ./altcoin_candidates.json:/app/altcoin_candidates.json
+    - ./risk_state.json:/app/risk_state.json
+    - ./altcoin_trades_archive.json:/app/altcoin_trades_archive.json
+    - ./weekly_report.json:/app/weekly_report.json
+    - ./backtest_cache:/app/backtest_cache
+    # 环境变量
+    - ./.env:/app/.env:ro
+  restart: unless-stopped
+
 services:
   # 实时仪表盘
   dashboard:
-    build: .
+    <<: *common-app
     ports:
       - "8080:8080"
-    volumes:
-      - ./:/app/
-      - ./.env:/app/.env:ro
-    restart: unless-stopped
     command: python3 dashboard.py
 
-  # 定时任务调度器（扫描+追踪+费率+做多+健康检查）
+  # 定时任务调度器
   scheduler:
-    build: .
-    volumes:
-      - ./:/app/
-      - ./.env:/app/.env:ro
-    restart: unless-stopped
+    <<: *common-app
     command: python3 scheduler.py
     depends_on:
       - dashboard
 
-  # 实时止盈止损监控器（Binance WebSocket 7×24）
+  # 实时止盈止损监控器
   realtime-monitor:
-    build: .
-    volumes:
-      - ./:/app/
-      - ./.env:/app/.env:ro
-    restart: unless-stopped
+    <<: *common-app
     command: python3 realtime_monitor.py
     depends_on:
       - dashboard

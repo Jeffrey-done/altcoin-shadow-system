@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """
-小币种影子空单追踪器 v4.0
+小币种影子空单追踪器 v4.1
 功能：
   - 追踪持仓盈亏（杠杆仓位）
-  - 硬止损（价格反弹 3% 无条件平仓）
-  - 分批止盈（TP1 -5% 锁50%仓位，TP2 -10% 全仓平）
+  - 硬止损（价格反弹 5% 无条件平仓）
+  - 分批止盈（TP1 -5% 锁50%仓位，TP2 -8% 全仓平）
   - 移动止损（最高盈利回撤10%触发）
   - 时间止损（24小时且盈利<3%强制平）
   - 风控集成（平仓时记录盈亏）
   - 统一逻辑：--check-only 和日报共用同一套评估函数
+
+关键数据语义（v4.1 修订，消除 TP1 双计数）：
+  - trade.pnl 始终表示"剩余仓位"的盈亏：
+      * 未触发 TP1：整笔仓位的浮动盈亏
+      * TP1 已触发：剩余 50% 仓位的盈亏（浮动或平仓实现）
+      * 最终关闭：剩余仓位的实现盈亏（不含 tp1_locked_pnl）
+  - trade.tp1_locked_pnl 表示 TP1 已锁定的盈利（独立累加）
+  - 任何地方都用 `tp1_locked_pnl + pnl` 得到该笔交易的总盈亏
+  - result.pnl_usd 仍是"本次 evaluate 后该笔交易的累计盈亏"，
+    供 record_trade_closed 作为单笔风控事件金额使用
 """
 
 import sys
@@ -23,7 +33,7 @@ from common import (
     setup_logger, send_tg, atomic_write_json, load_json,
     utcnow_iso, hold_days, hold_hours, LockedJsonFile,
 )
-from models import Trade
+from models import Trade, CloseType
 from risk_control import record_trade_closed, get_risk_summary
 
 logger = setup_logger("altcoin_tracker")
@@ -88,25 +98,27 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
             hard_stop_hit = True
 
     if hard_stop_hit:
+        # 语义约定：trade.pnl = 仅"剩余仓位"的实现盈亏（不含 tp1_locked_pnl）
         remaining_pnl = notional_remaining * pnl_pct / 100
-        total_pnl = trade.tp1_locked_pnl + remaining_pnl
-        trade.pnl = round(total_pnl, 2)
+        trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"硬止损（价格反弹{-pnl_pct:.1f}%触发）"
+        trade.close_type = CloseType.HARD_STOP
+        total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
-        result.close_reason = f"🛑 硬止损触发（+{config.HARD_STOP_LOSS_PCT}%，亏损{total_pnl:.1f}U）"
+        result.close_reason = f"🛑 硬止损触发（+{config.HARD_STOP_LOSS_PCT}%，合计{total_pnl:+.1f}U）"
         result.alert_msg = (
             f"🛑 <b>硬止损触发</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"价格反弹：{-pnl_pct:.2f}% > 止损线{config.HARD_STOP_LOSS_PCT}%\n"
-            f"亏损：<b>{total_pnl:.2f}U</b>（保证金{trade.stake}U×{leverage}x）\n"
+            f"合计盈亏：<b>{total_pnl:+.2f}U</b>（TP1锁定{trade.tp1_locked_pnl:+.2f} + 剩余{remaining_pnl:+.2f}，保证金{trade.stake}U×{leverage}x）\n"
             f"已自动平仓，严格执行纪律 ✅"
         )
-        logger.info(f"[硬止损] {trade.symbol} @ {current_price}, 亏损 {total_pnl:.2f}U")
+        logger.info(f"[硬止损] {trade.symbol} @ {current_price}, 合计 {total_pnl:+.2f}U")
         trade.current_price = current_price
         return result
 
@@ -154,9 +166,11 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         else:
             # 做空：止损价越低越保守，入场价是最大允许值
             trade.trail_stop_price = entry if trade.trail_stop_price is None else min(trade.trail_stop_price, entry)
-        # 剩余仓位浮盈
+        # 剩余仓位浮盈（同步到 trade.pnl，保持"trade.pnl = 剩余仓位盈亏"的语义）
         new_notional = trade.stake_remaining * leverage
-        result.pnl_usd = round(new_notional * pnl_pct / 100, 2)
+        remaining_pnl = new_notional * pnl_pct / 100
+        trade.pnl = round(remaining_pnl, 2)
+        result.pnl_usd = round(trade.tp1_locked_pnl + remaining_pnl, 2)
         result.updated = True
         result.alert_msg = (
             f"🎯 <b>第一档止盈触发（-{(1-config.TP1_MULTIPLIER)*100:.0f}%）</b>\n\n"
@@ -180,11 +194,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     if tp2_hit:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
-        total_pnl = trade.tp1_locked_pnl + remaining_pnl
-        trade.pnl = round(total_pnl, 2)
+        trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"TP2止盈-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓"
+        trade.close_type = CloseType.TP2
+        total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
@@ -215,15 +230,16 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     if trail_triggered:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
-        total_pnl = trade.tp1_locked_pnl + remaining_pnl
-        trade.pnl = round(total_pnl, 2)
+        trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
+        total_pnl = trade.tp1_locked_pnl + remaining_pnl
 
         # 区分保本止损和普通移动止损
         is_breakeven_stop = trade.tp1_triggered and pnl_pct <= 0.5
         if is_breakeven_stop:
             trade.close_reason = f"保本止损（TP1后价格回到入场价附近）"
+            trade.close_type = CloseType.BREAKEVEN_STOP
             result.close_reason = f"🛡️ 保本止损（TP1已锁{trade.tp1_locked_pnl:+.2f}U，剩余保本平仓）"
             result.alert_msg = (
                 f"🛡️ <b>保本止损触发</b>\n\n"
@@ -235,6 +251,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
             )
         else:
             trade.close_reason = f"移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
+            trade.close_type = CloseType.TRAIL_STOP
             result.close_reason = f"🛑 移动止损（最高{trade.best_pnl_pct:.1f}%→{pnl_pct:.1f}%）"
             result.alert_msg = (
                 f"🛑 <b>移动止损触发</b>\n\n"
@@ -254,11 +271,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     elif hours_held >= trade.max_hold_days * 24 and pnl_pct < config.TIME_STOP_MIN_PROFIT_PCT:
         remaining_notional = trade.stake_remaining * leverage
         remaining_pnl = remaining_notional * pnl_pct / 100
-        total_pnl = trade.tp1_locked_pnl + remaining_pnl
-        trade.pnl = round(total_pnl, 2)
+        trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"时间止损（{hours_held:.1f}h，{pnl_pct:.1f}%）"
+        trade.close_type = CloseType.TIME_STOP
+        total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
         result.pnl_usd = round(total_pnl, 2)
@@ -271,9 +289,10 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         logger.info(f"[时间止损] {trade.symbol} 持仓{hours_held:.1f}h")
 
-    # 无触发：更新浮盈
+    # 无触发：更新浮盈（trade.pnl = 剩余仓位的浮动盈亏）
     else:
-        trade.pnl = round(pnl_usd, 2)
+        remaining_notional = trade.stake_remaining * leverage
+        trade.pnl = round(remaining_notional * pnl_pct / 100, 2)
 
     trade.current_price = current_price
     return result

@@ -2,13 +2,18 @@
 """
 定时任务调度器 — 替代 crontab
 在 Docker 容器内按计划执行所有策略模块。
-专注做空策略调度。
+
+v4.1 改进（防止任务漏跑）：
+  - 每个任务用"上次执行时间 + 间隔"判断，而不是精确到分钟的等值比较
+  - 即使主循环被 GC/IO 卡住跨过了整点，下一轮仍然会补跑
+  - 所有时间记录使用 UTC
 """
 
 import time
 import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import Callable, Optional
 
 from common import setup_logger
 
@@ -20,21 +25,20 @@ def run_task(name: str, func, timeout: int = None):
     import config
     if timeout is None:
         timeout = config.TASK_TIMEOUT_SECONDS
-    
-    result = [None]
+
     exception = [None]
-    
+
     def target():
         try:
             func()
         except Exception as e:
             exception[0] = e
-    
+
     logger.info(f"[{name}] 开始执行（超时={timeout}s）")
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
-    
+
     if thread.is_alive():
         logger.error(f"[{name}] ⚠️ 超时（>{timeout}s），跳过本次")
         from common import send_tg
@@ -45,17 +49,63 @@ def run_task(name: str, func, timeout: int = None):
         logger.info(f"[{name}] 完成")
 
 
-def get_utc_hour():
-    return datetime.now(timezone.utc).hour
+# ══════════════════════════════════════════════════════════════════
+#  任务调度状态（记录每个任务的上次执行时间）
+# ══════════════════════════════════════════════════════════════════
+
+_last_run: dict = {}  # task_name -> datetime (UTC)
 
 
-def get_utc_minute():
-    return datetime.now(timezone.utc).minute
+def _due_for_hourly(name: str, now: datetime, minute_offset: int) -> bool:
+    """
+    判断一个"每小时第 N 分执行"的任务是否该跑。
+    只要当前时间 >= 本小时的目标时刻 且 本小时内还没跑过，就返回 True。
+    """
+    target = now.replace(minute=minute_offset, second=0, microsecond=0)
+    last = _last_run.get(name)
+    if now < target:
+        return False
+    # 本小时还没跑过（last 要么没有，要么是上一小时或更早）
+    return last is None or last < target
+
+
+def _due_for_interval(name: str, now: datetime, interval_hours: int, minute_offset: int) -> bool:
+    """
+    判断"每 N 小时（在 hour % N == 0 那一小时的第 minute_offset 分）执行"的任务是否该跑。
+    """
+    if now.hour % interval_hours != 0:
+        return False
+    target = now.replace(minute=minute_offset, second=0, microsecond=0)
+    last = _last_run.get(name)
+    if now < target:
+        return False
+    return last is None or last < target
+
+
+def _due_for_daily(name: str, now: datetime, hour: int, minute: int) -> bool:
+    """判断"每日 HH:MM UTC"任务是否该跑"""
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    last = _last_run.get(name)
+    if now < target:
+        return False
+    return last is None or last < target
+
+
+def _due_for_weekly(name: str, now: datetime, weekday: int, hour: int, minute: int) -> bool:
+    """判断"每周 weekday HH:MM UTC"任务是否该跑（weekday: 0=周一）"""
+    if now.weekday() != weekday:
+        return False
+    return _due_for_daily(name, now, hour, minute)
+
+
+def _mark_done(name: str, now: datetime):
+    """标记任务已执行"""
+    _last_run[name] = now
 
 
 def main_loop():
-    """主调度循环，每分钟检查一次"""
-    logger.info("=== 调度器启动 ===")
+    """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
+    logger.info("=== 调度器启动 v4.1 ===")
 
     # 启动时对账一次：修正风控状态与交易记录的漂移（幽灵亏损预防）
     try:
@@ -82,66 +132,52 @@ def main_loop():
     except Exception as e:
         logger.warning(f"TG Bot 启动失败（非致命）: {e}")
 
-    last_scan_hour = -1
-    last_check_min = -1
-    last_tracker_min = -1
-    last_health_hour = -1
-    last_daily_report_done = False
-    last_optimize_done = False
+    import config
 
     while True:
         now = datetime.now(timezone.utc)
-        hour = now.hour
-        minute = now.minute
-        day = now.day
 
-        # ── 每小时整点：日线扫描 ──
-        if minute == 0 and hour != last_scan_hour:
-            last_scan_hour = hour
+        # ── 每小时 :00 日线扫描 ──
+        if _due_for_hourly('scan_daily', now, 0):
             from altcoin_scanner import scan_daily
             run_task("日线扫描", scan_daily)
+            _mark_done('scan_daily', now)
 
-        # ── 每小时30分：候选确认 ──
-        if minute == 30 and hour != last_check_min:
-            last_check_min = hour
-            from altcoin_scanner import check_candidates
-            run_task("候选确认", check_candidates)
-
-        # ── 每小时15分：止盈止损检查 ──
-        if minute == 15 and hour != last_tracker_min:
-            last_tracker_min = hour
+        # ── 每小时 :15 止盈止损检查 ──
+        if _due_for_hourly('tracker_check', now, 15):
             from altcoin_tracker import run as tracker_run
             run_task("止盈检查", lambda: tracker_run(check_only=True))
+            _mark_done('tracker_check', now)
 
-        # ── 每6小时：健康检查 ──
-        if hour % 6 == 0 and minute == 45 and hour != last_health_hour:
-            last_health_hour = hour
+        # ── 每小时 :30 候选确认 ──
+        if _due_for_hourly('check_candidates', now, 30):
+            from altcoin_scanner import check_candidates
+            run_task("候选确认", check_candidates)
+            _mark_done('check_candidates', now)
+
+        # ── 每 6 小时 :45 健康检查 ──
+        if _due_for_interval('health_check', now, 6, 45):
             from health_check import run_health_check
             run_task("健康检查", run_health_check)
+            _mark_done('health_check', now)
 
-        # ── 每天8:00 UTC：日报 ──
-        if hour == 8 and minute == 0 and not last_daily_report_done:
-            last_daily_report_done = True
+        # ── 每日 08:00 UTC 日报 ──
+        if _due_for_daily('daily_report', now, 8, 0):
             from altcoin_tracker import run as tracker_run
             run_task("日报推送", lambda: tracker_run(check_only=False))
+            _mark_done('daily_report', now)
 
-        # ── 每周一9:00 UTC：自动优化建议 ──
-        import config
-        if hour == 9 and minute == 0 and now.weekday() == config.AUTO_OPTIMIZE_DAY and not last_optimize_done:
-            last_optimize_done = True
-            from auto_optimize import run_auto_optimize
-            run_task("自动优化", run_auto_optimize)
-
-        # 日期变更重置
-        if hour == 0 and minute == 1:
-            last_daily_report_done = False
-            # 每日清理过期交易
+        # ── 每日 00:01 UTC 清理过期交易 ──
+        if _due_for_daily('archive_trades', now, 0, 1):
             from common import cleanup_old_trades
             run_task("清理过期交易", cleanup_old_trades)
+            _mark_done('archive_trades', now)
 
-        # 周二重置优化标志（周一执行后，周二0点重置）
-        if now.weekday() == 1 and hour == 0 and minute == 1:
-            last_optimize_done = False
+        # ── 每周一 09:00 UTC 自动优化建议 ──
+        if _due_for_weekly('auto_optimize', now, config.AUTO_OPTIMIZE_DAY, 9, 0):
+            from auto_optimize import run_auto_optimize
+            run_task("自动优化", run_auto_optimize)
+            _mark_done('auto_optimize', now)
 
         # 睡眠30秒
         time.sleep(30)
