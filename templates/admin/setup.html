@@ -1,13 +1,13 @@
 {% extends "admin/_base.html" %}
-{% block title %}Initial Setup{% endblock %}
+{% block title %}初始设置{% endblock %}
 {% block content %}
 <div class="card">
   <div style="text-align:center;margin-bottom:28px;">
     <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--purple-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
       <i data-lucide="key-round" style="width:28px;height:28px;color:var(--purple);"></i>
     </div>
-    <h2 style="margin-bottom:4px;">First Time Setup</h2>
-    <p class="muted" style="font-size:0.78rem;">Set admin password and bind TOTP authenticator</p>
+    <h2 style="margin-bottom:4px;">首次设置</h2>
+    <p class="muted" style="font-size:0.78rem;">设置管理员密码并绑定动态验证器</p>
   </div>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -16,37 +16,37 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <div style="margin-bottom:16px;">
-      <label for="password">Admin Password (min 12 chars)</label>
+      <label for="password">管理员密码（至少12位）</label>
       <input type="password" id="password" name="password" required minlength="12"
-             autocomplete="new-password" placeholder="Strong password">
+             autocomplete="new-password" placeholder="请输入强密码">
     </div>
 
     <div style="margin-bottom:16px;">
-      <label for="password_confirm">Confirm Password</label>
+      <label for="password_confirm">确认密码</label>
       <input type="password" id="password_confirm" name="password_confirm" required minlength="12"
-             autocomplete="new-password" placeholder="Repeat password">
+             autocomplete="new-password" placeholder="再次输入密码">
     </div>
 
     <div style="margin-bottom:20px;padding:16px;background:var(--bg-elevated);border-radius:var(--radius-md);text-align:center;">
-      <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:10px;">Scan with Google Authenticator / Authy:</p>
+      <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:10px;">请用 Google Authenticator / Authy 扫描：</p>
       <div style="background:white;display:inline-block;padding:12px;border-radius:var(--radius-sm);">
         <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={{ otpauth_url | urlencode }}" 
              width="180" height="180" alt="TOTP QR" style="display:block;">
       </div>
       <p style="font-size:0.68rem;color:var(--text-muted);margin-top:10px;word-break:break-all;">
-        Manual key: <code style="color:var(--accent);">{{ totp_secret }}</code>
+        手动输入密钥： <code style="color:var(--accent);">{{ totp_secret }}</code>
       </p>
     </div>
 
     <div style="margin-bottom:24px;">
-      <label for="totp">Verify TOTP Code</label>
+      <label for="totp">验证动态验证码</label>
       <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
-             inputmode="numeric" required placeholder="Enter 6-digit code to verify">
+             inputmode="numeric" required placeholder="输入6位验证码以确认绑定">
     </div>
 
     <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
       <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
-      Complete Setup
+      完成设置
     </button>
   </form>
 </div>
