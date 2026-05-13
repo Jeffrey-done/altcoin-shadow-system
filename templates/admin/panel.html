@@ -707,6 +707,12 @@ function saveCredentials(exchange) {
     body.api_key = document.getElementById(exchange + '-api_key').value;
     body.secret = document.getElementById(exchange + '-secret').value;
     if (exchange === 'okx') body.passphrase = document.getElementById('okx-passphrase').value;
+    // 检查是否有输入内容
+    var hasInput = body.api_key || body.secret || (exchange === 'okx' && body.passphrase);
+    if (!hasInput) {
+      alertBox('请至少填写一个凭证字段', 'warning');
+      return;
+    }
     try {
       var r = await api('POST', 'api/credentials/' + exchange, body);
       if (r.needTotp) { openTotpModal(doSave); return; }
