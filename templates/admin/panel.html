@@ -277,6 +277,29 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
         <label>OKX 杠杆 (OKX_DEFAULT_LEVERAGE)</label>
         <input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1">
       </div>
+
+      <!-- 复利实时状态（只读） -->
+      <div style="margin-top:16px;padding:14px 18px;border-radius:8px;background:linear-gradient(135deg,rgba(16,185,129,0.06),rgba(59,130,246,0.06));border:1px solid rgba(16,185,129,0.2);">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--success);display:flex;align-items:center;gap:6px;">
+          &#128200; 复利实时状态（自动计算，无需手动修改）
+        </div>
+        <div class="form-row" style="margin-bottom:8px;">
+          <label style="color:var(--text);">当前复利仓位（A级满仓）</label>
+          <span id="compound-current-stake" style="font-size:16px;font-weight:700;color:var(--success);">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:8px;">
+          <label style="color:var(--text);">当前复利仓位（B级半仓）</label>
+          <span id="compound-half-stake" style="font-size:16px;font-weight:700;color:var(--accent);">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:8px;">
+          <label style="color:var(--text);">动态余额（初始本金 + 累计盈亏）</label>
+          <span id="compound-dynamic-balance" style="font-size:16px;font-weight:700;color:var(--text);">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:0;">
+          <label style="color:var(--text);">复利状态</label>
+          <span id="compound-status" class="badge badge-success">--</span>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -597,6 +620,29 @@ async function loadState() {
     currentAccounts = s.accounts || [];
     currentActiveId = s.active_account || '';
     updateAccountUI();
+
+    // Compound stake (复利实时状态)
+    if (s.compound) {
+      var cs = s.compound;
+      var fullStake = cs.current_stake || 0;
+      var halfStake = Math.round(fullStake * 0.5 * 100) / 100;
+      document.getElementById('compound-current-stake').textContent = fullStake + 'U';
+      document.getElementById('compound-half-stake').textContent = halfStake + 'U';
+      document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U';
+      var statusEl = document.getElementById('compound-status');
+      if (cs.enabled) {
+        if (fullStake > (s.config.DEFAULT_STAKE || 50)) {
+          statusEl.textContent = '已激活（+' + (fullStake - (s.config.DEFAULT_STAKE || 50)) + 'U）';
+          statusEl.className = 'badge badge-success';
+        } else {
+          statusEl.textContent = '已开启（等待盈利触发）';
+          statusEl.className = 'badge badge-warning';
+        }
+      } else {
+        statusEl.textContent = '未开启';
+        statusEl.className = 'badge badge-danger';
+      }
+    }
 
   } catch (e) {
     alertBox('加载状态失败: ' + e.message, 'error');
