@@ -1,74 +1,53 @@
 {% extends "admin/_base.html" %}
-{% block title %}首次初始化{% endblock %}
+{% block title %}Initial Setup{% endblock %}
 {% block content %}
-<div class="card" style="max-width: 560px; margin: 40px auto;">
-  <h2>🔐 首次初始化</h2>
-
-  <div class="warn-banner">
-    本面板从未设置过管理员。请按以下步骤完成初始化（只做一次，之后每次登录要用密码 + TOTP 码）
+<div class="card">
+  <div style="text-align:center;margin-bottom:28px;">
+    <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--purple-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
+      <i data-lucide="key-round" style="width:28px;height:28px;color:var(--purple);"></i>
+    </div>
+    <h2 style="margin-bottom:4px;">First Time Setup</h2>
+    <p class="muted" style="font-size:0.78rem;">Set admin password and bind TOTP authenticator</p>
   </div>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
-  <h3>1. 扫描 TOTP 二维码（或手动输入 secret）</h3>
-
-  <p class="muted">
-    推荐应用：<b>Google Authenticator</b>、<b>Microsoft Authenticator</b>、<b>1Password</b>、<b>Authy</b>。
-  </p>
-
-  <p>
-    手动输入 secret：<code class="mono" id="totp-secret">{{ totp_secret }}</code>
-    <button type="button" class="btn-secondary" style="padding:4px 10px; font-size: 12px;"
-            onclick="copyText('{{ totp_secret }}')">复制</button>
-  </p>
-
-  {% if otpauth_url %}
-  <p class="muted">Issuer: <code>altcoin-shadow-admin</code> | Account: <code>admin</code></p>
-  {% endif %}
-
-  <h3>2. 设置管理员密码（≥12 字符）</h3>
-
   <form method="post" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-    <label for="password">密码</label>
-    <input type="password" id="password" name="password" minlength="12" required
-           autocomplete="new-password">
+    <div style="margin-bottom:16px;">
+      <label for="password">Admin Password (min 12 chars)</label>
+      <input type="password" id="password" name="password" required minlength="12"
+             autocomplete="new-password" placeholder="Strong password">
+    </div>
 
-    <div style="height: 10px;"></div>
+    <div style="margin-bottom:16px;">
+      <label for="password_confirm">Confirm Password</label>
+      <input type="password" id="password_confirm" name="password_confirm" required minlength="12"
+             autocomplete="new-password" placeholder="Repeat password">
+    </div>
 
-    <label for="password_confirm">确认密码</label>
-    <input type="password" id="password_confirm" name="password_confirm" minlength="12" required
-           autocomplete="new-password">
+    <div style="margin-bottom:20px;padding:16px;background:var(--bg-elevated);border-radius:var(--radius-md);text-align:center;">
+      <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:10px;">Scan with Google Authenticator / Authy:</p>
+      <div style="background:white;display:inline-block;padding:12px;border-radius:var(--radius-sm);">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={{ otpauth_url | urlencode }}" 
+             width="180" height="180" alt="TOTP QR" style="display:block;">
+      </div>
+      <p style="font-size:0.68rem;color:var(--text-muted);margin-top:10px;word-break:break-all;">
+        Manual key: <code style="color:var(--accent);">{{ totp_secret }}</code>
+      </p>
+    </div>
 
-    <h3>3. 输入 Authenticator 当前 6 位数字</h3>
-    <label for="totp">用来验证你确实扫了二维码</label>
-    <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6" required
-           inputmode="numeric" autocomplete="one-time-code">
+    <div style="margin-bottom:24px;">
+      <label for="totp">Verify TOTP Code</label>
+      <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
+             inputmode="numeric" required placeholder="Enter 6-digit code to verify">
+    </div>
 
-    <div style="height: 20px;"></div>
-    <button type="submit" style="width: 100%;">完成初始化</button>
+    <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
+      <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
+      Complete Setup
+    </button>
   </form>
-
-  <p class="muted" style="margin-top: 20px; font-size: 12px;">
-    ⚠️ TOTP secret 只显示这一次。请用 Authenticator 扫码或手动保存，
-    否则下次登录无法通过 2FA。忘记后只能删除 <code>admin_secrets.json</code> 重新初始化。
-  </p>
 </div>
-
-<script>
-function copyText(s) {
-  try {
-    navigator.clipboard.writeText(s);
-  } catch (e) {
-    const i = document.createElement('input');
-    i.value = s;
-    document.body.appendChild(i);
-    i.select();
-    document.execCommand('copy');
-    document.body.removeChild(i);
-  }
-  alert('已复制');
-}
-</script>
 {% endblock %}

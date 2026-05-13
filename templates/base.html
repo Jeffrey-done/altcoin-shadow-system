@@ -12,26 +12,29 @@
     <!-- Header Bar -->
     <div class="header-bar">
         <div class="header-left">
-            <h1>{% block page_icon %}{% endblock %}{% block page_title %}Shadow Trading System{% endblock %}</h1>
+            <h1>{% block page_icon %}{% endblock %}{% block page_title %}Shadow Trading{% endblock %}</h1>
         </div>
         <div class="header-right">
             {% block header_controls %}{% endblock %}
-            <button class="notification-toggle" id="notification-toggle" title="事件通知">
-                🔔
-                <span class="notification-badge" id="notification-badge" style="display:none;">0</span>
+            <button class="icon-btn" id="notification-toggle" title="Notifications">
+                <i data-lucide="bell"></i>
+                <span class="badge-dot" id="notification-badge" style="display:none;"></span>
             </button>
-            <button class="theme-toggle" id="theme-toggle" title="切换主题">🌙</button>
+            <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+                <i data-lucide="moon" id="theme-icon-dark"></i>
+                <i data-lucide="sun" id="theme-icon-light" style="display:none;"></i>
+            </button>
         </div>
     </div>
     <div class="subtitle">{% block subtitle %}{% endblock %}</div>
 
     <!-- Desktop Navigation -->
     <nav class="nav">
-        <a href="/">🏠 主面板</a>
-        <a href="/weekly-report">📋 周报</a>
-        <a href="/batch-backtest">🔬 批量回测</a>
-        <a href="/backtest">📈 单币回测</a>
-        <a href="/signal-scores">🎯 策略评分</a>
+        <a href="/"><i data-lucide="layout-dashboard"></i> Dashboard</a>
+        <a href="/weekly-report"><i data-lucide="file-bar-chart"></i> Weekly</a>
+        <a href="/batch-backtest"><i data-lucide="flask-conical"></i> Batch Test</a>
+        <a href="/backtest"><i data-lucide="line-chart"></i> Backtest</a>
+        <a href="/signal-scores"><i data-lucide="target"></i> Signals</a>
     </nav>
 
     <!-- Page Content -->
@@ -42,25 +45,64 @@
 <div class="notification-overlay" id="notification-overlay"></div>
 <div class="notification-panel" id="notification-panel">
     <div class="notification-panel-header">
-        <h3>📋 事件日志</h3>
-        <button class="notification-panel-close" id="notification-close">✕</button>
+        <h3>Event Log</h3>
+        <button class="notification-panel-close" id="notification-close">
+            <i data-lucide="x"></i>
+        </button>
     </div>
     <div class="notification-panel-body" id="notification-body">
-        <div class="empty-state" style="padding:20px;">加载中...</div>
+        <div class="empty-state">Loading...</div>
     </div>
 </div>
 
 <!-- Mobile Bottom Tab Bar -->
 <nav class="mobile-tab-bar">
-    <a href="/"><span class="tab-icon">🏠</span>主面板</a>
-    <a href="/weekly-report"><span class="tab-icon">📋</span>周报</a>
-    <a href="/batch-backtest"><span class="tab-icon">🔬</span>回测</a>
-    <a href="/backtest"><span class="tab-icon">📈</span>回测</a>
-    <a href="/signal-scores"><span class="tab-icon">🎯</span>评分</a>
+    <a href="/"><i data-lucide="layout-dashboard"></i>Dashboard</a>
+    <a href="/weekly-report"><i data-lucide="file-bar-chart"></i>Weekly</a>
+    <a href="/batch-backtest"><i data-lucide="flask-conical"></i>Batch</a>
+    <a href="/backtest"><i data-lucide="line-chart"></i>Backtest</a>
+    <a href="/signal-scores"><i data-lucide="target"></i>Signals</a>
 </nav>
 
+<!-- Lucide Icons -->
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <!-- Core Scripts -->
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+// Initialize Lucide icons
+lucide.createIcons();
+
+// Enhanced Theme Toggle (replaces emoji-based toggle)
+(function() {
+    const toggle = document.getElementById('theme-toggle');
+    const iconDark = document.getElementById('theme-icon-dark');
+    const iconLight = document.getElementById('theme-icon-light');
+    const saved = localStorage.getItem('dashboard-theme') || 'dark';
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('dashboard-theme', theme);
+        if (theme === 'dark') {
+            iconDark.style.display = '';
+            iconLight.style.display = 'none';
+        } else {
+            iconDark.style.display = 'none';
+            iconLight.style.display = '';
+        }
+        // Re-render icons after theme switch
+        lucide.createIcons();
+    }
+
+    applyTheme(saved);
+
+    if (toggle) {
+        toggle.addEventListener('click', function() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            applyTheme(current === 'dark' ? 'light' : 'dark');
+        });
+    }
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

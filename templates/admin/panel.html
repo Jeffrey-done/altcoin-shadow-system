@@ -1,149 +1,156 @@
 {% extends "admin/_base.html" %}
-{% block title %}Admin Panel - Multi Account{% endblock %}
+{% block title %}Admin Panel{% endblock %}
 {% block body %}
 <style>
-:root {
-  --bg-primary: #0f1923;
-  --bg-card: rgba(255,255,255,0.03);
-  --bg-card-hover: rgba(255,255,255,0.05);
-  --bg-input: rgba(15,25,35,0.8);
-  --border: rgba(255,255,255,0.06);
-  --border-focus: #3b82f6;
-  --text: #e2e8f0;
-  --text-dim: #64748b;
-  --text-muted: #475569;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --success: #10b981;
-  --danger: #ef4444;
-  --warning: #f59e0b;
-  --purple: #8b5cf6;
-  --shadow: 0 4px 24px rgba(0,0,0,0.3);
-  --radius: 12px;
-}
-* { box-sizing: border-box; }
-body { background: var(--bg-primary); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Segoe UI", system-ui, sans-serif; margin: 0; min-height: 100vh; }
+/* ── Admin Panel Specific Styles ─────────────────────────────── */
+body { background: var(--bg-body); }
 
 /* Nav Bar */
-.nav-bar { position: sticky; top: 0; z-index: 100; background: rgba(15,25,35,0.95); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
-.nav-brand { font-size: 16px; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+.nav-bar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 20, 0.92); backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 14px 24px; display: flex; align-items: center; justify-content: space-between;
+}
+.nav-brand { font-size: 0.9rem; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 10px; }
 .nav-right { display: flex; align-items: center; gap: 16px; }
-.nav-session { font-size: 12px; color: var(--text-dim); }
+.nav-session { font-size: 0.7rem; color: var(--text-muted); }
 
 /* Container */
-.main-container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-
-/* Cards */
-.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; transition: all 0.2s ease; }
-.card:hover { background: var(--bg-card-hover); }
-.card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.main-container { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
 
 /* Account Switcher */
-.account-bar { background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.05)); border: 1px solid rgba(59,130,246,0.2); border-radius: var(--radius); padding: 20px 24px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.account-info { display: flex; align-items: center; gap: 12px; }
-.account-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--purple)); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; }
-.account-name { font-size: 18px; font-weight: 600; }
-.account-id { font-size: 11px; color: var(--text-dim); font-family: monospace; }
+.account-bar {
+    background: var(--bg-card); border: 1px solid rgba(59,130,246,0.15);
+    border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 24px;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;
+}
+.account-info { display: flex; align-items: center; gap: 14px; }
+.account-avatar {
+    width: 44px; height: 44px; border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1rem; font-weight: 700; color: white;
+}
+.account-name { font-size: 1.05rem; font-weight: 600; }
+.account-id { font-size: 0.68rem; color: var(--text-muted); font-family: monospace; }
 .account-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Tabs */
-.tabs { display: flex; gap: 4px; margin-bottom: 24px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 4px; overflow-x: auto; }
-.tab { padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-dim); transition: all 0.2s; white-space: nowrap; border: none; background: none; }
-.tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+.tabs {
+    display: flex; gap: 4px; margin-bottom: 24px;
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 6px; overflow-x: auto;
+}
+.tab {
+    padding: 10px 18px; border-radius: var(--radius-md); cursor: pointer;
+    font-size: 0.78rem; font-weight: 500; color: var(--text-muted);
+    transition: all 0.2s; white-space: nowrap; border: none; background: none;
+    display: inline-flex; align-items: center; gap: 6px;
+}
+.tab:hover { color: var(--text-primary); background: var(--bg-elevated); }
 .tab.active { color: white; background: var(--accent); }
+.tab [data-lucide] { width: 14px; height: 14px; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
 /* Forms */
-.form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
-.form-row label { flex: 0 0 220px; font-size: 13px; color: var(--text-dim); }
-.form-row input, .form-row select { flex: 1; min-width: 150px; }
-.form-row .hint { flex: 0 0 100%; font-size: 11px; color: var(--text-muted); margin-top: -8px; padding-left: 232px; }
+.form-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.form-row label { flex: 0 0 240px; font-size: 0.78rem; color: var(--text-secondary); }
+.form-row input, .form-row select { flex: 1; min-width: 160px; }
 input[type=text], input[type=password], input[type=number], select {
-  background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
-  padding: 10px 14px; border-radius: 8px; font: inherit; font-size: 14px; width: 100%;
-  transition: border-color 0.2s, box-shadow 0.2s;
+    background: var(--bg-input); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    padding: 11px 16px; border-radius: var(--radius-md); font: inherit; font-size: 0.85rem; width: 100%;
+    transition: border-color 0.2s, box-shadow 0.2s;
 }
-input:focus, select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
-input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+input:focus, select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; border-radius: 4px; }
+select { cursor: pointer; }
 
 /* Buttons */
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; font-family: inherit; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: var(--radius-md); font-size: 0.78rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; font-family: inherit; }
+.btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
 .btn-primary { background: linear-gradient(135deg, var(--accent), #1d4ed8); color: white; }
-.btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
-.btn-success { background: linear-gradient(135deg, var(--success), #059669); color: white; }
-.btn-success:hover { filter: brightness(1.1); }
-.btn-danger { background: linear-gradient(135deg, var(--danger), #dc2626); color: white; }
-.btn-danger:hover { filter: brightness(1.1); }
-.btn-warning { background: linear-gradient(135deg, var(--warning), #d97706); color: #000; }
-.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
-.btn-ghost:hover { border-color: var(--text-dim); color: var(--text); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-success { background: linear-gradient(135deg, var(--green), #059669); color: white; }
+.btn-danger { background: linear-gradient(135deg, var(--red), #dc2626); color: white; }
+.btn-warning { background: linear-gradient(135deg, var(--yellow), #d97706); color: #000; }
+.btn-ghost { background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary); }
+.btn-ghost:hover { border-color: var(--text-muted); color: var(--text-primary); transform: none; }
+.btn-sm { padding: 7px 14px; font-size: 0.72rem; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+/* Card (override for panel) */
+.card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px; position: relative; overflow: hidden; }
+.card::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(255,255,255,0.015) 0%, transparent 60%); pointer-events: none; border-radius: inherit; }
+.card-title { font-size: 0.88rem; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-subtle); }
+.card-title [data-lucide] { width: 18px; height: 18px; color: var(--accent); }
 
 /* Alerts */
-.alert { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease; }
-.alert-success { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: var(--success); }
-.alert-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
-.alert-warning { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); color: var(--warning); }
+.alert { padding: 12px 16px; border-radius: var(--radius-md); font-size: 0.78rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease; }
+.alert-success { background: var(--green-subtle); border: 1px solid rgba(16,185,129,0.25); color: var(--green); }
+.alert-error { background: var(--red-subtle); border: 1px solid rgba(239,68,68,0.25); color: var(--red); }
+.alert-warning { background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.25); color: var(--yellow); }
 
 /* Status dots */
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot-green { background: var(--success); box-shadow: 0 0 6px var(--success); }
-.dot-red { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
-.dot-yellow { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.dot-yellow { background: var(--yellow); }
 .dot-gray { background: var(--text-muted); }
 
+/* Badge */
+.badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 0.68rem; font-weight: 600; }
+.badge-success { background: var(--green-subtle); color: var(--green); }
+.badge-danger { background: var(--red-subtle); color: var(--red); }
+.badge-warning { background: var(--yellow-subtle); color: var(--yellow); }
+
 /* Modal */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: var(--overlay); backdrop-filter: blur(6px); z-index: 1000; align-items: center; justify-content: center; }
 .modal-overlay.show { display: flex; }
-.modal { background: #1a2332; border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 90%; max-width: 440px; box-shadow: var(--shadow); animation: modalIn 0.2s ease; }
-.modal h3 { margin-bottom: 16px; font-size: 18px; }
+.modal { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-xl); padding: 32px; width: 90%; max-width: 440px; box-shadow: var(--shadow-md); animation: modalIn 0.2s ease; }
+.modal h3 { margin-bottom: 16px; font-size: 1.05rem; font-weight: 600; }
 
 /* Warn banner */
-.warn-banner { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); color: var(--warning); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; }
+.warn-banner { background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.2); color: var(--yellow); padding: 14px 18px; border-radius: var(--radius-md); margin-bottom: 18px; font-size: 0.78rem; line-height: 1.7; }
 
-/* Badge */
-.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.badge-success { background: rgba(16,185,129,0.15); color: var(--success); }
-.badge-danger { background: rgba(239,68,68,0.15); color: var(--danger); }
-.badge-warning { background: rgba(245,158,11,0.15); color: var(--warning); }
+/* Compound status box */
+.compound-box {
+    margin-top: 18px; padding: 18px 20px; border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--green-subtle), var(--accent-subtle));
+    border: 1px solid rgba(16,185,129,0.15);
+}
+.compound-box .compound-title { font-size: 0.78rem; font-weight: 600; color: var(--green); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+.compound-box .compound-title [data-lucide] { width: 16px; height: 16px; }
 
 /* Animations */
 @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
-
 /* Responsive */
 @media (max-width: 768px) {
-  .form-row { flex-direction: column; align-items: flex-start; }
-  .form-row label { flex: none; }
-  .form-row .hint { padding-left: 0; }
-  .account-bar { flex-direction: column; align-items: flex-start; }
-  .tabs { flex-wrap: nowrap; }
+    .form-row { flex-direction: column; align-items: flex-start; }
+    .form-row label { flex: none; }
+    .account-bar { flex-direction: column; align-items: flex-start; }
+    .main-container { padding: 16px; }
 }
 </style>
 
 <!-- NAV BAR -->
 <nav class="nav-bar">
   <div class="nav-brand">
-    <span>&#9881;</span> Shadow System Admin
+    <i data-lucide="settings" style="width:18px;height:18px;"></i> Shadow Admin
   </div>
   <div class="nav-right">
     <span class="nav-session" id="session-info"></span>
     <form method="post" action="logout" style="display:inline;margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="btn btn-ghost btn-sm" type="submit">退出</button>
+      <button class="btn btn-ghost btn-sm" type="submit"><i data-lucide="log-out" style="width:14px;height:14px;"></i> Logout</button>
     </form>
   </div>
 </nav>
 
 <div class="main-container">
-  <!-- ALERT BOX -->
   <div id="alert-box"></div>
 
   <!-- ACCOUNT BAR -->
@@ -151,243 +158,149 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
     <div class="account-info">
       <div class="account-avatar" id="account-avatar">?</div>
       <div>
-        <div class="account-name" id="active-account-name">加载中...</div>
+        <div class="account-name" id="active-account-name">Loading...</div>
         <div class="account-id" id="active-account-id"></div>
       </div>
     </div>
     <div class="account-actions">
-      <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:6px 12px;font-size:12px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:8px;cursor:pointer;"></select>
-      <button class="btn btn-primary btn-sm" onclick="openAccountModal()">+ 新建账户</button>
-      <button class="btn btn-ghost btn-sm" onclick="openRenameModal()">重命名</button>
-      <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()">删除</button>
+      <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
+      <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> New</button>
+      <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
+      <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
     </div>
   </div>
 
   <!-- TABS -->
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('live')">实盘控制</button>
-    <button class="tab" onclick="switchTab('creds')">凭证管理</button>
-    <button class="tab" onclick="switchTab('position')">仓位风控</button>
-    <button class="tab" onclick="switchTab('preflight')">自检</button>
-    <button class="tab" onclick="switchTab('audit')">审计日志</button>
+    <button class="tab active" onclick="switchTab('live')"><i data-lucide="power"></i> Live Control</button>
+    <button class="tab" onclick="switchTab('creds')"><i data-lucide="key"></i> Credentials</button>
+    <button class="tab" onclick="switchTab('position')"><i data-lucide="sliders"></i> Position & Risk</button>
+    <button class="tab" onclick="switchTab('preflight')"><i data-lucide="stethoscope"></i> Preflight</button>
   </div>
 
-
-  <!-- TAB: 实盘控制 -->
+  <!-- TAB: Live Control -->
   <div class="tab-content active" id="tab-live">
     <div class="card">
-      <div class="card-title">&#128256; 实盘开关 &amp; 路由</div>
+      <div class="card-title"><i data-lucide="zap"></i> Live Trading & Routing</div>
       <div class="warn-banner">
-        <b>LIVE_MODE / OKX_LIVE_MODE 一旦开启，下一个信号会真实下单。</b>
-        修改后立即跨所有进程生效。
+        <b>Warning:</b> Enabling LIVE_MODE will execute real orders on the next signal. Changes apply immediately across all processes.
       </div>
       <div class="form-row">
-        <label>Binance 实盘 (LIVE_MODE)</label>
+        <label>Binance Live (LIVE_MODE)</label>
         <input type="checkbox" id="cfg-LIVE_MODE">
         <span class="badge" id="badge-live-bn">OFF</span>
       </div>
       <div class="form-row">
-        <label>OKX 实盘 (OKX_LIVE_MODE)</label>
+        <label>OKX Live (OKX_LIVE_MODE)</label>
         <input type="checkbox" id="cfg-OKX_LIVE_MODE">
         <span class="badge" id="badge-live-okx">OFF</span>
       </div>
       <div class="form-row">
-        <label>路由模式 (PRIMARY_EXCHANGE)</label>
+        <label>Routing (PRIMARY_EXCHANGE)</label>
         <select id="cfg-PRIMARY_EXCHANGE">
-          <option value="binance">binance - 只在币安下单</option>
-          <option value="okx">okx - 只在 OKX 下单</option>
-          <option value="both">both - 两所同时开仓</option>
-          <option value="auto">auto - 按币种自动选</option>
+          <option value="binance">binance</option>
+          <option value="okx">okx</option>
+          <option value="both">both - dual exchange</option>
+          <option value="auto">auto - per symbol</option>
         </select>
       </div>
       <div class="form-row">
-        <label>auto 模式 fallback</label>
+        <label>Auto Fallback</label>
         <select id="cfg-PRIMARY_EXCHANGE_FALLBACK">
           <option value="binance">binance</option>
           <option value="okx">okx</option>
         </select>
       </div>
-      <div class="form-row">
-        <label>影子并行 (SHADOW_PARALLEL)</label>
-        <input type="checkbox" id="cfg-SHADOW_PARALLEL">
-        <span style="font-size:12px;color:var(--text-dim);">开启后实盘信号同时产生影子对照记录（不占风控额度）</span>
-      </div>
     </div>
   </div>
 
-  <!-- TAB: 凭证管理 -->
+  <!-- TAB: Credentials -->
   <div class="tab-content" id="tab-creds">
     <div class="card">
-      <div class="card-title">&#128273; 交易所 API 凭证</div>
-      <div class="warn-banner">
-        保存后立即加密存入当前活跃账户的配置。凭证只显示前6位+后4位（脱敏），输入框留空则不改。
+      <div class="card-title"><i data-lucide="key-round"></i> Exchange API Credentials</div>
+      <div class="warn-banner">Credentials are encrypted and stored per-account. Empty fields are not changed.</div>
+
+      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> Binance</h4>
+      <div id="bn-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
+      <div class="form-row"><label>API Key</label><input type="password" id="bn-api_key" placeholder="Leave empty to keep current"></div>
+      <div class="form-row"><label>API Secret</label><input type="password" id="bn-secret" placeholder="Leave empty to keep current"></div>
+      <div style="display:flex;gap:8px;margin-bottom:28px;">
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')"><i data-lucide="save" style="width:12px;height:12px;"></i> Save Binance</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> Clear</button>
       </div>
 
-      <h4 style="margin:16px 0 8px;color:var(--warning);font-size:14px;">Binance</h4>
-      <div id="bn-status" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
-      <div class="form-row">
-        <label>API Key</label>
-        <input type="password" id="bn-api_key" placeholder="留空表示不改">
-      </div>
-      <div class="form-row">
-        <label>API Secret</label>
-        <input type="password" id="bn-secret" placeholder="留空表示不改">
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:24px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')">保存 Binance 凭证</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')">清除凭证</button>
-      </div>
-
-      <h4 style="margin:16px 0 8px;color:var(--warning);font-size:14px;">OKX</h4>
-      <div id="okx-status" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
-      <div class="form-row">
-        <label>API Key</label>
-        <input type="password" id="okx-api_key" placeholder="留空表示不改">
-      </div>
-      <div class="form-row">
-        <label>API Secret</label>
-        <input type="password" id="okx-secret" placeholder="留空表示不改">
-      </div>
-      <div class="form-row">
-        <label>Passphrase</label>
-        <input type="password" id="okx-passphrase" placeholder="留空表示不改">
-      </div>
+      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> OKX</h4>
+      <div id="okx-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
+      <div class="form-row"><label>API Key</label><input type="password" id="okx-api_key" placeholder="Leave empty to keep current"></div>
+      <div class="form-row"><label>API Secret</label><input type="password" id="okx-secret" placeholder="Leave empty to keep current"></div>
+      <div class="form-row"><label>Passphrase</label><input type="password" id="okx-passphrase" placeholder="Leave empty to keep current"></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')">保存 OKX 凭证</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')">清除凭证</button>
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> Save OKX</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> Clear</button>
       </div>
     </div>
   </div>
 
-  <!-- TAB: 仓位风控 -->
+  <!-- TAB: Position & Risk -->
   <div class="tab-content" id="tab-position">
     <div class="card">
-      <div class="card-title">&#128176; 仓位 &amp; 杠杆</div>
-      <div class="warn-banner">
-        系统可用资金池：不管交易所实际余额多少，系统只用下面设定的额度来计算仓位和风控上限。
-      </div>
-      <div class="form-row">
-        <label>系统可用资金池 (ACCOUNT_BALANCE, U)</label>
-        <input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1">
-      </div>
-      <div class="form-row">
-        <label>单笔保证金 (DEFAULT_STAKE, U)</label>
-        <input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1">
-      </div>
-      <div class="form-row">
-        <label>Binance 杠杆 (LEVERAGE)</label>
-        <input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1">
-      </div>
-      <div class="form-row">
-        <label>OKX 杠杆 (OKX_DEFAULT_LEVERAGE)</label>
-        <input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1">
-      </div>
+      <div class="card-title"><i data-lucide="coins"></i> Position & Leverage</div>
+      <div class="form-row"><label>Account Balance (U)</label><input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1"></div>
+      <div class="form-row"><label>Stake Per Trade (U)</label><input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1"></div>
+      <div class="form-row"><label>Binance Leverage</label><input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1"></div>
+      <div class="form-row"><label>OKX Leverage</label><input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1"></div>
 
-      <!-- 复利实时状态（只读） -->
-      <div style="margin-top:16px;padding:14px 18px;border-radius:8px;background:linear-gradient(135deg,rgba(16,185,129,0.06),rgba(59,130,246,0.06));border:1px solid rgba(16,185,129,0.2);">
-        <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--success);display:flex;align-items:center;gap:6px;">
-          &#128200; 复利实时状态（自动计算，无需手动修改）
-        </div>
-        <div class="form-row" style="margin-bottom:8px;">
-          <label style="color:var(--text);">当前复利仓位（A级满仓）</label>
-          <span id="compound-current-stake" style="font-size:16px;font-weight:700;color:var(--success);">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:8px;">
-          <label style="color:var(--text);">当前复利仓位（B级半仓）</label>
-          <span id="compound-half-stake" style="font-size:16px;font-weight:700;color:var(--accent);">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:8px;">
-          <label style="color:var(--text);">动态余额（初始本金 + 累计盈亏）</label>
-          <span id="compound-dynamic-balance" style="font-size:16px;font-weight:700;color:var(--text);">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:0;">
-          <label style="color:var(--text);">复利状态</label>
-          <span id="compound-status" class="badge badge-success">--</span>
-        </div>
+      <div class="compound-box">
+        <div class="compound-title"><i data-lucide="trending-up"></i> Compound Status (auto-calculated)</div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Full Position (A-grade)</label><span id="compound-current-stake" style="font-weight:700;color:var(--green);">--</span></div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Half Position (B-grade)</label><span id="compound-half-stake" style="font-weight:700;color:var(--accent);">--</span></div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Dynamic Balance</label><span id="compound-dynamic-balance" style="font-weight:700;">--</span></div>
+        <div class="form-row" style="margin-bottom:0;"><label style="color:var(--text-primary);">Status</label><span id="compound-status" class="badge badge-success">--</span></div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">&#127919; 止盈止损</div>
-      <div class="form-row">
-        <label>TP1 乘数 (0.80~1.00)</label>
-        <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01">
-      </div>
-      <div class="form-row">
-        <label>TP2 乘数 (0.70~1.00)</label>
-        <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01">
-      </div>
-      <div class="form-row">
-        <label>TP1 平仓比例 (0.1~0.9)</label>
-        <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1">
-      </div>
-      <div class="form-row">
-        <label>硬止损 (HARD_STOP_LOSS_PCT, %)</label>
-        <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5">
-      </div>
-      <div class="form-row">
-        <label>滑点告警阈值 (%)</label>
-        <input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1">
-      </div>
+      <div class="card-title"><i data-lucide="target"></i> Take Profit & Stop Loss</div>
+      <div class="form-row"><label>TP1 Multiplier (0.80~1.00)</label><input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>TP2 Multiplier (0.70~1.00)</label><input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>TP1 Close Ratio (0.1~0.9)</label><input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1"></div>
+      <div class="form-row"><label>Hard Stop Loss (%)</label><input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5"></div>
+      <div class="form-row"><label>Slippage Alert (%)</label><input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1"></div>
     </div>
 
     <div class="card">
-      <div class="card-title">&#128737; 风控</div>
-      <div class="form-row">
-        <label>单日最大亏损 (U)</label>
-        <input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1">
-      </div>
-      <div class="form-row">
-        <label>单日最大开仓次数</label>
-        <input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1">
-      </div>
-      <div class="form-row">
-        <label>连亏暂停次数</label>
-        <input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1">
-      </div>
-      <div class="form-row">
-        <label>最大持仓占比 (0.1~1.0)</label>
-        <input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1">
-      </div>
-      <div class="form-row">
-        <label>止损后冷却期 (h)</label>
-        <input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1">
-      </div>
+      <div class="card-title"><i data-lucide="shield-alert"></i> Risk Controls</div>
+      <div class="form-row"><label>Max Daily Loss (U)</label><input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1"></div>
+      <div class="form-row"><label>Max Daily Trades</label><input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1"></div>
+      <div class="form-row"><label>Consecutive Loss Pause</label><input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1"></div>
+      <div class="form-row"><label>Max Position Ratio (0.1~1.0)</label><input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1"></div>
+      <div class="form-row"><label>Cooldown Hours</label><input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1"></div>
     </div>
 
-    <div style="margin:20px 0;">
-      <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 32px;font-size:14px;">
-        &#128190; 保存所有配置
+    <div style="margin:24px 0;">
+      <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 36px;font-size:0.88rem;">
+        <i data-lucide="check" style="width:16px;height:16px;"></i> Save All Settings
       </button>
     </div>
   </div>
 
-  <!-- TAB: 自检 -->
+  <!-- TAB: Preflight -->
   <div class="tab-content" id="tab-preflight">
     <div class="card">
-      <div class="card-title">&#129657; 实盘自检（Preflight Check）</div>
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
-        不会下任何真实订单。检查 API 凭证、余额、持仓模式、杠杆接口是否正常。<br>
-        <b>建议：开启 LIVE_MODE 前必须先跑一次自检。</b>
+      <div class="card-title"><i data-lucide="stethoscope"></i> Preflight Check</div>
+      <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">
+        Validates API credentials, balance, position mode, and leverage without placing any orders.
       </p>
-      <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;">
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:18px;">
         <button class="btn btn-primary" onclick="runPreflightCheck()" id="btn-preflight">
-          &#9654; 运行实盘自检
+          <i data-lucide="play" style="width:14px;height:14px;"></i> Run Check
         </button>
-        <span id="preflight-status" style="font-size:13px;color:var(--text-dim);"></span>
+        <span id="preflight-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
       </div>
       <div id="preflight-results" style="display:none;">
-        <div id="preflight-routing" style="margin-bottom:14px;padding:14px;border-radius:8px;background:rgba(0,0,0,0.2);border:1px solid var(--border);"></div>
+        <div id="preflight-routing" style="margin-bottom:14px;padding:16px;border-radius:var(--radius-md);background:var(--bg-elevated);border:1px solid var(--border-subtle);font-size:0.78rem;"></div>
         <div id="preflight-exchanges"></div>
       </div>
-    </div>
-  </div>
-
-  <!-- TAB: 审计日志 -->
-  <div class="tab-content" id="tab-audit">
-    <div class="card">
-      <div class="card-title">&#128203; 审计日志</div>
-      <div id="audit-list" style="font-size:12px;color:var(--text-dim);max-height:500px;overflow-y:auto;">加载中...</div>
     </div>
   </div>
 </div>
@@ -395,12 +308,12 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
 <!-- TOTP Modal -->
 <div class="modal-overlay" id="totp-modal">
   <div class="modal">
-    <h3>&#128274; TOTP 验证</h3>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">写操作需要 6 位动态码验证：</p>
-    <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="000000" style="text-align:center;font-size:24px;letter-spacing:8px;padding:14px;">
-    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeTotpModal()">取消</button>
-      <button class="btn btn-primary" onclick="submitTotp()">验证</button>
+    <h3><i data-lucide="lock" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> TOTP Verification</h3>
+    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">Enter 6-digit code for write operation:</p>
+    <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="000000" style="text-align:center;font-size:1.5rem;letter-spacing:8px;padding:14px;">
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeTotpModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitTotp()">Verify</button>
     </div>
   </div>
 </div>
@@ -408,12 +321,12 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
 <!-- Account Create Modal -->
 <div class="modal-overlay" id="account-modal">
   <div class="modal">
-    <h3>&#10133; 新建交易账户</h3>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">每个账户拥有独立的交易所凭证和风控参数。</p>
-    <input type="text" id="new-account-name" placeholder="账户名称（如：测试账户）" maxlength="50">
-    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeAccountModal()">取消</button>
-      <button class="btn btn-primary" onclick="createAccount()">创建</button>
+    <h3><i data-lucide="user-plus" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> New Account</h3>
+    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">Each account has independent credentials and risk parameters.</p>
+    <input type="text" id="new-account-name" placeholder="Account name" maxlength="50">
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeAccountModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="createAccount()">Create</button>
     </div>
   </div>
 </div>
@@ -421,14 +334,15 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
 <!-- Rename Modal -->
 <div class="modal-overlay" id="rename-modal">
   <div class="modal">
-    <h3>&#9998; 重命名账户</h3>
-    <input type="text" id="rename-account-name" placeholder="新名称" maxlength="50">
-    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeRenameModal()">取消</button>
-      <button class="btn btn-primary" onclick="renameAccount()">保存</button>
+    <h3><i data-lucide="edit-3" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> Rename Account</h3>
+    <input type="text" id="rename-account-name" placeholder="New name" maxlength="50">
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeRenameModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="renameAccount()">Save</button>
     </div>
   </div>
 </div>
+
 
 
 <script>
@@ -437,422 +351,106 @@ let pendingAction = null;
 let currentAccounts = [];
 let currentActiveId = '';
 
-// ── API helpers ──
 async function api(method, path, body) {
   const headers = {'X-Admin-CSRF': CSRF_TOKEN};
   if (body) headers['Content-Type'] = 'application/json';
-  const res = await fetch(path, {
-    method, headers,
-    body: body ? JSON.stringify(body) : undefined,
-    credentials: 'same-origin',
-  });
-  const data = await res.json().catch(function() { return {}; });
-  if (!res.ok) {
-    if (data.error === 'totp_required') return {needTotp: true};
-    throw new Error(data.error || data.message || 'HTTP ' + res.status);
-  }
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { if (data.error === 'totp_required') return {needTotp: true}; throw new Error(data.error || data.message || 'HTTP ' + res.status); }
   return data;
 }
+function alertBox(msg, level) { const el = document.getElementById('alert-box'); const cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success'); el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>'; setTimeout(() => { el.innerHTML = ''; }, 5000); }
 
-function alertBox(msg, level) {
-  var el = document.getElementById('alert-box');
-  var cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success');
-  el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>';
-  setTimeout(function() { el.innerHTML = ''; }, 5000);
-}
-
-// ── Tab switching ──
 function switchTab(name) {
-  var tabs = document.querySelectorAll('.tab');
-  var contents = document.querySelectorAll('.tab-content');
-  tabs.forEach(function(t) { t.classList.remove('active'); });
-  contents.forEach(function(c) { c.classList.remove('active'); });
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
-  // Find the tab button
-  tabs.forEach(function(t) {
-    if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf("'" + name + "'") !== -1) {
-      t.classList.add('active');
-    }
-  });
-  if (name === 'audit') loadAudit();
+  document.querySelectorAll('.tab').forEach(t => { if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'" + name + "'")) t.classList.add('active'); });
 }
 
-// ── TOTP Modal ──
-function openTotpModal(action) {
-  pendingAction = action;
-  document.getElementById('totp-modal').classList.add('show');
-  setTimeout(function() { document.getElementById('totp-code').focus(); }, 50);
-}
-function closeTotpModal() {
-  pendingAction = null;
-  document.getElementById('totp-modal').classList.remove('show');
-  document.getElementById('totp-code').value = '';
-}
-async function submitTotp() {
-  var code = document.getElementById('totp-code').value.trim();
-  try {
-    await api('POST', 'api/verify-totp', {totp: code});
-    closeTotpModal();
-    if (pendingAction) {
-      var fn = pendingAction;
-      pendingAction = null;
-      await fn();
-    }
-  } catch (e) {
-    alertBox('TOTP 验证失败: ' + e.message, 'error');
-  }
-}
+function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => document.getElementById('totp-code').focus(), 50); }
+function closeTotpModal() { pendingAction = null; document.getElementById('totp-modal').classList.remove('show'); document.getElementById('totp-code').value = ''; }
+async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'api/verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('TOTP failed: ' + e.message, 'error'); } }
 
-// ── Account Management ──
-function openAccountModal() {
-  document.getElementById('account-modal').classList.add('show');
-  setTimeout(function() { document.getElementById('new-account-name').focus(); }, 50);
-}
-function closeAccountModal() {
-  document.getElementById('account-modal').classList.remove('show');
-  document.getElementById('new-account-name').value = '';
-}
-function openRenameModal() {
-  document.getElementById('rename-modal').classList.add('show');
-  var current = currentAccounts.find(function(a) { return a.id === currentActiveId; });
-  document.getElementById('rename-account-name').value = current ? current.name : '';
-  setTimeout(function() { document.getElementById('rename-account-name').focus(); }, 50);
-}
-function closeRenameModal() {
-  document.getElementById('rename-modal').classList.remove('show');
-}
+function openAccountModal() { document.getElementById('account-modal').classList.add('show'); setTimeout(() => document.getElementById('new-account-name').focus(), 50); }
+function closeAccountModal() { document.getElementById('account-modal').classList.remove('show'); document.getElementById('new-account-name').value = ''; }
+function openRenameModal() { document.getElementById('rename-modal').classList.add('show'); const c = currentAccounts.find(a => a.id === currentActiveId); document.getElementById('rename-account-name').value = c ? c.name : ''; }
+function closeRenameModal() { document.getElementById('rename-modal').classList.remove('show'); }
 
-async function createAccount() {
-  var name = document.getElementById('new-account-name').value.trim();
-  if (!name) { alertBox('请输入账户名称', 'error'); return; }
-  var doCreate = async function() {
-    try {
-      var r = await api('POST', 'api/accounts', {name: name});
-      if (r.needTotp) { openTotpModal(doCreate); return; }
-      closeAccountModal();
-      alertBox('账户已创建: ' + name, 'ok');
-      loadState();
-    } catch (e) { alertBox('创建失败: ' + e.message, 'error'); }
-  };
-  await doCreate();
-}
+async function createAccount() { const name = document.getElementById('new-account-name').value.trim(); if (!name) { alertBox('Enter a name', 'error'); return; } const doCreate = async () => { try { const r = await api('POST', 'api/accounts', {name}); if (r.needTotp) { openTotpModal(doCreate); return; } closeAccountModal(); alertBox('Account created: ' + name, 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; await doCreate(); }
+async function deleteCurrentAccount() { if (!currentActiveId || !confirm('Delete this account? This cannot be undone.')) return; const doDelete = async () => { try { const r = await api('DELETE', 'api/accounts/' + currentActiveId); if (r.needTotp) { openTotpModal(doDelete); return; } alertBox('Account deleted', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; await doDelete(); }
+async function renameAccount() { const name = document.getElementById('rename-account-name').value.trim(); if (!name) { alertBox('Name required', 'error'); return; } try { await api('PATCH', 'api/accounts/' + currentActiveId, {name}); closeRenameModal(); alertBox('Renamed', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }
+async function switchAccount(accId) { if (accId === currentActiveId) return; try { await api('POST', 'api/accounts/' + accId + '/activate'); alertBox('Switched', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }
 
-async function deleteCurrentAccount() {
-  if (!currentActiveId) return;
-  if (!confirm('确定删除当前账户？此操作不可恢复。')) return;
-  var doDelete = async function() {
-    try {
-      var r = await api('DELETE', 'api/accounts/' + currentActiveId);
-      if (r.needTotp) { openTotpModal(doDelete); return; }
-      alertBox('账户已删除', 'ok');
-      loadState();
-    } catch (e) { alertBox('删除失败: ' + e.message, 'error'); }
-  };
-  await doDelete();
-}
-
-async function renameAccount() {
-  var name = document.getElementById('rename-account-name').value.trim();
-  if (!name) { alertBox('名称不能为空', 'error'); return; }
-  try {
-    await api('PATCH', 'api/accounts/' + currentActiveId, {name: name});
-    closeRenameModal();
-    alertBox('已重命名', 'ok');
-    loadState();
-  } catch (e) { alertBox('重命名失败: ' + e.message, 'error'); }
-}
-
-async function switchAccount(accId) {
-  if (accId === currentActiveId) return;
-  try {
-    await api('POST', 'api/accounts/' + accId + '/activate');
-    alertBox('已切换账户', 'ok');
-    loadState();
-  } catch (e) { alertBox('切换失败: ' + e.message, 'error'); }
-}
-
-
-// ── Load State ──
 async function loadState() {
   try {
-    var s = await api('GET', 'api/state');
-
-    // Fill config fields
-    for (var k in s.config) {
-      var el = document.getElementById('cfg-' + k);
-      if (!el) continue;
-      if (el.type === 'checkbox') el.checked = !!s.config[k];
-      else el.value = s.config[k];
-    }
-
-    // Live badges
-    var bnBadge = document.getElementById('badge-live-bn');
-    var okxBadge = document.getElementById('badge-live-okx');
-    if (s.config.LIVE_MODE) {
-      bnBadge.textContent = 'LIVE';
-      bnBadge.className = 'badge badge-danger';
-    } else {
-      bnBadge.textContent = 'OFF';
-      bnBadge.className = 'badge badge-success';
-    }
-    if (s.config.OKX_LIVE_MODE) {
-      okxBadge.textContent = 'LIVE';
-      okxBadge.className = 'badge badge-danger';
-    } else {
-      okxBadge.textContent = 'OFF';
-      okxBadge.className = 'badge badge-success';
-    }
-
-    // Credentials
-    var bn = s.exchanges.binance;
-    document.getElementById('bn-status').innerHTML = bn.has_credentials
-      ? '<span class="dot dot-green"></span> 已配置 | key=' + (bn.masked.api_key || '(empty)')
-      : '<span class="dot dot-red"></span> 未配置';
-    var okx = s.exchanges.okx;
-    document.getElementById('okx-status').innerHTML = okx.has_credentials
-      ? '<span class="dot dot-green"></span> 已配置 | key=' + (okx.masked.api_key || '(empty)')
-      : '<span class="dot dot-red"></span> 未配置';
-
-    // Session info
-    var sess = s.session;
-    var mins = Math.floor(sess.idle_remaining_sec / 60);
-    var totpSt = sess.totp_enabled
-      ? (sess.fresh_totp ? '<span class="dot dot-green"></span> TOTP' : '<span class="dot dot-yellow"></span> TOTP')
-      : '<span class="dot dot-gray"></span> 2FA';
-    document.getElementById('session-info').innerHTML = mins + ' min ' + totpSt;
-
-    // Accounts
-    currentAccounts = s.accounts || [];
-    currentActiveId = s.active_account || '';
-    updateAccountUI();
-
-    // Compound stake (复利实时状态)
-    if (s.compound) {
-      var cs = s.compound;
-      var fullStake = cs.current_stake || 0;
-      var halfStake = Math.round(fullStake * 0.5 * 100) / 100;
-      document.getElementById('compound-current-stake').textContent = fullStake + 'U';
-      document.getElementById('compound-half-stake').textContent = halfStake + 'U';
-      document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U';
-      var statusEl = document.getElementById('compound-status');
-      if (cs.enabled) {
-        if (fullStake > (s.config.DEFAULT_STAKE || 50)) {
-          statusEl.textContent = '已激活（+' + (fullStake - (s.config.DEFAULT_STAKE || 50)) + 'U）';
-          statusEl.className = 'badge badge-success';
-        } else {
-          statusEl.textContent = '已开启（等待盈利触发）';
-          statusEl.className = 'badge badge-warning';
-        }
-      } else {
-        statusEl.textContent = '未开启';
-        statusEl.className = 'badge badge-danger';
-      }
-    }
-
-  } catch (e) {
-    alertBox('加载状态失败: ' + e.message, 'error');
-  }
+    const s = await api('GET', 'api/state');
+    for (const k in s.config) { const el = document.getElementById('cfg-' + k); if (!el) continue; if (el.type === 'checkbox') el.checked = !!s.config[k]; else el.value = s.config[k]; }
+    const bnBadge = document.getElementById('badge-live-bn'), okxBadge = document.getElementById('badge-live-okx');
+    bnBadge.textContent = s.config.LIVE_MODE ? 'LIVE' : 'OFF'; bnBadge.className = 'badge ' + (s.config.LIVE_MODE ? 'badge-danger' : 'badge-success');
+    okxBadge.textContent = s.config.OKX_LIVE_MODE ? 'LIVE' : 'OFF'; okxBadge.className = 'badge ' + (s.config.OKX_LIVE_MODE ? 'badge-danger' : 'badge-success');
+    const bn = s.exchanges.binance; document.getElementById('bn-status').innerHTML = bn.has_credentials ? '<span class="dot dot-green"></span> Configured | ' + (bn.masked.api_key || '') : '<span class="dot dot-red"></span> Not configured';
+    const okx = s.exchanges.okx; document.getElementById('okx-status').innerHTML = okx.has_credentials ? '<span class="dot dot-green"></span> Configured | ' + (okx.masked.api_key || '') : '<span class="dot dot-red"></span> Not configured';
+    const sess = s.session; document.getElementById('session-info').innerHTML = Math.floor(sess.idle_remaining_sec / 60) + ' min | ' + (sess.fresh_totp ? '<span class="dot dot-green"></span>' : '<span class="dot dot-yellow"></span>') + ' 2FA';
+    currentAccounts = s.accounts || []; currentActiveId = s.active_account || ''; updateAccountUI();
+    if (s.compound) { const cs = s.compound; document.getElementById('compound-current-stake').textContent = cs.current_stake + 'U'; document.getElementById('compound-half-stake').textContent = Math.round(cs.current_stake * 0.5) + 'U'; document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U'; const stEl = document.getElementById('compound-status'); if (cs.enabled && cs.current_stake > (s.config.DEFAULT_STAKE || 50)) { stEl.textContent = 'Active (+' + (cs.current_stake - (s.config.DEFAULT_STAKE||50)) + 'U)'; stEl.className = 'badge badge-success'; } else if (cs.enabled) { stEl.textContent = 'Enabled (waiting)'; stEl.className = 'badge badge-warning'; } else { stEl.textContent = 'Disabled'; stEl.className = 'badge badge-danger'; } }
+    lucide.createIcons();
+  } catch (e) { alertBox('Load failed: ' + e.message, 'error'); }
 }
 
 function updateAccountUI() {
-  var active = currentAccounts.find(function(a) { return a.id === currentActiveId; });
-  if (active) {
-    document.getElementById('active-account-name').textContent = active.name;
-    document.getElementById('active-account-id').textContent = currentActiveId;
-    document.getElementById('account-avatar').textContent = active.name.charAt(0);
-  }
-
-  // Switcher dropdown
-  var sel = document.getElementById('account-switcher');
-  sel.innerHTML = '';
-  currentAccounts.forEach(function(acc) {
-    var opt = document.createElement('option');
-    opt.value = acc.id;
-    opt.textContent = acc.name + (acc.id === currentActiveId ? ' (active)' : '');
-    opt.selected = acc.id === currentActiveId;
-    sel.appendChild(opt);
-  });
+  const active = currentAccounts.find(a => a.id === currentActiveId);
+  if (active) { document.getElementById('active-account-name').textContent = active.name; document.getElementById('active-account-id').textContent = currentActiveId; document.getElementById('account-avatar').textContent = active.name.charAt(0).toUpperCase(); }
+  const sel = document.getElementById('account-switcher'); sel.innerHTML = '';
+  currentAccounts.forEach(acc => { const opt = document.createElement('option'); opt.value = acc.id; opt.textContent = acc.name + (acc.id === currentActiveId ? ' *' : ''); opt.selected = acc.id === currentActiveId; sel.appendChild(opt); });
 }
 
-// ── Save Config ──
 function saveConfig() {
-  var doSave = async function() {
-    var changes = {};
-    var keys = [
-      'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK',
-      'SHADOW_PARALLEL',
-      'ACCOUNT_BALANCE', 'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
-      'TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'TP1_CLOSE_RATIO',
-      'HARD_STOP_LOSS_PCT', 'SLIPPAGE_ALERT_PCT',
-      'RISK_MAX_DAILY_LOSS', 'RISK_MAX_DAILY_TRADES',
-      'RISK_CONSECUTIVE_LOSS_PAUSE', 'RISK_MAX_POSITION_PCT', 'COOLDOWN_HOURS'
-    ];
-    keys.forEach(function(key) {
-      var el = document.getElementById('cfg-' + key);
-      if (!el) return;
-      if (el.type === 'checkbox') changes[key] = el.checked;
-      else if (el.type === 'number') changes[key] = parseFloat(el.value);
-      else changes[key] = el.value;
-    });
-    try {
-      var r = await api('POST', 'api/config', {changes: changes});
-      if (r.needTotp) { openTotpModal(doSave); return; }
-      var count = Object.keys(r.applied || {}).length;
-      alertBox('已保存 ' + count + ' 项变更，立即生效', 'ok');
-      loadState();
-      loadAudit();
-    } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
-  };
-  doSave();
+  const doSave = async () => {
+    const changes = {}; const keys = ['LIVE_MODE','OKX_LIVE_MODE','PRIMARY_EXCHANGE','PRIMARY_EXCHANGE_FALLBACK','ACCOUNT_BALANCE','DEFAULT_STAKE','LEVERAGE','OKX_DEFAULT_LEVERAGE','TP1_MULTIPLIER','TP2_MULTIPLIER','TP1_CLOSE_RATIO','HARD_STOP_LOSS_PCT','SLIPPAGE_ALERT_PCT','RISK_MAX_DAILY_LOSS','RISK_MAX_DAILY_TRADES','RISK_CONSECUTIVE_LOSS_PAUSE','RISK_MAX_POSITION_PCT','COOLDOWN_HOURS'];
+    keys.forEach(key => { const el = document.getElementById('cfg-' + key); if (!el) return; if (el.type === 'checkbox') changes[key] = el.checked; else if (el.type === 'number') changes[key] = parseFloat(el.value); else changes[key] = el.value; });
+    try { const r = await api('POST', 'api/config', {changes}); if (r.needTotp) { openTotpModal(doSave); return; } alertBox('Saved ' + Object.keys(r.applied||{}).length + ' changes', 'ok'); loadState(); } catch (e) { alertBox('Save failed: ' + e.message, 'error'); }
+  }; doSave();
 }
 
-// ── Credentials ──
 function saveCredentials(exchange) {
-  var doSave = async function() {
-    // HTML ID 前缀：binance → bn, okx → okx
-    var prefix = exchange === 'binance' ? 'bn' : exchange;
-    var body = {};
-    body.api_key = document.getElementById(prefix + '-api_key').value;
-    body.secret = document.getElementById(prefix + '-secret').value;
-    if (exchange === 'okx') body.passphrase = document.getElementById('okx-passphrase').value;
-    // 检查是否有输入内容
-    var hasInput = body.api_key || body.secret || (exchange === 'okx' && body.passphrase);
-    if (!hasInput) {
-      alertBox('请至少填写一个凭证字段', 'warning');
-      return;
-    }
-    try {
-      var r = await api('POST', 'api/credentials/' + exchange, body);
-      if (r.needTotp) { openTotpModal(doSave); return; }
-      alertBox(exchange.toUpperCase() + ' 凭证已保存', 'ok');
-      document.getElementById(prefix + '-api_key').value = '';
-      document.getElementById(prefix + '-secret').value = '';
-      if (exchange === 'okx') document.getElementById('okx-passphrase').value = '';
-      loadState();
-    } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
-  };
-  doSave();
+  const doSave = async () => {
+    const prefix = exchange === 'binance' ? 'bn' : exchange;
+    const body = {}; ['api_key','secret','passphrase'].forEach(f => { const el = document.getElementById(prefix + '-' + f); if (el && el.value.trim()) body[f] = el.value.trim(); });
+    if (!Object.keys(body).length) { alertBox('No fields to save', 'warning'); return; }
+    try { const r = await api('POST', 'api/credentials/' + exchange, body); if (r.needTotp) { openTotpModal(doSave); return; } alertBox(exchange + ' credentials saved', 'ok'); document.querySelectorAll('#tab-creds input[type=password]').forEach(i => i.value = ''); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); }
+  }; doSave();
 }
 
 function clearCredentials(exchange) {
-  var doClear = async function() {
-    if (!confirm('确定清除 ' + exchange.toUpperCase() + ' 凭证？会同时关闭实盘开关。')) return;
-    try {
-      var r = await api('DELETE', 'api/credentials/' + exchange);
-      if (r.needTotp) { openTotpModal(doClear); return; }
-      alertBox(exchange.toUpperCase() + ' 凭证已清除', 'ok');
-      loadState();
-    } catch (e) { alertBox('操作失败: ' + e.message, 'error'); }
-  };
-  doClear();
+  if (!confirm('Clear all ' + exchange + ' credentials?')) return;
+  const doClear = async () => { try { const r = await api('DELETE', 'api/credentials/' + exchange); if (r.needTotp) { openTotpModal(doClear); return; } alertBox(exchange + ' credentials cleared', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; doClear();
 }
 
-// ── Preflight Check ──
 async function runPreflightCheck() {
-  var btn = document.getElementById('btn-preflight');
-  var statusEl = document.getElementById('preflight-status');
-  var resultsEl = document.getElementById('preflight-results');
-  btn.disabled = true;
-  btn.textContent = '检查中...';
-  statusEl.textContent = '正在连接交易所 API...';
-  resultsEl.style.display = 'none';
-
+  document.getElementById('btn-preflight').disabled = true;
+  document.getElementById('preflight-status').textContent = 'Running...';
   try {
-    var r = await api('POST', 'api/preflight-check', {});
-    resultsEl.style.display = 'block';
-
-    var routing = r.routing || {};
-    document.getElementById('preflight-routing').innerHTML =
-      '<div style="font-weight:600;margin-bottom:8px;">路由配置</div>' +
-      '<div style="font-family:monospace;font-size:12px;line-height:2;">' +
-      'LIVE_MODE = ' + (routing.LIVE_MODE ? '<span class="badge badge-danger">True</span>' : '<span class="badge badge-success">False</span>') + '<br>' +
-      'OKX_LIVE_MODE = ' + (routing.OKX_LIVE_MODE ? '<span class="badge badge-danger">True</span>' : '<span class="badge badge-success">False</span>') + '<br>' +
-      'PRIMARY_EXCHANGE = ' + (routing.PRIMARY_EXCHANGE || 'N/A') + '<br>' +
-      'DEFAULT_STAKE = ' + (routing.DEFAULT_STAKE || 'N/A') + 'U | LEVERAGE = ' + (routing.LEVERAGE || 'N/A') + 'x' +
-      '</div>' +
-      '<div style="margin-top:8px;padding:8px 12px;border-radius:6px;background:' + (r.ok ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)') + ';color:' + (r.ok ? 'var(--success)' : 'var(--danger)') + ';font-size:13px;">' +
-      (routing.behavior || '') + '</div>';
-
-    var exchEl = document.getElementById('preflight-exchanges');
-    if (r.error && !Object.keys(r.results || {}).length) {
-      exchEl.innerHTML = '<div style="color:var(--danger);padding:8px;">' + r.error + '</div>';
-    } else {
-      var html = '';
-      for (var name in (r.results || {})) {
-        var result = r.results[name];
-        var icon = result.pass ? '&#9989;' : '&#10060;';
-        html += '<div style="margin-top:12px;"><div style="font-weight:600;font-size:14px;">' + icon + ' ' + name.toUpperCase() + '</div><div style="margin-top:6px;">';
-        (result.checks || []).forEach(function(check) {
-          var si = '&#10003;', sc = 'var(--success)';
-          if (check.status === 'fail') { si = '&#10007;'; sc = 'var(--danger)'; }
-          else if (check.status === 'warn') { si = '!'; sc = 'var(--warning)'; }
-          html += '<div style="padding:3px 0;font-size:12px;font-family:monospace;"><span style="color:' + sc + ';font-weight:bold;">' + si + '</span> <span style="color:var(--text-dim);">' + check.name + '</span>: ' + check.msg + '</div>';
-        });
-        html += '</div></div>';
-      }
-      exchEl.innerHTML = html;
+    const r = await api('POST', 'api/preflight-check', {});
+    document.getElementById('preflight-results').style.display = 'block';
+    const rt = r.routing || {};
+    document.getElementById('preflight-routing').innerHTML = `<b>Routing:</b> ${rt.behavior || 'N/A'}<br>LIVE_MODE=${rt.LIVE_MODE} | OKX_LIVE_MODE=${rt.OKX_LIVE_MODE} | Stake=${rt.DEFAULT_STAKE}U | Lev=${rt.LEVERAGE}x`;
+    let html = '';
+    for (const [ex, result] of Object.entries(r.results || {})) {
+      html += `<div style="margin-bottom:12px;"><b>${ex.toUpperCase()}</b> ${result.pass ? '<span class="badge badge-success">PASS</span>' : '<span class="badge badge-danger">FAIL</span>'}<br>`;
+      (result.checks || []).forEach(c => { html += `<div style="padding:4px 0;font-size:0.75rem;"><span class="dot dot-${c.status === 'pass' ? 'green' : c.status === 'fail' ? 'red' : 'yellow'}"></span> ${c.name}: ${c.msg}</div>`; });
+      html += '</div>';
     }
-
-    if (r.ok) statusEl.innerHTML = '<span style="color:var(--success);">&#10003; 全部通过</span>';
-    else statusEl.innerHTML = '<span style="color:var(--danger);">&#10007; 存在问题</span>';
-  } catch (e) {
-    statusEl.innerHTML = '<span style="color:var(--danger);">请求失败: ' + e.message + '</span>';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '\u25B6 运行实盘自检';
-  }
+    document.getElementById('preflight-exchanges').innerHTML = html;
+    document.getElementById('preflight-status').textContent = r.ok ? 'All passed' : 'Issues found';
+  } catch (e) { alertBox('Preflight failed: ' + e.message, 'error'); document.getElementById('preflight-status').textContent = 'Error'; }
+  document.getElementById('btn-preflight').disabled = false;
 }
 
-// ── Audit ──
-async function loadAudit() {
-  try {
-    var r = await api('GET', 'api/audit');
-    var el = document.getElementById('audit-list');
-    if (!r.events || !r.events.length) {
-      el.innerHTML = '<div style="color:var(--text-dim);">暂无审计记录</div>';
-      return;
-    }
-    var rows = r.events.slice(0, 80).map(function(e) {
-      var ts = (e.ts || '').replace('T', ' ').slice(0, 19);
-      var ip = e.ip || '';
-      var extra = Object.keys(e).filter(function(k) { return !['ts','event','ip'].includes(k); })
-        .map(function(k) { return k + '=' + (typeof e[k] === 'object' ? JSON.stringify(e[k]) : e[k]); }).join(' ');
-      return '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-family:monospace;font-size:11px;">' +
-        '<span style="color:var(--text-muted);">' + ts + '</span> ' +
-        '<span style="color:var(--accent);">' + e.event + '</span> ' +
-        '<span style="color:var(--text-muted);">' + ip + '</span> ' +
-        (extra ? '<span style="color:var(--text-dim);font-size:10px;">' + extra + '</span>' : '') +
-        '</div>';
-    }).join('');
-    el.innerHTML = rows;
-  } catch (e) {
-    document.getElementById('audit-list').textContent = '加载失败: ' + e.message;
-  }
-}
+// Account switcher event
+document.getElementById('account-switcher').addEventListener('change', function() { switchAccount(this.value); });
 
-// ── Init ──
-document.addEventListener('DOMContentLoaded', function() {
-  loadState();
-  loadAudit();
-  setInterval(loadState, 30000);
-
-  // Account switcher
-  document.getElementById('account-switcher').addEventListener('change', function(e) {
-    switchAccount(e.target.value);
-  });
-
-  // TOTP auto-submit on 6 digits
-  document.getElementById('totp-code').addEventListener('input', function(e) {
-    if (e.target.value.replace(/\D/g, '').length === 6) submitTotp();
-  });
-
-  // Enter key for modals
-  document.getElementById('new-account-name').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') createAccount();
-  });
-  document.getElementById('rename-account-name').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') renameAccount();
-  });
-});
+// Init
+loadState();
 </script>
 {% endblock %}

@@ -1,32 +1,41 @@
 {% extends "admin/_base.html" %}
-{% block title %}管理员登录{% endblock %}
+{% block title %}Admin Login{% endblock %}
 {% block content %}
-<div class="card" style="max-width: 420px; margin: 60px auto;">
-  <h2>🔐 管理员登录</h2>
+<div class="card">
+  <div style="text-align:center;margin-bottom:28px;">
+    <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--accent-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
+      <i data-lucide="shield-check" style="width:28px;height:28px;color:var(--accent);"></i>
+    </div>
+    <h2 style="margin-bottom:4px;">Admin Login</h2>
+    <p class="muted" style="font-size:0.78rem;">Shadow Trading System</p>
+  </div>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
   <form method="post" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-    <label for="password">密码</label>
-    <input type="password" id="password" name="password" required autofocus
-           autocomplete="current-password">
+    <div style="margin-bottom:16px;">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required autofocus
+             autocomplete="current-password" placeholder="Enter admin password">
+    </div>
 
-    <div style="height: 14px;"></div>
+    <div style="margin-bottom:24px;">
+      <label for="totp">TOTP Code (6 digits)</label>
+      <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
+             inputmode="numeric" autocomplete="one-time-code"
+             placeholder="Authenticator 6-digit code">
+    </div>
 
-    <label for="totp">TOTP 动态码（6 位）</label>
-    <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
-           inputmode="numeric" autocomplete="one-time-code"
-           placeholder="Google Authenticator 6 位数字">
-
-    <div style="height: 20px;"></div>
-
-    <button type="submit" style="width: 100%;">登录</button>
+    <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
+      <i data-lucide="log-in" style="width:16px;height:16px;"></i>
+      Sign In
+    </button>
   </form>
 
-  <p class="muted" style="margin-top: 20px; font-size: 12px;">
-    连续登录失败 5 次将锁定该 IP 30 分钟，锁定期内页面不再响应。
+  <p class="muted" style="margin-top:24px;font-size:0.7rem;text-align:center;">
+    5 consecutive failures will lock the IP for 30 minutes.
   </p>
 </div>
 {% endblock %}
