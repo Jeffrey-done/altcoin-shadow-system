@@ -112,7 +112,7 @@ total_open_stake`，与 `risk_state.json` 对比，有漂移就自动修正并 T
 | `TP2_MULTIPLIER` | 0.92 | TP2 = 入场 × 0.92（-8%） |
 | `TP1_CLOSE_RATIO` | 0.5 | TP1 平仓比例 |
 | `TRAIL_STOP_ACTIVATE_PCT` | 3.0 | 移动止损激活门槛 |
-| `TRAIL_STOP_DRAWDOWN_PCT` | 0.10 | 移动止损回撤比例 |
+| `TRAIL_STOP_RETRACE_RATIO` | 0.4 | 移动止损回撤比例（从最高盈利回撤 40% 触发） |
 | `MAX_HOLD_DAYS` | 1 | 最大持仓天数 |
 | `RISK_MAX_DAILY_LOSS` | 30 | 日亏上限 (U) |
 | `RISK_MAX_DAILY_TRADES` | 3 | 日开仓上限 |

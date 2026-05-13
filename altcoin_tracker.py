@@ -130,6 +130,9 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"硬止损（价格反弹{-pnl_pct:.1f}%触发）"
         trade.close_type = CloseType.HARD_STOP
+        # 平仓滑点：记录触发时的参考价；真实 fill 价由 _perform_exchange_close 的
+        # 后台线程回填，用于事后分析止损滑点成本（硬止损通常是滑点最大的场景）
+        trade.exit_ref_price = current_price
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
@@ -197,6 +200,8 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         # 真实实盘路径由 _perform_exchange_close 的 _backfill_order_id 用 filled 实际值覆盖
         trade.tp1_closed_shares = round(tp1_close_amount, 6)
         trade.tp1_exit_price = current_price
+        # 平仓滑点：TP1 触发时记录参考价；shadow 交易保持 fill==ref → 滑点 0
+        trade.tp1_exit_ref_price = current_price
         result.pending_exchange_action = 'tp1_partial'
         result.pending_close_amount = tp1_close_amount
         # TP1触发后立即启用保本止损：剩余仓位止损提升至入场价
@@ -244,6 +249,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"TP2止盈-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓"
         trade.close_type = CloseType.TP2
+        trade.exit_ref_price = current_price
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
@@ -280,6 +286,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
+        trade.exit_ref_price = current_price
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
 
         # 区分保本止损和普通移动止损
@@ -325,6 +332,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.closed_at = utcnow_iso()
         trade.close_reason = f"时间止损（{hours_held:.1f}h，{pnl_pct:.1f}%）"
         trade.close_type = CloseType.TIME_STOP
+        trade.exit_ref_price = current_price
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
         result.closed = True
         result.updated = True
@@ -479,19 +487,34 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     # 这里用 best-effort 模式：失败不重试（订单已成交，ID 只是审计信息）
     # H7: TP1 部分平仓成功时，把交易所返回的 filled 数量写回 trade.tp1_closed_shares
     #     后续评估 remaining_shares 时优先使用它，避免小零头残留
+    # 平仓滑点：同时用返回的 average 成交价回填 tp1_slippage_pct / exit_slippage_pct
     def _backfill_order_id():
         try:
             with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
                 for t in trades_raw:
                     if t.get('id') == trade.id:
                         t['close_order_id'] = result.get('order_id', '')
+                        fill_price = float(result.get('price') or 0)
                         if action == 'tp1_partial':
                             # H7: TP1 实际成交数量回填（交易所滑点 → 可能和预期略有差异）
                             filled = float(result.get('amount') or 0) or close_amount
-                            exit_price = float(result.get('price') or 0)
                             t['tp1_closed_shares'] = round(filled, 6)
-                            if exit_price > 0:
-                                t['tp1_exit_price'] = round(exit_price, 6)
+                            if fill_price > 0:
+                                t['tp1_exit_price'] = round(fill_price, 6)
+                                # 平仓滑点：用 evaluate 时写入的 ref 价算 abs(fill-ref)/ref*100
+                                ref = float(t.get('tp1_exit_ref_price') or 0)
+                                if ref > 0:
+                                    t['tp1_slippage_pct'] = round(
+                                        abs(fill_price - ref) / ref * 100, 4
+                                    )
+                        else:
+                            # full_close：tp2 / hard_stop / trail_stop / time_stop 等
+                            if fill_price > 0:
+                                ref = float(t.get('exit_ref_price') or 0)
+                                if ref > 0:
+                                    t['exit_slippage_pct'] = round(
+                                        abs(fill_price - ref) / ref * 100, 4
+                                    )
                         # 成功平仓后清除所有 retry 标记
                         t.pop('close_retry_pending', None)
                         t.pop('close_retry_action', None)

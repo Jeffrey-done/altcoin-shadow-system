@@ -171,27 +171,78 @@ def calculate_weekly_stats(short_trades):
     for key in strategy_breakdown:
         strategy_breakdown[key]['pnl'] = round(strategy_breakdown[key]['pnl'], 2)
 
-    # H10: 滑点成本统计
+    # 滑点成本统计（H10 + 平仓滑点扩展）
     # 入场滑点：每笔 notional * slippage_pct / 100（单边）
-    # 由于我们只跟踪入场滑点，这里严格只算入场成本（平仓滑点尚未纳入 Trade 模型）
+    # TP1 滑点：notional * TP1_CLOSE_RATIO * tp1_slippage_pct / 100
+    # 平仓滑点：notional_remaining * exit_slippage_pct / 100
+    #   其中 notional_remaining = notional - notional * TP1_CLOSE_RATIO (若 TP1 已触发)
     slippage_entries = []
-    total_slippage_cost = 0.0
-    trades_with_slippage = 0
+    entry_slippage_total = 0.0
+    exit_slippage_total = 0.0
+    tp1_slippage_total = 0.0
+    entry_count = 0
+    exit_count = 0
+    tp1_count = 0
     for t in short_trades:
-        sp = getattr(t, 'slippage_pct', 0.0) or 0.0
-        if sp > 0 and t.notional > 0:
-            cost = t.notional * sp / 100
-            total_slippage_cost += cost
-            trades_with_slippage += 1
+        exchange = getattr(t, 'exchange', 'shadow')
+        notional = t.notional or 0
+
+        # 入场滑点
+        sp_in = getattr(t, 'slippage_pct', 0.0) or 0.0
+        if sp_in > 0 and notional > 0:
+            cost = notional * sp_in / 100
+            entry_slippage_total += cost
+            entry_count += 1
             slippage_entries.append({
                 'symbol': t.symbol,
-                'slippage_pct': round(sp, 4),
+                'type': 'entry',
+                'slippage_pct': round(sp_in, 4),
                 'cost_usd': round(cost, 2),
-                'exchange': getattr(t, 'exchange', 'shadow'),
+                'exchange': exchange,
             })
+
+        # TP1 平仓滑点（只在 TP1 触发后有意义）
+        sp_tp1 = getattr(t, 'tp1_slippage_pct', 0.0) or 0.0
+        if sp_tp1 > 0 and notional > 0 and getattr(t, 'tp1_triggered', False):
+            tp1_notional = notional * config.TP1_CLOSE_RATIO
+            cost = tp1_notional * sp_tp1 / 100
+            tp1_slippage_total += cost
+            tp1_count += 1
+            slippage_entries.append({
+                'symbol': t.symbol,
+                'type': 'tp1_close',
+                'slippage_pct': round(sp_tp1, 4),
+                'cost_usd': round(cost, 2),
+                'exchange': exchange,
+            })
+
+        # 最终平仓滑点（TP2 / 硬止损 / 移动止损 / 时间止损等）
+        sp_out = getattr(t, 'exit_slippage_pct', 0.0) or 0.0
+        if sp_out > 0 and notional > 0:
+            # 如果 TP1 已触发，剩余仓位是 notional * (1 - TP1_CLOSE_RATIO)
+            # 否则是整笔 notional
+            exit_notional = (
+                notional * (1 - config.TP1_CLOSE_RATIO)
+                if getattr(t, 'tp1_triggered', False)
+                else notional
+            )
+            cost = exit_notional * sp_out / 100
+            exit_slippage_total += cost
+            exit_count += 1
+            slippage_entries.append({
+                'symbol': t.symbol,
+                'type': 'exit',
+                'slippage_pct': round(sp_out, 4),
+                'cost_usd': round(cost, 2),
+                'exchange': exchange,
+            })
+
+    total_slippage_cost = entry_slippage_total + exit_slippage_total + tp1_slippage_total
+    trades_with_slippage = len({e['symbol'] for e in slippage_entries})
     # 挑滑点最大的前 5 笔以便于诊断
     slippage_entries.sort(key=lambda x: x['cost_usd'], reverse=True)
     top_slippage = slippage_entries[:5]
+    # 所有滑点事件的平均百分比（入场 + TP1 + 最终平仓都算一次事件）
     avg_slippage_pct = (
         sum(e['slippage_pct'] for e in slippage_entries) / len(slippage_entries)
         if slippage_entries else 0.0
@@ -212,9 +263,15 @@ def calculate_weekly_stats(short_trades):
         'daily_breakdown': daily_breakdown,
         'avg_hold_hours': avg_hold_hours,
         'strategy_breakdown': strategy_breakdown,
-        # 滑点统计（H10）
+        # 滑点统计（H10 + 平仓滑点扩展）
         'slippage_total_cost': round(total_slippage_cost, 2),
+        'slippage_entry_cost': round(entry_slippage_total, 2),
+        'slippage_tp1_cost': round(tp1_slippage_total, 2),
+        'slippage_exit_cost': round(exit_slippage_total, 2),
         'slippage_trades_count': trades_with_slippage,
+        'slippage_entry_count': entry_count,
+        'slippage_tp1_count': tp1_count,
+        'slippage_exit_count': exit_count,
         'slippage_avg_pct': round(avg_slippage_pct, 4),
         'slippage_top': top_slippage,
     }
@@ -336,16 +393,29 @@ def format_tg_report(stats, suggestions, week_start, week_end):
         if stats['total_pnl'] > 0:
             slippage_pct_of_pnl = stats['slippage_total_cost'] / stats['total_pnl'] * 100
         lines.append(
-            f"入场滑点总成本：<code>{stats['slippage_total_cost']:+.2f}U</code>"
+            f"滑点总成本：<code>{stats['slippage_total_cost']:+.2f}U</code>"
             f"（{stats['slippage_trades_count']}笔，均{stats['slippage_avg_pct']:.3f}%）"
         )
+        # 拆分：入场 / TP1 / 最终平仓
+        seg_parts = []
+        if stats.get('slippage_entry_count', 0):
+            seg_parts.append(f"入场{stats['slippage_entry_cost']:+.2f}U×{stats['slippage_entry_count']}")
+        if stats.get('slippage_tp1_count', 0):
+            seg_parts.append(f"TP1{stats['slippage_tp1_cost']:+.2f}U×{stats['slippage_tp1_count']}")
+        if stats.get('slippage_exit_count', 0):
+            seg_parts.append(f"平仓{stats['slippage_exit_cost']:+.2f}U×{stats['slippage_exit_count']}")
+        if seg_parts:
+            lines.append(f"  拆分：{' | '.join(seg_parts)}")
         if stats['total_pnl'] > 0:
             lines.append(f"  占盈利比重：{slippage_pct_of_pnl:.1f}%")
         if stats.get('slippage_top'):
             lines.append("  Top 滑点：")
             for e in stats['slippage_top'][:3]:
+                type_label = {
+                    'entry': '入场', 'tp1_close': 'TP1', 'exit': '平仓'
+                }.get(e.get('type', ''), '入场')
                 lines.append(
-                    f"    • {e['symbol']} [{e['exchange']}] "
+                    f"    • {e['symbol']} [{e['exchange']}][{type_label}] "
                     f"{e['slippage_pct']:.2f}% = {e['cost_usd']:.2f}U"
                 )
 

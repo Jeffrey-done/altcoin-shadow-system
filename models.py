@@ -132,6 +132,14 @@ class Trade:
     tp1_closed_shares: float = 0.0    # TP1 实际平掉的币数量（用交易所返回的 filled）
     tp1_exit_price: float = 0.0       # TP1 实际平仓均价
 
+    # 平仓滑点追踪（H10 续作）
+    # 语义与入场滑点对齐：ref_price = 触发评估时的 ticker 价，实际成交价来自交易所 fill
+    # shadow 交易和影子账户不发真单 → 保持 0
+    tp1_exit_ref_price: float = 0.0   # TP1 触发评估时的 ticker 参考价
+    tp1_slippage_pct: float = 0.0     # TP1 平仓滑点 %：abs(fill - ref) / ref * 100
+    exit_ref_price: float = 0.0       # 最终平仓（TP2 / 硬止损 / 移动止损 / 时间止损）触发时 ticker 参考价
+    exit_slippage_pct: float = 0.0    # 最终平仓滑点 %：abs(fill - ref) / ref * 100
+
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',
                      stake: float = config.DEFAULT_STAKE,
