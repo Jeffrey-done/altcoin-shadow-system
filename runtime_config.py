@@ -96,10 +96,13 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
 
     # ── 滑点告警 ──
     'SLIPPAGE_ALERT_PCT': (float, _pct_validator(0.1, 5.0), '滑点告警阈值 (%)'),
+
+    # ── 影子并行 ──
+    'SHADOW_PARALLEL': (bool, None, '影子并行模式（实盘时同步跑影子对照）'),
 }
 
 # ── 全局字段 vs 账户字段 ──
-GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK'}
+GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL'}
 ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
 
 
