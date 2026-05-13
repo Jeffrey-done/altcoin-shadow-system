@@ -703,11 +703,11 @@ def check_candidates():
             all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}}]
 
         # ── 锁内二次校验准备 ──
-        # 已开仓判重改为按 (symbol, exchange, account_id) 粒度：
-        # 同币在不同账户各开一次是允许的（多账户同步模式）
+        # 去重粒度：仅 symbol。只要任何账户/交易所已有该币持仓，
+        # 其他账户也不再开（避免同一信号跨账户重复暴露）。
         with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
-            already_open_triples = {
-                (t.get('symbol'), t.get('exchange', 'shadow'), t.get('account_id', ''))
+            already_open_symbols = {
+                t.get('symbol')
                 for t in trades_raw if t.get('status') == 'open'
             }
 
@@ -731,10 +731,10 @@ def check_candidates():
                     continue
 
                 for route_exchange, route_stake in routes:
-                    # 同币同所同账户已有持仓 → 跳过
-                    if (c.symbol, route_exchange, acc_id) in already_open_triples:
+                    # 同币已有任何持仓（跨账户/跨交易所）→ 跳过
+                    if c.symbol in already_open_symbols:
                         logger.warning(
-                            f"  ⏩ 跳过 {c.symbol}@{route_exchange}@{acc_id}：锁内发现已有持仓"
+                            f"  ⏩ 跳过 {c.symbol}@{route_exchange}@{acc_id}：锁内发现已有持仓（全局去重）"
                         )
                         continue
                     execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
