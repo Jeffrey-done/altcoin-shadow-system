@@ -1,13 +1,13 @@
 {% extends "admin/_base.html" %}
-{% block title %}Admin Login{% endblock %}
+{% block title %}管理员登录{% endblock %}
 {% block content %}
 <div class="card">
   <div style="text-align:center;margin-bottom:28px;">
     <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--accent-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
       <i data-lucide="shield-check" style="width:28px;height:28px;color:var(--accent);"></i>
     </div>
-    <h2 style="margin-bottom:4px;">Admin Login</h2>
-    <p class="muted" style="font-size:0.78rem;">Shadow Trading System</p>
+    <h2 style="margin-bottom:4px;">管理员登录</h2>
+    <p class="muted" style="font-size:0.78rem;">影子交易系统</p>
   </div>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -16,26 +16,26 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <div style="margin-bottom:16px;">
-      <label for="password">Password</label>
+      <label for="password">密码</label>
       <input type="password" id="password" name="password" required autofocus
-             autocomplete="current-password" placeholder="Enter admin password">
+             autocomplete="current-password" placeholder="请输入管理员密码">
     </div>
 
     <div style="margin-bottom:24px;">
-      <label for="totp">TOTP Code (6 digits)</label>
+      <label for="totp">动态验证码（6位数字）</label>
       <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
              inputmode="numeric" autocomplete="one-time-code"
-             placeholder="Authenticator 6-digit code">
+             placeholder="验证器6位数字">
     </div>
 
     <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
       <i data-lucide="log-in" style="width:16px;height:16px;"></i>
-      Sign In
+      登录
     </button>
   </form>
 
   <p class="muted" style="margin-top:24px;font-size:0.7rem;text-align:center;">
-    5 consecutive failures will lock the IP for 30 minutes.
+    连续5次失败将锁定IP 30分钟
   </p>
 </div>
 {% endblock %}

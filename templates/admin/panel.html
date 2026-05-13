@@ -139,13 +139,13 @@ select { cursor: pointer; }
 <!-- NAV BAR -->
 <nav class="nav-bar">
   <div class="nav-brand">
-    <i data-lucide="settings" style="width:18px;height:18px;"></i> Shadow Admin
+    <i data-lucide="settings" style="width:18px;height:18px;"></i> 影子管理
   </div>
   <div class="nav-right">
     <span class="nav-session" id="session-info"></span>
     <form method="post" action="logout" style="display:inline;margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="btn btn-ghost btn-sm" type="submit"><i data-lucide="log-out" style="width:14px;height:14px;"></i> Logout</button>
+      <button class="btn btn-ghost btn-sm" type="submit"><i data-lucide="log-out" style="width:14px;height:14px;"></i> 退出登录</button>
     </form>
   </div>
 </nav>
@@ -158,13 +158,13 @@ select { cursor: pointer; }
     <div class="account-info">
       <div class="account-avatar" id="account-avatar">?</div>
       <div>
-        <div class="account-name" id="active-account-name">Loading...</div>
+        <div class="account-name" id="active-account-name">加载中...</div>
         <div class="account-id" id="active-account-id"></div>
       </div>
     </div>
     <div class="account-actions">
       <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
-      <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> New</button>
+      <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
       <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
       <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
     </div>
@@ -172,40 +172,40 @@ select { cursor: pointer; }
 
   <!-- TABS -->
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('live')"><i data-lucide="power"></i> Live Control</button>
-    <button class="tab" onclick="switchTab('creds')"><i data-lucide="key"></i> Credentials</button>
-    <button class="tab" onclick="switchTab('position')"><i data-lucide="sliders"></i> Position & Risk</button>
-    <button class="tab" onclick="switchTab('preflight')"><i data-lucide="stethoscope"></i> Preflight</button>
+    <button class="tab active" onclick="switchTab('live')"><i data-lucide="power"></i> 实盘控制</button>
+    <button class="tab" onclick="switchTab('creds')"><i data-lucide="key"></i> 交易凭证</button>
+    <button class="tab" onclick="switchTab('position')"><i data-lucide="sliders"></i> 仓位与风控</button>
+    <button class="tab" onclick="switchTab('preflight')"><i data-lucide="stethoscope"></i> 预检</button>
   </div>
 
   <!-- TAB: Live Control -->
   <div class="tab-content active" id="tab-live">
     <div class="card">
-      <div class="card-title"><i data-lucide="zap"></i> Live Trading & Routing</div>
+      <div class="card-title"><i data-lucide="zap"></i> 实盘交易与路由</div>
       <div class="warn-banner">
-        <b>Warning:</b> Enabling LIVE_MODE will execute real orders on the next signal. Changes apply immediately across all processes.
+        <b>警告：</b>开启实盘模式后，下一个信号将执行真实订单。更改立即生效，所有进程同步。
       </div>
       <div class="form-row">
-        <label>Binance Live (LIVE_MODE)</label>
+        <label>Binance 实盘 (LIVE_MODE)</label>
         <input type="checkbox" id="cfg-LIVE_MODE">
         <span class="badge" id="badge-live-bn">OFF</span>
       </div>
       <div class="form-row">
-        <label>OKX Live (OKX_LIVE_MODE)</label>
+        <label>OKX 实盘 (OKX_LIVE_MODE)</label>
         <input type="checkbox" id="cfg-OKX_LIVE_MODE">
         <span class="badge" id="badge-live-okx">OFF</span>
       </div>
       <div class="form-row">
-        <label>Routing (PRIMARY_EXCHANGE)</label>
+        <label>路由模式 (PRIMARY_EXCHANGE)</label>
         <select id="cfg-PRIMARY_EXCHANGE">
           <option value="binance">binance</option>
           <option value="okx">okx</option>
-          <option value="both">both - dual exchange</option>
-          <option value="auto">auto - per symbol</option>
+          <option value="both">both - 双所同开</option>
+          <option value="auto">auto - 按币种自动</option>
         </select>
       </div>
       <div class="form-row">
-        <label>Auto Fallback</label>
+        <label>自动回退</label>
         <select id="cfg-PRIMARY_EXCHANGE_FALLBACK">
           <option value="binance">binance</option>
           <option value="okx">okx</option>
@@ -217,26 +217,26 @@ select { cursor: pointer; }
   <!-- TAB: Credentials -->
   <div class="tab-content" id="tab-creds">
     <div class="card">
-      <div class="card-title"><i data-lucide="key-round"></i> Exchange API Credentials</div>
-      <div class="warn-banner">Credentials are encrypted and stored per-account. Empty fields are not changed.</div>
+      <div class="card-title"><i data-lucide="key-round"></i> 交易所 API 凭证</div>
+      <div class="warn-banner">凭证按账户独立加密存储。留空的字段不会被修改。</div>
 
       <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> Binance</h4>
       <div id="bn-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
-      <div class="form-row"><label>API Key</label><input type="password" id="bn-api_key" placeholder="Leave empty to keep current"></div>
-      <div class="form-row"><label>API Secret</label><input type="password" id="bn-secret" placeholder="Leave empty to keep current"></div>
+      <div class="form-row"><label>API 密钥</label><input type="password" id="bn-api_key" placeholder="留空则保持不变"></div>
+      <div class="form-row"><label>API 私钥</label><input type="password" id="bn-secret" placeholder="留空则保持不变"></div>
       <div style="display:flex;gap:8px;margin-bottom:28px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')"><i data-lucide="save" style="width:12px;height:12px;"></i> Save Binance</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> Clear</button>
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 Binance</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
       </div>
 
       <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> OKX</h4>
       <div id="okx-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
-      <div class="form-row"><label>API Key</label><input type="password" id="okx-api_key" placeholder="Leave empty to keep current"></div>
-      <div class="form-row"><label>API Secret</label><input type="password" id="okx-secret" placeholder="Leave empty to keep current"></div>
-      <div class="form-row"><label>Passphrase</label><input type="password" id="okx-passphrase" placeholder="Leave empty to keep current"></div>
+      <div class="form-row"><label>API 密钥</label><input type="password" id="okx-api_key" placeholder="留空则保持不变"></div>
+      <div class="form-row"><label>API 私钥</label><input type="password" id="okx-secret" placeholder="留空则保持不变"></div>
+      <div class="form-row"><label>口令短语</label><input type="password" id="okx-passphrase" placeholder="留空则保持不变"></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> Save OKX</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> Clear</button>
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 OKX</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
       </div>
     </div>
   </div>
@@ -244,42 +244,42 @@ select { cursor: pointer; }
   <!-- TAB: Position & Risk -->
   <div class="tab-content" id="tab-position">
     <div class="card">
-      <div class="card-title"><i data-lucide="coins"></i> Position & Leverage</div>
-      <div class="form-row"><label>Account Balance (U)</label><input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1"></div>
-      <div class="form-row"><label>Stake Per Trade (U)</label><input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1"></div>
-      <div class="form-row"><label>Binance Leverage</label><input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1"></div>
-      <div class="form-row"><label>OKX Leverage</label><input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1"></div>
+      <div class="card-title"><i data-lucide="coins"></i> 仓位与杠杆</div>
+      <div class="form-row"><label>账户余额 (U)</label><input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1"></div>
+      <div class="form-row"><label>单笔保证金 (U)</label><input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1"></div>
+      <div class="form-row"><label>Binance 杠杆</label><input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1"></div>
+      <div class="form-row"><label>OKX 杠杆</label><input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1"></div>
 
       <div class="compound-box">
-        <div class="compound-title"><i data-lucide="trending-up"></i> Compound Status (auto-calculated)</div>
-        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Full Position (A-grade)</label><span id="compound-current-stake" style="font-weight:700;color:var(--green);">--</span></div>
-        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Half Position (B-grade)</label><span id="compound-half-stake" style="font-weight:700;color:var(--accent);">--</span></div>
-        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">Dynamic Balance</label><span id="compound-dynamic-balance" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:0;"><label style="color:var(--text-primary);">Status</label><span id="compound-status" class="badge badge-success">--</span></div>
+        <div class="compound-title"><i data-lucide="trending-up"></i> 复利状态（自动计算）</div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">满仓（A级信号）</label><span id="compound-current-stake" style="font-weight:700;color:var(--green);">--</span></div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">半仓（B级信号）</label><span id="compound-half-stake" style="font-weight:700;color:var(--accent);">--</span></div>
+        <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">动态余额</label><span id="compound-dynamic-balance" style="font-weight:700;">--</span></div>
+        <div class="form-row" style="margin-bottom:0;"><label style="color:var(--text-primary);">状态</label><span id="compound-status" class="badge badge-success">--</span></div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title"><i data-lucide="target"></i> Take Profit & Stop Loss</div>
-      <div class="form-row"><label>TP1 Multiplier (0.80~1.00)</label><input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01"></div>
-      <div class="form-row"><label>TP2 Multiplier (0.70~1.00)</label><input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01"></div>
-      <div class="form-row"><label>TP1 Close Ratio (0.1~0.9)</label><input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1"></div>
-      <div class="form-row"><label>Hard Stop Loss (%)</label><input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5"></div>
-      <div class="form-row"><label>Slippage Alert (%)</label><input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1"></div>
+      <div class="card-title"><i data-lucide="target"></i> 止盈与止损</div>
+      <div class="form-row"><label>一档止盈系数 (0.80~1.00)</label><input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>二档止盈系数 (0.70~1.00)</label><input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>一档平仓比例 (0.1~0.9)</label><input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1"></div>
+      <div class="form-row"><label>硬止损 (%)</label><input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5"></div>
+      <div class="form-row"><label>滑点告警 (%)</label><input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1"></div>
     </div>
 
     <div class="card">
-      <div class="card-title"><i data-lucide="shield-alert"></i> Risk Controls</div>
-      <div class="form-row"><label>Max Daily Loss (U)</label><input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1"></div>
-      <div class="form-row"><label>Max Daily Trades</label><input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1"></div>
-      <div class="form-row"><label>Consecutive Loss Pause</label><input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1"></div>
-      <div class="form-row"><label>Max Position Ratio (0.1~1.0)</label><input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1"></div>
-      <div class="form-row"><label>Cooldown Hours</label><input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1"></div>
+      <div class="card-title"><i data-lucide="shield-alert"></i> 风控参数</div>
+      <div class="form-row"><label>单日最大亏损 (U)</label><input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1"></div>
+      <div class="form-row"><label>单日最大开仓数</label><input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1"></div>
+      <div class="form-row"><label>连亏暂停阈值</label><input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1"></div>
+      <div class="form-row"><label>最大持仓比例 (0.1~1.0)</label><input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1"></div>
+      <div class="form-row"><label>冷却时间（小时）</label><input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1"></div>
     </div>
 
     <div style="margin:24px 0;">
       <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 36px;font-size:0.88rem;">
-        <i data-lucide="check" style="width:16px;height:16px;"></i> Save All Settings
+        <i data-lucide="check" style="width:16px;height:16px;"></i> 保存所有设置
       </button>
     </div>
   </div>
@@ -287,13 +287,13 @@ select { cursor: pointer; }
   <!-- TAB: Preflight -->
   <div class="tab-content" id="tab-preflight">
     <div class="card">
-      <div class="card-title"><i data-lucide="stethoscope"></i> Preflight Check</div>
+      <div class="card-title"><i data-lucide="stethoscope"></i> 预检测</div>
       <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">
-        Validates API credentials, balance, position mode, and leverage without placing any orders.
+        验证 API 凭证、余额、持仓模式和杠杆设置，不会下任何订单。
       </p>
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:18px;">
         <button class="btn btn-primary" onclick="runPreflightCheck()" id="btn-preflight">
-          <i data-lucide="play" style="width:14px;height:14px;"></i> Run Check
+          <i data-lucide="play" style="width:14px;height:14px;"></i> 开始检测
         </button>
         <span id="preflight-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
       </div>
@@ -308,12 +308,12 @@ select { cursor: pointer; }
 <!-- TOTP Modal -->
 <div class="modal-overlay" id="totp-modal">
   <div class="modal">
-    <h3><i data-lucide="lock" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> TOTP Verification</h3>
-    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">Enter 6-digit code for write operation:</p>
+    <h3><i data-lucide="lock" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> 动态验证</h3>
+    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">请输入6位验证码以执行写操作：</p>
     <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="000000" style="text-align:center;font-size:1.5rem;letter-spacing:8px;padding:14px;">
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeTotpModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitTotp()">Verify</button>
+      <button class="btn btn-ghost" onclick="closeTotpModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitTotp()">验证</button>
     </div>
   </div>
 </div>
@@ -321,12 +321,12 @@ select { cursor: pointer; }
 <!-- Account Create Modal -->
 <div class="modal-overlay" id="account-modal">
   <div class="modal">
-    <h3><i data-lucide="user-plus" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> New Account</h3>
-    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">Each account has independent credentials and risk parameters.</p>
-    <input type="text" id="new-account-name" placeholder="Account name" maxlength="50">
+    <h3><i data-lucide="user-plus" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> 新建账户</h3>
+    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:18px;">每个账户拥有独立的交易凭证和风控参数。</p>
+    <input type="text" id="new-account-name" placeholder="账户名称" maxlength="50">
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeAccountModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="createAccount()">Create</button>
+      <button class="btn btn-ghost" onclick="closeAccountModal()">取消</button>
+      <button class="btn btn-primary" onclick="createAccount()">创建</button>
     </div>
   </div>
 </div>
@@ -334,11 +334,11 @@ select { cursor: pointer; }
 <!-- Rename Modal -->
 <div class="modal-overlay" id="rename-modal">
   <div class="modal">
-    <h3><i data-lucide="edit-3" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> Rename Account</h3>
-    <input type="text" id="rename-account-name" placeholder="New name" maxlength="50">
+    <h3><i data-lucide="edit-3" style="width:20px;height:20px;color:var(--accent);vertical-align:middle;"></i> 重命名账户</h3>
+    <input type="text" id="rename-account-name" placeholder="新名称" maxlength="50">
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost" onclick="closeRenameModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="renameAccount()">Save</button>
+      <button class="btn btn-ghost" onclick="closeRenameModal()">取消</button>
+      <button class="btn btn-primary" onclick="renameAccount()">保存</button>
     </div>
   </div>
 </div>
@@ -370,17 +370,17 @@ function switchTab(name) {
 
 function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => document.getElementById('totp-code').focus(), 50); }
 function closeTotpModal() { pendingAction = null; document.getElementById('totp-modal').classList.remove('show'); document.getElementById('totp-code').value = ''; }
-async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'api/verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('TOTP failed: ' + e.message, 'error'); } }
+async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'api/verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('验证失败: ' + e.message, 'error'); } }
 
 function openAccountModal() { document.getElementById('account-modal').classList.add('show'); setTimeout(() => document.getElementById('new-account-name').focus(), 50); }
 function closeAccountModal() { document.getElementById('account-modal').classList.remove('show'); document.getElementById('new-account-name').value = ''; }
 function openRenameModal() { document.getElementById('rename-modal').classList.add('show'); const c = currentAccounts.find(a => a.id === currentActiveId); document.getElementById('rename-account-name').value = c ? c.name : ''; }
 function closeRenameModal() { document.getElementById('rename-modal').classList.remove('show'); }
 
-async function createAccount() { const name = document.getElementById('new-account-name').value.trim(); if (!name) { alertBox('Enter a name', 'error'); return; } const doCreate = async () => { try { const r = await api('POST', 'api/accounts', {name}); if (r.needTotp) { openTotpModal(doCreate); return; } closeAccountModal(); alertBox('Account created: ' + name, 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; await doCreate(); }
-async function deleteCurrentAccount() { if (!currentActiveId || !confirm('Delete this account? This cannot be undone.')) return; const doDelete = async () => { try { const r = await api('DELETE', 'api/accounts/' + currentActiveId); if (r.needTotp) { openTotpModal(doDelete); return; } alertBox('Account deleted', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; await doDelete(); }
-async function renameAccount() { const name = document.getElementById('rename-account-name').value.trim(); if (!name) { alertBox('Name required', 'error'); return; } try { await api('PATCH', 'api/accounts/' + currentActiveId, {name}); closeRenameModal(); alertBox('Renamed', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }
-async function switchAccount(accId) { if (accId === currentActiveId) return; try { await api('POST', 'api/accounts/' + accId + '/activate'); alertBox('Switched', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }
+async function createAccount() { const name = document.getElementById('new-account-name').value.trim(); if (!name) { alertBox('请输入名称', 'error'); return; } const doCreate = async () => { try { const r = await api('POST', 'api/accounts', {name}); if (r.needTotp) { openTotpModal(doCreate); return; } closeAccountModal(); alertBox('账户已创建: ' + name, 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doCreate(); }
+async function deleteCurrentAccount() { if (!currentActiveId || !confirm('确认删除此账户？此操作不可恢复。')) return; const doDelete = async () => { try { const r = await api('DELETE', 'api/accounts/' + currentActiveId); if (r.needTotp) { openTotpModal(doDelete); return; } alertBox('账户已删除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doDelete(); }
+async function renameAccount() { const name = document.getElementById('rename-account-name').value.trim(); if (!name) { alertBox('名称不能为空', 'error'); return; } try { await api('PATCH', 'api/accounts/' + currentActiveId, {name}); closeRenameModal(); alertBox('已重命名', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
+async function switchAccount(accId) { if (accId === currentActiveId) return; try { await api('POST', 'api/accounts/' + accId + '/activate'); alertBox('已切换', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
 
 async function loadState() {
   try {
@@ -389,13 +389,13 @@ async function loadState() {
     const bnBadge = document.getElementById('badge-live-bn'), okxBadge = document.getElementById('badge-live-okx');
     bnBadge.textContent = s.config.LIVE_MODE ? 'LIVE' : 'OFF'; bnBadge.className = 'badge ' + (s.config.LIVE_MODE ? 'badge-danger' : 'badge-success');
     okxBadge.textContent = s.config.OKX_LIVE_MODE ? 'LIVE' : 'OFF'; okxBadge.className = 'badge ' + (s.config.OKX_LIVE_MODE ? 'badge-danger' : 'badge-success');
-    const bn = s.exchanges.binance; document.getElementById('bn-status').innerHTML = bn.has_credentials ? '<span class="dot dot-green"></span> Configured | ' + (bn.masked.api_key || '') : '<span class="dot dot-red"></span> Not configured';
-    const okx = s.exchanges.okx; document.getElementById('okx-status').innerHTML = okx.has_credentials ? '<span class="dot dot-green"></span> Configured | ' + (okx.masked.api_key || '') : '<span class="dot dot-red"></span> Not configured';
+    const bn = s.exchanges.binance; document.getElementById('bn-status').innerHTML = bn.has_credentials ? '<span class="dot dot-green"></span> 已配置 | ' + (bn.masked.api_key || '') : '<span class="dot dot-red"></span> 未配置';
+    const okx = s.exchanges.okx; document.getElementById('okx-status').innerHTML = okx.has_credentials ? '<span class="dot dot-green"></span> 已配置 | ' + (okx.masked.api_key || '') : '<span class="dot dot-red"></span> 未配置';
     const sess = s.session; document.getElementById('session-info').innerHTML = Math.floor(sess.idle_remaining_sec / 60) + ' min | ' + (sess.fresh_totp ? '<span class="dot dot-green"></span>' : '<span class="dot dot-yellow"></span>') + ' 2FA';
     currentAccounts = s.accounts || []; currentActiveId = s.active_account || ''; updateAccountUI();
-    if (s.compound) { const cs = s.compound; document.getElementById('compound-current-stake').textContent = cs.current_stake + 'U'; document.getElementById('compound-half-stake').textContent = Math.round(cs.current_stake * 0.5) + 'U'; document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U'; const stEl = document.getElementById('compound-status'); if (cs.enabled && cs.current_stake > (s.config.DEFAULT_STAKE || 50)) { stEl.textContent = 'Active (+' + (cs.current_stake - (s.config.DEFAULT_STAKE||50)) + 'U)'; stEl.className = 'badge badge-success'; } else if (cs.enabled) { stEl.textContent = 'Enabled (waiting)'; stEl.className = 'badge badge-warning'; } else { stEl.textContent = 'Disabled'; stEl.className = 'badge badge-danger'; } }
+    if (s.compound) { const cs = s.compound; document.getElementById('compound-current-stake').textContent = cs.current_stake + 'U'; document.getElementById('compound-half-stake').textContent = Math.round(cs.current_stake * 0.5) + 'U'; document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U'; const stEl = document.getElementById('compound-status'); if (cs.enabled && cs.current_stake > (s.config.DEFAULT_STAKE || 50)) { stEl.textContent = '已激活 (+' + (cs.current_stake - (s.config.DEFAULT_STAKE||50)) + 'U)'; stEl.className = 'badge badge-success'; } else if (cs.enabled) { stEl.textContent = '已启用（等待中）'; stEl.className = 'badge badge-warning'; } else { stEl.textContent = '未启用'; stEl.className = 'badge badge-danger'; } }
     lucide.createIcons();
-  } catch (e) { alertBox('Load failed: ' + e.message, 'error'); }
+  } catch (e) { alertBox('加载失败: ' + e.message, 'error'); }
 }
 
 function updateAccountUI() {
@@ -409,7 +409,7 @@ function saveConfig() {
   const doSave = async () => {
     const changes = {}; const keys = ['LIVE_MODE','OKX_LIVE_MODE','PRIMARY_EXCHANGE','PRIMARY_EXCHANGE_FALLBACK','ACCOUNT_BALANCE','DEFAULT_STAKE','LEVERAGE','OKX_DEFAULT_LEVERAGE','TP1_MULTIPLIER','TP2_MULTIPLIER','TP1_CLOSE_RATIO','HARD_STOP_LOSS_PCT','SLIPPAGE_ALERT_PCT','RISK_MAX_DAILY_LOSS','RISK_MAX_DAILY_TRADES','RISK_CONSECUTIVE_LOSS_PAUSE','RISK_MAX_POSITION_PCT','COOLDOWN_HOURS'];
     keys.forEach(key => { const el = document.getElementById('cfg-' + key); if (!el) return; if (el.type === 'checkbox') changes[key] = el.checked; else if (el.type === 'number') changes[key] = parseFloat(el.value); else changes[key] = el.value; });
-    try { const r = await api('POST', 'api/config', {changes}); if (r.needTotp) { openTotpModal(doSave); return; } alertBox('Saved ' + Object.keys(r.applied||{}).length + ' changes', 'ok'); loadState(); } catch (e) { alertBox('Save failed: ' + e.message, 'error'); }
+    try { const r = await api('POST', 'api/config', {changes}); if (r.needTotp) { openTotpModal(doSave); return; } alertBox('已保存 ' + Object.keys(r.applied||{}).length + ' 项更改', 'ok'); loadState(); } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
   }; doSave();
 }
 
@@ -417,19 +417,19 @@ function saveCredentials(exchange) {
   const doSave = async () => {
     const prefix = exchange === 'binance' ? 'bn' : exchange;
     const body = {}; ['api_key','secret','passphrase'].forEach(f => { const el = document.getElementById(prefix + '-' + f); if (el && el.value.trim()) body[f] = el.value.trim(); });
-    if (!Object.keys(body).length) { alertBox('No fields to save', 'warning'); return; }
-    try { const r = await api('POST', 'api/credentials/' + exchange, body); if (r.needTotp) { openTotpModal(doSave); return; } alertBox(exchange + ' credentials saved', 'ok'); document.querySelectorAll('#tab-creds input[type=password]').forEach(i => i.value = ''); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); }
+    if (!Object.keys(body).length) { alertBox('没有需要保存的字段', 'warning'); return; }
+    try { const r = await api('POST', 'api/credentials/' + exchange, body); if (r.needTotp) { openTotpModal(doSave); return; } alertBox(exchange + ' 凭证已保存', 'ok'); document.querySelectorAll('#tab-creds input[type=password]').forEach(i => i.value = ''); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); }
   }; doSave();
 }
 
 function clearCredentials(exchange) {
-  if (!confirm('Clear all ' + exchange + ' credentials?')) return;
-  const doClear = async () => { try { const r = await api('DELETE', 'api/credentials/' + exchange); if (r.needTotp) { openTotpModal(doClear); return; } alertBox(exchange + ' credentials cleared', 'ok'); loadState(); } catch (e) { alertBox('Failed: ' + e.message, 'error'); } }; doClear();
+  if (!confirm('确认清除所有 ' + exchange + ' 凭证？')) return;
+  const doClear = async () => { try { const r = await api('DELETE', 'api/credentials/' + exchange); if (r.needTotp) { openTotpModal(doClear); return; } alertBox('已清除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; doClear();
 }
 
 async function runPreflightCheck() {
   document.getElementById('btn-preflight').disabled = true;
-  document.getElementById('preflight-status').textContent = 'Running...';
+  document.getElementById('preflight-status').textContent = '检测中...';
   try {
     const r = await api('POST', 'api/preflight-check', {});
     document.getElementById('preflight-results').style.display = 'block';
@@ -442,8 +442,8 @@ async function runPreflightCheck() {
       html += '</div>';
     }
     document.getElementById('preflight-exchanges').innerHTML = html;
-    document.getElementById('preflight-status').textContent = r.ok ? 'All passed' : 'Issues found';
-  } catch (e) { alertBox('Preflight failed: ' + e.message, 'error'); document.getElementById('preflight-status').textContent = 'Error'; }
+    document.getElementById('preflight-status').textContent = r.ok ? '全部通过' : '发现问题';
+  } catch (e) { alertBox('预检失败: ' + e.message, 'error'); document.getElementById('preflight-status').textContent = 'Error'; }
   document.getElementById('btn-preflight').disabled = false;
 }
 
