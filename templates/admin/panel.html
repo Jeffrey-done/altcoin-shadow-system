@@ -163,6 +163,11 @@ select { cursor: pointer; }
       </div>
     </div>
     <div class="account-actions">
+      <span id="trading-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;">
+        <span style="font-size:0.7rem;color:var(--text-muted);">交易</span>
+        <input type="checkbox" id="account-trading-toggle" onchange="toggleAccountTrading(this)" style="cursor:pointer;">
+        <span class="badge" id="badge-trading">ON</span>
+      </span>
       <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
       <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
       <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
@@ -400,9 +405,47 @@ async function loadState() {
 
 function updateAccountUI() {
   const active = currentAccounts.find(a => a.id === currentActiveId);
-  if (active) { document.getElementById('active-account-name').textContent = active.name; document.getElementById('active-account-id').textContent = currentActiveId; document.getElementById('account-avatar').textContent = active.name.charAt(0).toUpperCase(); }
+  if (active) {
+    document.getElementById('active-account-name').textContent = active.name;
+    document.getElementById('active-account-id').textContent = currentActiveId;
+    document.getElementById('account-avatar').textContent = active.name.charAt(0).toUpperCase();
+    // 同步交易开关的显示状态
+    const toggle = document.getElementById('account-trading-toggle');
+    const badge = document.getElementById('badge-trading');
+    const enabled = active.trading_enabled !== false;
+    toggle.checked = enabled;
+    badge.textContent = enabled ? 'ON' : 'OFF';
+    badge.className = 'badge ' + (enabled ? 'badge-success' : 'badge-danger');
+  }
   const sel = document.getElementById('account-switcher'); sel.innerHTML = '';
-  currentAccounts.forEach(acc => { const opt = document.createElement('option'); opt.value = acc.id; opt.textContent = acc.name + (acc.id === currentActiveId ? ' *' : ''); opt.selected = acc.id === currentActiveId; sel.appendChild(opt); });
+  currentAccounts.forEach(acc => {
+    const opt = document.createElement('option');
+    opt.value = acc.id;
+    const offTag = acc.trading_enabled === false ? ' [已停用]' : '';
+    opt.textContent = acc.name + offTag + (acc.id === currentActiveId ? ' *' : '');
+    opt.selected = acc.id === currentActiveId;
+    sel.appendChild(opt);
+  });
+}
+
+async function toggleAccountTrading(el) {
+  if (!currentActiveId) return;
+  const active = currentAccounts.find(a => a.id === currentActiveId);
+  const name = active ? active.name : currentActiveId;
+  const enabled = el.checked;
+  const action = enabled ? '开启' : '关闭';
+  if (!confirm(`确认${action}账户「${name}」的交易开关？\n\n${enabled ? '开启后：下一个信号会为此账户开仓。' : '关闭后：下一个信号不再为此账户开新仓，但已有持仓继续被监控、到点平仓。'}`)) {
+    el.checked = !enabled;
+    return;
+  }
+  try {
+    await api('POST', 'api/accounts/' + currentActiveId + '/trading', {enabled});
+    alertBox(`账户「${name}」交易已${action}`, enabled ? 'ok' : 'warning');
+    loadState();
+  } catch (e) {
+    el.checked = !enabled;
+    alertBox('操作失败: ' + e.message, 'error');
+  }
 }
 
 function toggleLiveMode(key, el) {

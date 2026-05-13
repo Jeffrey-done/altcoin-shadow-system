@@ -666,15 +666,18 @@ def check_candidates():
         # 为了避免"活跃账户正在暂停"时把整个信号丢掉，改为
         # "只要任一已配置账户允许即继续"。精确检查仍在并行循环内做。
         # v5.1: 影子账户也算入预检（它也要同步开单）
+        # v5.2: 尊重 trading_enabled 开关（关闭的账户不进预检，也不会进下面的开仓循环）
         try:
             from admin_secrets import (
                 get_all_trading_accounts as _get_trading_accts,
                 SHADOW_ACCOUNT_ID as _SHADOW_ID,
                 list_accounts as _list_all,
+                is_account_trading_enabled as _is_enabled,
             )
+            # get_all_trading_accounts 已经过滤了 trading_enabled=False 的账户
             _trading_accts = _get_trading_accts() or []
-            # 把影子账户加到预检列表（如果存在）
-            if any(a.get('id') == _SHADOW_ID for a in _list_all()):
+            # 把影子账户加到预检列表（如果存在且开关开启）
+            if any(a.get('id') == _SHADOW_ID for a in _list_all()) and _is_enabled(_SHADOW_ID):
                 _trading_accts = [{'id': _SHADOW_ID}] + _trading_accts
             if not _trading_accts:
                 _trading_accts = [{'id': ''}]
@@ -728,10 +731,15 @@ def check_candidates():
         # - 不真实下单、不占用交易所额度
         # - 仍占用影子账户自己的风控额度（daily_trades / daily_loss / 连损）
         # - 单独封装成 shadow_account 条目，与实盘账户并列处理
+        # v5.2: 影子账户也尊重 trading_enabled 开关（默认 True，关闭后跳过）
         shadow_account = None
         try:
+            from admin_secrets import is_account_trading_enabled
             for _acc in list_accounts():
                 if _acc.get('id') == SHADOW_ACCOUNT_ID:
+                    if not is_account_trading_enabled(SHADOW_ACCOUNT_ID):
+                        logger.info(f"  ⏩ 影子账户交易开关已关闭，跳过同步")
+                        break
                     shadow_account = {
                         'id': SHADOW_ACCOUNT_ID,
                         'name': _acc.get('name', '影子账户'),

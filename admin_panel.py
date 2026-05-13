@@ -475,6 +475,24 @@ def create_blueprint(url_secret: str) -> Blueprint:
         _audit('account.rename', account_id=account_id, new_name=name)
         return jsonify({'ok': True})
 
+    @bp.route('/api/accounts/<account_id>/trading', methods=['POST'])
+    @_require_login
+    @_require_csrf
+    def api_toggle_account_trading(account_id):
+        """
+        切换单个账户的交易开关。
+        请求体: {"enabled": true/false}
+        关闭后：下一个信号不再为该账户开新仓，但已有持仓继续被 tracker 监控。
+        """
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get('enabled', True))
+        try:
+            admin_secrets.set_account_trading_enabled(account_id, enabled)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        _audit('account.trading_toggle', account_id=account_id, enabled=enabled)
+        return jsonify({'ok': True, 'account_id': account_id, 'enabled': enabled})
+
     # ══════════════════════════════════════════════════════════════════
     #  API：状态 + 配置读取
     # ══════════════════════════════════════════════════════════════════
