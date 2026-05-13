@@ -67,6 +67,23 @@ except ImportError:
 _snapshot_lock = threading.Lock()
 _trade_snapshots: dict = {}  # symbol -> list of threshold dicts
 
+# H4: 跨进程 snapshot 失效机制
+#   - _snapshot_mtime: 本进程上次刷新 snapshot 时读到的 TRADES_FILE mtime
+#   - _snapshot_version: 同进程的 tracker / scanner 修改后递增版本号，
+#     通过 _refresh_snapshot_from_trades 立即推送到内存（同进程路径）
+#   - on_price_update 入口每次都比对 TRADES_FILE mtime，变化则强制 refresh
+#     → 跨进程（tracker 进程和 monitor 进程分开部署）也能秒级同步
+_snapshot_mtime: float = 0.0
+_snapshot_version: int = 0
+
+
+def _current_trades_mtime() -> float:
+    """读 TRADES_FILE 的 mtime，不存在时返回 0"""
+    try:
+        return os.path.getmtime(TRADES_FILE)
+    except OSError:
+        return 0.0
+
 
 def _build_trade_snapshot(trade: Trade) -> dict:
     """把一笔持仓的"触发阈值"提炼成内存字典（不含浮动字段）"""
@@ -84,13 +101,22 @@ def _build_trade_snapshot(trade: Trade) -> dict:
 
 
 def refresh_snapshot():
-    """扫描 trades 文件，重建内存快照。每 30s 调用一次即可。"""
+    """扫描 trades 文件，重建内存快照。每 30s 调用一次即可。
+
+    H4：强制读取 TRADES_FILE mtime 作为 snapshot 版本基线，
+    on_price_update 入口若检测到 mtime > _snapshot_mtime 会强制调这个函数，
+    使得跨进程（tracker 进程改了 trades.json，monitor 进程监听价格）也能秒级看到
+    保本止损价的更新，而不是等 30s 定时轮询。
+    """
+    global _snapshot_mtime, _snapshot_version
     # 顺带热加载 runtime_config；admin 面板改了 config 后 30s 内在本进程生效
     try:
         from runtime_config import apply_overrides as _apply_rc
         _apply_rc()
     except Exception:
         pass
+    # 读 mtime 先于读文件内容：若文件在读期间被改，下次 on_price_update 仍会比对到
+    mtime_before = _current_trades_mtime()
     try:
         trades_raw = load_json(TRADES_FILE, [])
     except Exception as e:
@@ -111,13 +137,20 @@ def refresh_snapshot():
     with _snapshot_lock:
         _trade_snapshots.clear()
         _trade_snapshots.update(snapshots)
+        _snapshot_mtime = mtime_before
+        _snapshot_version += 1
 
 
 def _refresh_snapshot_from_trades(trades: list):
     """
     从已在内存中的 Trade 对象列表立刻刷新快照。
     用于 TP1 触发后立刻让保本止损价进入内存，不用等 30s 定时刷新。
+
+    H4：同进程路径（tracker + monitor 在同一 python 进程）直接改内存；
+    跨进程路径依赖 mtime 比对（trades 文件被其他进程修改后，本进程下次 tick 会
+    检测到 mtime 变化并强制 refresh_snapshot）。
     """
+    global _snapshot_mtime, _snapshot_version
     snapshots: dict = {}
     for trade in trades:
         if trade.status != 'open':
@@ -131,6 +164,9 @@ def _refresh_snapshot_from_trades(trades: list):
     with _snapshot_lock:
         _trade_snapshots.clear()
         _trade_snapshots.update(snapshots)
+        # 同进程路径：同步把 mtime 更新到当前值，避免 on_price_update 又去抢锁刷一次
+        _snapshot_mtime = _current_trades_mtime()
+        _snapshot_version += 1
 
 
 def _price_crosses_threshold(snap: dict, price: float) -> bool:
@@ -263,12 +299,44 @@ def check_main_trades(symbol: str, price: float):
         send_tg(msg)
 
 
+# 最后一次 mtime 比对的时间戳（节流：每秒最多比对一次，不在每个 tick 都 stat）
+_last_mtime_check: float = 0.0
+_mtime_check_interval: float = 1.0  # 秒
+
+
+def _maybe_refresh_on_mtime_change():
+    """
+    H4：检查 TRADES_FILE mtime 是否变化，变化则强制刷新 snapshot。
+    节流到每秒最多一次 stat，高频价格 tick 时 CPU 开销可忽略。
+    """
+    global _last_mtime_check
+    now_ts = time.time()
+    if now_ts - _last_mtime_check < _mtime_check_interval:
+        return
+    _last_mtime_check = now_ts
+
+    current_mtime = _current_trades_mtime()
+    # 第一次启动时 _snapshot_mtime=0，refresh_snapshot 会被 main() 首次调用触发
+    # 之后只要 mtime 推进就强制 refresh
+    if current_mtime > 0 and current_mtime != _snapshot_mtime:
+        logger.debug(
+            f"检测到 trades 文件 mtime 变化 ({_snapshot_mtime} → {current_mtime})，强制刷新 snapshot"
+        )
+        refresh_snapshot()
+
+
 def on_price_update(symbol: str, price: float):
     """
     价格更新回调：先做内存快速判断，只有价格进入触发区间才抢锁做完整评估。
     由 WebSocket 消息处理调用，每秒可能数次，必须零磁盘 IO 在无触发路径。
+
+    H4：入口增加 mtime 检查，感知其他进程（tracker / scanner / tg_bot）对
+    trades.json 的修改，秒级同步新的 trail_stop_price / tp1_triggered 等关键阈值。
     """
     try:
+        # 感知跨进程修改（节流每秒一次 stat）
+        _maybe_refresh_on_mtime_change()
+
         with _snapshot_lock:
             snaps = list(_trade_snapshots.get(symbol, []))
         if not snaps:

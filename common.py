@@ -23,6 +23,9 @@ TRADES_FILE = os.path.join(SCRIPT_DIR, 'altcoin_shadow_trades.json')
 RISK_FILE = os.path.join(SCRIPT_DIR, 'risk_state.json')
 WEEKLY_REPORT_FILE = os.path.join(SCRIPT_DIR, 'weekly_report.json')
 TRADES_ARCHIVE_FILE = os.path.join(SCRIPT_DIR, 'altcoin_trades_archive.json')
+# In-flight journal：记录"已经调用交易所下单但还没确认写入 trades.json"的订单
+# 任何进程崩溃后重启都会扫这个文件，防止产生交易所已成交但系统不知情的幽灵仓位
+TRADES_INFLIGHT_FILE = os.path.join(SCRIPT_DIR, 'altcoin_trades_inflight.json')
 
 
 # ── 环境变量 ─────────────────────────────────────────────────────
@@ -295,8 +298,12 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
 def get_compound_stake(account_id: str = None) -> float:
     """
     自动复利：根据累计已实现盈亏动态调整单笔保证金。
-    公式：stake = DEFAULT_STAKE + (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
-    上限：COMPOUND_MAX_STAKE
+
+    M6 更新：改为平滑线性衰减（避免离散跳变造成风控账面错位）。
+      - 亏损时（total_pnl <= 0）仍然固定 DEFAULT_STAKE，不加仓
+      - 盈利时：stake = DEFAULT_STAKE + (total_pnl / COMPOUND_STEP) * COMPOUND_INCREASE
+        而不是 (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
+      - 上限仍为 COMPOUND_MAX_STAKE
 
     参数:
       account_id: 指定账户 ID；None 使用当前活跃账户
@@ -318,11 +325,14 @@ def get_compound_stake(account_id: str = None) -> float:
     if total_pnl <= 0:
         return config.DEFAULT_STAKE
 
-    steps = int(total_pnl // config.COMPOUND_STEP)
-    stake = config.DEFAULT_STAKE + steps * config.COMPOUND_INCREASE
+    # 平滑复利：用比例代替整数步数，stake 随 total_pnl 连续增长
+    step = max(config.COMPOUND_STEP, 1)
+    ratio = total_pnl / step
+    stake = config.DEFAULT_STAKE + ratio * config.COMPOUND_INCREASE
     stake = min(stake, config.COMPOUND_MAX_STAKE)
 
-    return stake
+    # 四舍五入到整数 U（交易所最小精度，也避免浮点尾数扰动风控比对）
+    return round(stake)
 
 
 def get_dynamic_balance(account_id: str = None) -> float:
@@ -336,6 +346,10 @@ def get_dynamic_balance(account_id: str = None) -> float:
       当 TP1 触发时，50%仓位已平仓并锁定利润（tp1_locked_pnl），
       但交易 status 仍为 'open'（剩余50%等TP2）。
       这部分利润已经是"已实现"的，应计入余额。
+
+    ⚠️ 注意：不要用此函数做"持仓占比"风控基准，应使用 get_realized_balance()。
+    浮动 TP1 利润算进余额会让风控上限随浮动盈利扩大，形成"开仓→TP1→再开仓"
+    的正反馈放大敞口（见 M2 修复）。
     """
     import config
     trades = load_json(TRADES_FILE, [])
@@ -352,6 +366,29 @@ def get_dynamic_balance(account_id: str = None) -> float:
             total_pnl += t.get('tp1_locked_pnl', 0)
 
     return config.ACCOUNT_BALANCE + total_pnl
+
+
+def get_realized_balance(account_id: str = None) -> float:
+    """
+    M2: 严格已实现余额 = 初始本金 + 已平仓交易的 tp1_locked_pnl + pnl。
+
+    与 get_dynamic_balance 的区别：
+      - 不把 open 状态交易的 tp1_locked_pnl 算进来
+      - 用于 RISK_MAX_POSITION_PCT 的持仓占比风控基准
+      - 防止 TP1 触发的"锁定浮动利润"让最大仓位上限立即扩大，
+        形成 TP1 → 余额 +X → 持仓上限 +X/2 → 多开一笔 → 敞口翻倍的正反馈
+    """
+    import config
+    trades = load_json(TRADES_FILE, [])
+    if account_id is None:
+        account_id = get_current_account_id()
+    trades = filter_trades_by_account(trades, account_id)
+
+    realized_pnl = sum(
+        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        for t in trades if t.get('status') == 'closed'
+    )
+    return config.ACCOUNT_BALANCE + realized_pnl
 
 
 
@@ -408,3 +445,118 @@ def cleanup_old_trades():
 
     logging.info(f"归档了 {archived_count} 笔过期交易（>{config.TRADES_ARCHIVE_DAYS}天）")
     return archived_count
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  In-flight Journal（幽灵仓位防护）
+# ══════════════════════════════════════════════════════════════════
+#
+# 背景：实盘下单是一次网络调用；成功后需要把 trade 写入 trades.json。
+# 如果下单成功但写盘前进程崩溃（OOM / kill / 磁盘只读 / 网络重试路径），
+# 系统重启后会以为"该币未开仓"而重复下单，造成交易所双倍仓位。
+#
+# 解决方案：
+#   1. 下单前：往 journal 文件写 pending 条目（symbol, account, coid, ts）
+#   2. 下单成功且 trades.json 落盘后：从 journal 移除 pending
+#   3. 进程启动时：扫 journal 里的 pending，反查交易所是否有对应 clOrdId 的成交
+#      - 有成交但 trades.json 没有 → 告警 + 补录
+#      - 没成交 → 清理 pending
+#
+# Journal 结构:
+# [
+#   {
+#     "client_order_id": "sho-PEPE-1715...",
+#     "exchange": "binance",
+#     "account_id": "acc_xxx",
+#     "symbol": "PEPE/USDT",
+#     "direction": "SHORT",
+#     "stake": 50,
+#     "leverage": 10,
+#     "status": "pending" | "confirmed" | "failed",
+#     "created_at": "ISO-8601",
+#     "updated_at": "ISO-8601",
+#     "order_id": "",          # 交易所订单 ID（成功后回填）
+#     "last_error": ""         # 最近一次失败信息
+#   },
+# ]
+
+def journal_add_pending(client_order_id: str, exchange: str, account_id: str,
+                         symbol: str, direction: str, stake: float, leverage: int) -> None:
+    """下单前调用：往 journal 写 pending 条目（持锁）"""
+    with LockedJsonFile(TRADES_INFLIGHT_FILE, default=[]) as (journal, save):
+        # 幂等：同 client_order_id 已经在 journal 里就跳过
+        for entry in journal:
+            if entry.get('client_order_id') == client_order_id:
+                entry['status'] = 'pending'
+                entry['updated_at'] = utcnow_iso()
+                save(journal)
+                return
+        journal.append({
+            'client_order_id': client_order_id,
+            'exchange': exchange,
+            'account_id': account_id or '',
+            'symbol': symbol,
+            'direction': direction,
+            'stake': stake,
+            'leverage': leverage,
+            'status': 'pending',
+            'created_at': utcnow_iso(),
+            'updated_at': utcnow_iso(),
+            'order_id': '',
+            'last_error': '',
+        })
+        save(journal)
+
+
+def journal_mark_confirmed(client_order_id: str, order_id: str = '') -> None:
+    """trades.json 写盘成功后调用：从 journal 移除 pending"""
+    with LockedJsonFile(TRADES_INFLIGHT_FILE, default=[]) as (journal, save):
+        new_journal = [
+            e for e in journal if e.get('client_order_id') != client_order_id
+        ]
+        if len(new_journal) != len(journal):
+            save(new_journal)
+
+
+def journal_mark_failed(client_order_id: str, error: str) -> None:
+    """下单失败时调用：标记为 failed（保留一段时间便于审计），不阻塞后续重试"""
+    with LockedJsonFile(TRADES_INFLIGHT_FILE, default=[]) as (journal, save):
+        for entry in journal:
+            if entry.get('client_order_id') == client_order_id:
+                entry['status'] = 'failed'
+                entry['last_error'] = str(error)[:500]
+                entry['updated_at'] = utcnow_iso()
+                save(journal)
+                return
+
+
+def journal_list_pending() -> list:
+    """读取 journal 中所有 pending 条目（不加锁，只读）"""
+    data = load_json(TRADES_INFLIGHT_FILE, [])
+    return [e for e in data if e.get('status') == 'pending']
+
+
+def journal_cleanup_failed(retain_hours: int = 72) -> int:
+    """
+    清理 journal 中超过 retain_hours 小时的 failed 条目，避免无限增长。
+    pending 条目永远保留直到被 confirmed / 人工处理。
+    返回清理数量。
+    """
+    from datetime import timedelta
+    cutoff = utcnow() - timedelta(hours=retain_hours)
+    removed = 0
+    with LockedJsonFile(TRADES_INFLIGHT_FILE, default=[]) as (journal, save):
+        new_journal = []
+        for e in journal:
+            if e.get('status') == 'failed':
+                try:
+                    if parse_iso(e.get('updated_at', '')) < cutoff:
+                        removed += 1
+                        continue
+                except Exception:
+                    pass
+            new_journal.append(e)
+        if removed:
+            save(new_journal)
+    return removed

@@ -35,18 +35,37 @@ _okx_instance: Optional[ccxt.okx] = None
 
 
 def get_binance(authenticated: bool = False) -> ccxt.binance:
-    """获取 Binance 交易所实例（公共数据用无认证版本）"""
+    """获取 Binance 交易所实例
+
+    公共数据：无认证单例（节省资源）。
+    认证版本：凭证优先级 admin_secrets 活跃账户 > .env 环境变量，
+    与 live_executor.get_live_exchange() 完全一致，
+    防止 admin panel 改凭证后认证接口仍读旧的 .env 导致下错账户。
+    """
     global _binance_instance
     if not authenticated:
         if _binance_instance is None:
             _binance_instance = ccxt.binance({'enableRateLimit': True})
         return _binance_instance
 
-    # 认证版本每次新建（避免共享状态）
-    import os
+    # 认证版本：与 live_executor 统一凭证解析逻辑
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('binance')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+    except Exception as e:
+        logger.debug(f"admin_secrets 不可用，fallback 到环境变量: {e}")
+        import os
+        api_key = os.environ.get('BINANCE_API_KEY', '')
+        secret = os.environ.get('BINANCE_SECRET', '')
+
+    if not api_key or not secret:
+        logger.warning("Binance API 凭证未配置（admin_secrets 和 .env 都没有）")
+
     return ccxt.binance({
-        'apiKey': os.environ.get('BINANCE_API_KEY', ''),
-        'secret': os.environ.get('BINANCE_SECRET', ''),
+        'apiKey': api_key,
+        'secret': secret,
         'enableRateLimit': True,
         'options': {'defaultType': 'future'},
     })

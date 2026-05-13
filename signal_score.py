@@ -130,13 +130,22 @@ def calculate_signal_score(
     elif oi_change >= 15:
         heat_score += 4
 
-    # 资金费率（0~8）：费率越高，多头越拥挤
+    # 资金费率（做空视角）：
+    #   正费率（多头付空头） → 做空是双重利好（方向+费率收入）→ 加分
+    #   负费率（空头付多头） → 做空需要支付持仓利息 → 扣分
+    #   费率极高（>FUNDING_MAX）→ 上游 scanner 已直接跳过，这里不处理
     if funding_rate >= 0.05:
         heat_score += 8
     elif funding_rate >= 0.03:
         heat_score += 5
     elif funding_rate >= 0.01:
         heat_score += 2
+    elif funding_rate <= -0.03:
+        # M9: 极端负费率 → 做空严重不划算（连续 8h 支付利息）→ 明显扣分
+        heat_score -= 5
+    elif funding_rate <= -0.01:
+        # M9: 温和负费率 → 小幅扣分
+        heat_score -= 2
 
     # BTC 趋势加分（0~7）：BTC 涨时山寨冲高回落概率更大
     if btc_24h_pct >= config.BTC_PUMP_THRESHOLD:
@@ -146,7 +155,7 @@ def calculate_signal_score(
     elif btc_24h_pct >= 0:
         heat_score += 2
 
-    heat_score = min(25, heat_score)
+    heat_score = max(0, min(25, heat_score))
 
     # ── 总分（含 OKX 交叉验证加分 + 量价背离加分）──
     total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus + vol_divergence_bonus)

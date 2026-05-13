@@ -81,7 +81,9 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(config, 'TP2_MULTIPLIER', 0.90)
     monkeypatch.setattr(config, 'TP1_CLOSE_RATIO', 0.5)
     monkeypatch.setattr(config, 'TRAIL_STOP_ACTIVATE_PCT', 3)
-    monkeypatch.setattr(config, 'TRAIL_STOP_DRAWDOWN_PCT', 0.10)
+    monkeypatch.setattr(config, 'TRAIL_STOP_DRAWDOWN_PCT', 0.10)  # legacy（已弃用）
+    # M5: 相对回撤比例新语义
+    monkeypatch.setattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4, raising=False)
     monkeypatch.setattr(config, 'MAX_HOLD_DAYS', 1)
     monkeypatch.setattr(config, 'TIME_STOP_MIN_PROFIT_PCT', 3)
     monkeypatch.setattr(config, 'RSI_PERIOD', 14)

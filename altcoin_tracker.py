@@ -90,12 +90,22 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     pnl_usd = notional_remaining * pnl_pct / 100
 
     # 剩余数量（用于真实平仓）
-    # TP1 前：stake_remaining == stake，shares 就是全量
-    # TP1 后：stake_remaining = stake * (1 - TP1_CLOSE_RATIO)
-    # 按 stake 比例缩放 shares，避免 TP1 后 shares 字段未更新导致的偏差
-    if trade.stake > 0:
+    # H7: TP1 后优先用交易所实际返回的 tp1_closed_shares 反推剩余仓位，
+    # 避免因 TP1 平仓滑点导致系统记账数量和交易所实际持仓不符（小零头残留）。
+    # 如果没有 tp1_closed_shares（影子交易 / 老数据），回退到按 stake 比例估算。
+    if not trade.tp1_triggered:
+        remaining_shares = trade.shares
+    elif trade.tp1_closed_shares and trade.tp1_closed_shares > 0:
+        remaining_shares = max(0.0, trade.shares - trade.tp1_closed_shares)
+    elif trade.stake > 0:
+        # M1: stake==0 已通过上面 elif 排除，此处是正常回退路径
         remaining_shares = trade.shares * trade.stake_remaining / trade.stake
     else:
+        # M1: stake 为 0 是异常数据（历史迁移可能产生）→ 显式 warn
+        logger.warning(
+            f"⚠️ Trade {trade.id} stake==0 且 tp1_closed_shares==0，"
+            f"remaining_shares 回退到全量 trade.shares，建议检查数据迁移"
+        )
         remaining_shares = trade.shares
 
     result = EvalResult(
@@ -142,17 +152,21 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     # ── 更新移动止损最高盈利 ──
     if pnl_pct > trade.best_pnl_pct:
         trade.best_pnl_pct = round(pnl_pct, 2)
-        trail_pct = config.TRAIL_STOP_DRAWDOWN_PCT
+        # M5: 使用相对回撤比例（从最高盈利回撤 RATIO × best_pnl_pct 即触发）
+        # 例如 best=5%, ratio=0.4 → trigger_pct = 5% * (1-0.4) = 3%
+        # 做空 trail_stop = entry * (1 - trigger_pct/100)
+        retrace_ratio = getattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4)
+        trigger_pnl_pct = trade.best_pnl_pct * (1 - retrace_ratio)
         if trade.direction == 'LONG':
-            # 做多：止损价在下方
-            trail_price = round(entry * (1 + pnl_pct / 100 - trail_pct), 6)
+            # 做多：止损价 = entry * (1 + trigger_pnl_pct/100)（价格上方一点）
+            trail_price = round(entry * (1 + trigger_pnl_pct / 100), 6)
             # TP1已触发后：保本止损升级，止损不低于入场价
             if trade.tp1_triggered:
                 trail_price = max(trail_price, entry)
             trade.trail_stop_price = trail_price
         else:
-            # 做空：止损价在上方（越低越好）
-            trail_price = round(entry * (1 - (pnl_pct / 100 - trail_pct)), 6)
+            # 做空：止损价 = entry * (1 - trigger_pnl_pct/100)（价格下方一点）
+            trail_price = round(entry * (1 - trigger_pnl_pct / 100), 6)
             # TP1已触发后：保本止损升级，止损不高于入场价
             if trade.tp1_triggered:
                 trail_price = min(trail_price, entry)
@@ -179,6 +193,10 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.stake_remaining = trade.stake * (1 - config.TP1_CLOSE_RATIO)
         # 真实平仓：TP1 半仓（发单前的全量 shares × TP1_CLOSE_RATIO）
         tp1_close_amount = trade.shares * config.TP1_CLOSE_RATIO
+        # H7: 先按计划值记录 tp1_closed_shares（影子交易路径不会被后续回填覆盖）
+        # 真实实盘路径由 _perform_exchange_close 的 _backfill_order_id 用 filled 实际值覆盖
+        trade.tp1_closed_shares = round(tp1_close_amount, 6)
+        trade.tp1_exit_price = current_price
         result.pending_exchange_action = 'tp1_partial'
         result.pending_close_amount = tp1_close_amount
         # TP1触发后立即启用保本止损：剩余仓位止损提升至入场价
@@ -459,12 +477,21 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
 
     # 成功：把交易所订单 ID 回填到 trade（后台线程，避免阻塞 WebSocket 消息处理线程）
     # 这里用 best-effort 模式：失败不重试（订单已成交，ID 只是审计信息）
+    # H7: TP1 部分平仓成功时，把交易所返回的 filled 数量写回 trade.tp1_closed_shares
+    #     后续评估 remaining_shares 时优先使用它，避免小零头残留
     def _backfill_order_id():
         try:
             with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
                 for t in trades_raw:
                     if t.get('id') == trade.id:
                         t['close_order_id'] = result.get('order_id', '')
+                        if action == 'tp1_partial':
+                            # H7: TP1 实际成交数量回填（交易所滑点 → 可能和预期略有差异）
+                            filled = float(result.get('amount') or 0) or close_amount
+                            exit_price = float(result.get('price') or 0)
+                            t['tp1_closed_shares'] = round(filled, 6)
+                            if exit_price > 0:
+                                t['tp1_exit_price'] = round(exit_price, 6)
                         # 成功平仓后清除所有 retry 标记
                         t.pop('close_retry_pending', None)
                         t.pop('close_retry_action', None)

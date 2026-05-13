@@ -315,12 +315,16 @@ def execute_close_position(symbol: str, direction: str, amount: float,
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def check_live_balance() -> dict:
-    """查询合约账户余额（Binance）"""
+def check_live_balance(account_id: Optional[str] = None) -> dict:
+    """查询合约账户余额（Binance）
+
+    参数:
+      account_id: 指定账户 ID（多账户模式）；None 使用活跃账户
+    """
     if not config.LIVE_MODE:
         return {"available": config.ACCOUNT_BALANCE, "total": config.ACCOUNT_BALANCE}
 
-    exchange = get_live_exchange()
+    exchange = get_live_exchange(account_id)
     if not exchange:
         return {"available": 0, "total": 0}
 
@@ -395,7 +399,12 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
     try:
-        exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
+        # H6: 与 Binance 对齐，set_leverage 失败仅告警不中断
+        # OKX 在账户模式不匹配或已设置时会抛异常，不应阻塞开仓主流程
+        try:
+            exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
+        except Exception as e:
+            logger.warning(f"OKX set_leverage 失败 ({symbol}): {e}")
 
         ticker = exchange.fetch_ticker(symbol)
         ref_price = ticker['last']
@@ -453,7 +462,11 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
     try:
-        exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
+        # H6: set_leverage 失败仅告警不中断
+        try:
+            exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
+        except Exception as e:
+            logger.warning(f"OKX set_leverage 失败 ({symbol}): {e}")
 
         ticker = exchange.fetch_ticker(symbol)
         ref_price = ticker['last']
@@ -553,12 +566,16 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float,
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def check_okx_balance() -> dict:
-    """查询 OKX 合约账户余额"""
+def check_okx_balance(account_id: Optional[str] = None) -> dict:
+    """查询 OKX 合约账户余额
+
+    参数:
+      account_id: 指定账户 ID（多账户模式）；None 使用活跃账户
+    """
     if not config.OKX_LIVE_MODE:
         return {"available": 0, "total": 0}
 
-    exchange = get_okx_live_exchange()
+    exchange = get_okx_live_exchange(account_id)
     if not exchange:
         return {"available": 0, "total": 0}
 

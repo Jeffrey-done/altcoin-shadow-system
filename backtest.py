@@ -47,7 +47,8 @@ class BacktestParams:
     tp1_close_ratio: float = config.TP1_CLOSE_RATIO
     hard_stop_pct: float = config.HARD_STOP_LOSS_PCT
     trail_activate_pct: float = config.TRAIL_STOP_ACTIVATE_PCT
-    trail_drawdown_pct: float = config.TRAIL_STOP_DRAWDOWN_PCT
+    # M5: 新语义 — 从最高盈利回撤此比例触发（0.4 = 回撤 40%）
+    trail_retrace_ratio: float = getattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4)
     max_hold_bars: int = 24  # 24根1h K线 = 24小时
     leverage: int = config.LEVERAGE
     stake: float = config.DEFAULT_STAKE
@@ -142,6 +143,11 @@ def fetch_historical_klines(symbol: str, timeframe: str = '1h',
     """
     从 Binance 获取历史 K 线数据。
     返回: [{"time": "2025-01-01T00:00", "open": x, "high": x, "low": x, "close": x, "volume": x}, ...]
+
+    M7: 数据完整性校验 — 拉取完后检查时间戳断点
+      - 1h K 线应严格每根间隔 3600000ms
+      - 如果连续 3 根以上缺失（断点 ≥ 4 * interval），整段数据不可信，返回空列表
+      - 只有零星 1-2 根断点（可能因为停盘/下架），则保留但 logger.warning
     """
     try:
         import ccxt
@@ -162,6 +168,39 @@ def fetch_historical_klines(symbol: str, timeframe: str = '1h',
             if len(ohlcv) < limit:
                 break
             time.sleep(0.1)
+
+        # ── M7: 时间戳连续性校验 ──
+        if len(all_ohlcv) >= 2:
+            # 期望的 bar 毫秒间隔
+            timeframe_ms = {
+                '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000,
+                '4h': 14_400_000, '1d': 86_400_000,
+            }.get(timeframe, 3_600_000)
+
+            gaps = []
+            max_gap_bars = 0
+            total_missing = 0
+            for i in range(1, len(all_ohlcv)):
+                delta = all_ohlcv[i][0] - all_ohlcv[i - 1][0]
+                if delta > timeframe_ms * 1.5:
+                    missing_bars = int(delta // timeframe_ms) - 1
+                    total_missing += missing_bars
+                    max_gap_bars = max(max_gap_bars, missing_bars)
+                    gaps.append((all_ohlcv[i - 1][0], all_ohlcv[i][0], missing_bars))
+
+            if max_gap_bars >= 4:
+                # 严重断点（≥4 根） → 回测结果不可信，直接丢弃
+                logger.warning(
+                    f"  ⚠️ {symbol} 数据严重断点（最大连续缺失 {max_gap_bars} 根 K 线，"
+                    f"共 {total_missing} 根缺失，{len(gaps)} 个断点），跳过该币种"
+                )
+                return []
+            elif gaps:
+                # 零星断点 → 警告但保留
+                logger.warning(
+                    f"  ⚠️ {symbol} 数据有 {len(gaps)} 个零星断点（共缺失 {total_missing} 根 K 线，"
+                    f"最大连续 {max_gap_bars} 根），回测精度会略有偏差"
+                )
 
         klines = []
         for o in all_ohlcv:
@@ -275,7 +314,16 @@ def simulate_trade(klines: List[dict], entry_idx: int,
     用后续 K 线的 high/low 判断是否触发止盈/止损。
     应用滑点和手续费模拟真实执行环境。
 
-    优先级：硬止损 > TP1 > TP2 > 移动止损 > 时间止损
+    H9: bar-within 路径假设（避免总是假设最坏情况）：
+      - 阳线（close >= open）：路径 open → low → high → close
+        做空视角：先探底（TP 优先）、再冲顶（硬止损/移动止损在后）
+      - 阴线（close < open）：路径 open → high → low → close
+        做空视角：先冲顶（硬止损/移动止损优先）、再探底（TP 在后）
+
+    同一根 K 线内如果同时满足 TP 和止损：
+      按 bar 方向决定哪个先触发。相比原来总是先硬止损（悲观），
+      这种路径假设对做空策略总体更公平（一半时间先打硬止损，
+      一半时间先止盈），也更贴近实际。
     """
     # 使用下一根K线的开盘价作为入场价（修复 look-ahead bias）
     entry_price = klines[entry_idx + 1]['open']
@@ -303,112 +351,98 @@ def simulate_trade(klines: List[dict], entry_idx: int,
 
     notional = params.stake * params.leverage
 
+    def _close_trade(exit_price_raw: float, exit_time: str, reason: str,
+                     tp1_hit_flag: bool, bar_off: int) -> BacktestTrade:
+        """统一的平仓计算函数"""
+        exit_price = exit_price_raw * (1 + params.slippage_pct / 100)
+        pnl_pct = (entry_price - exit_price) / entry_price * 100
+        tp1_pnl = 0.0
+        if tp1_hit_flag:
+            tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
+        remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
+        fee = notional * params.fee_pct / 100 * 2
+        trade.exit_price = exit_price
+        trade.exit_time = exit_time
+        trade.pnl_pct = pnl_pct
+        trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
+        trade.exit_reason = reason
+        trade.hold_bars = bar_off
+        trade.tp1_hit = tp1_hit_flag
+        return trade
+
     for bar_offset in range(1, params.max_hold_bars + 1):
         bar_idx = entry_idx + 1 + bar_offset
         if bar_idx >= len(klines):
             break
 
         bar = klines[bar_idx]
-        high = bar['high']
-        low = bar['low']
-        close_price = bar['close']
+        bar_open = bar['open']
+        bar_high = bar['high']
+        bar_low = bar['low']
+        bar_close = bar['close']
 
-        # 做空：high 越高越亏，low 越低越赚
-        # 最差情况用 high，最好情况用 low
+        # H9: bar 方向决定访问顺序
+        #   阳线 (close >= open): open → low → high → close
+        #   阴线 (close < open):  open → high → low → close
+        bullish = bar_close >= bar_open
 
-        # ── 1. 硬止损检查（价格涨到 hard_stop）──
-        if high >= hard_stop_price:
-            exit_price = hard_stop_price
-            # 做空平仓（买入覆盖）滑点：worse = higher exit
-            exit_price = exit_price * (1 + params.slippage_pct / 100)
-            pnl_pct = (entry_price - exit_price) / entry_price * 100
-            # 如果 TP1 已触发，只算剩余仓位
-            remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
-            tp1_pnl = 0
-            if tp1_triggered:
-                tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
-            # 扣除手续费（开仓+平仓双边）
-            fee = notional * params.fee_pct / 100 * 2
-            trade.exit_price = exit_price
-            trade.exit_time = bar['time']
-            trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
-            trade.exit_reason = 'hard_stop'
-            trade.hold_bars = bar_offset
-            trade.tp1_hit = tp1_triggered
-            return trade
+        # 提取本 bar 的触发事件按时间顺序排好
+        # 每个事件: (阶段, 检查函数) 阶段 'low' 或 'high'
+        # 对做空来说:
+        #   low 阶段能触发: TP1 / TP2（价格跌到止盈）
+        #   high 阶段能触发: 硬止损 / 移动止损（价格涨到止损）
+        stages = ['low', 'high'] if bullish else ['high', 'low']
 
-        # ── 2. TP1 检查（价格跌到 tp1）──
-        if not tp1_triggered and low <= tp1_price:
-            tp1_triggered = True
-            stake_remaining_ratio = 1 - params.tp1_close_ratio
-            trade.tp1_hit = True
-            # 不退出，继续持有剩余仓位
+        exit_now = None  # (exit_price, reason)
 
-        # ── 3. TP2 检查（价格跌到 tp2）──
-        if tp1_triggered and low <= tp2_price:
-            exit_price = tp2_price
-            # 做空平仓（买入覆盖）滑点：worse = higher exit
-            exit_price = exit_price * (1 + params.slippage_pct / 100)
-            pnl_pct = (entry_price - exit_price) / entry_price * 100
-            tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
-            remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
-            fee = notional * params.fee_pct / 100 * 2
-            trade.exit_price = exit_price
-            trade.exit_time = bar['time']
-            trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
-            trade.exit_reason = 'tp2'
-            trade.hold_bars = bar_offset
-            return trade
+        for stage in stages:
+            if stage == 'high':
+                # ── 硬止损 ──
+                if bar_high >= hard_stop_price:
+                    exit_now = (hard_stop_price, 'hard_stop')
+                    break
 
-        # ── 4. 更新移动止损 ──
-        current_pnl_pct = (entry_price - low) / entry_price * 100  # 最好盈利
-        if current_pnl_pct > best_pnl_pct:
-            best_pnl_pct = current_pnl_pct
-            if best_pnl_pct >= params.trail_activate_pct:
-                trail_stop_price = entry_price * (1 - (best_pnl_pct / 100 - params.trail_drawdown_pct))
+                # ── 移动止损（同 bar 内，best_pnl_pct 可能已经在 'low' 阶段更新过）──
+                if (trail_stop_price is not None
+                    and bar_high >= trail_stop_price
+                    and best_pnl_pct >= params.trail_activate_pct):
+                    exit_now = (trail_stop_price, 'trail_stop')
+                    break
 
-        # ── 5. 移动止损触发 ──
-        if trail_stop_price and high >= trail_stop_price and best_pnl_pct >= params.trail_activate_pct:
-            exit_price = trail_stop_price
-            # 做空平仓（买入覆盖）滑点：worse = higher exit
-            exit_price = exit_price * (1 + params.slippage_pct / 100)
-            pnl_pct = (entry_price - exit_price) / entry_price * 100
-            tp1_pnl = 0
-            if tp1_triggered:
-                tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
-            remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
-            fee = notional * params.fee_pct / 100 * 2
-            trade.exit_price = exit_price
-            trade.exit_time = bar['time']
-            trade.pnl_pct = pnl_pct
-            trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
-            trade.exit_reason = 'trail_stop'
-            trade.hold_bars = bar_offset
-            trade.tp1_hit = tp1_triggered
-            return trade
+            elif stage == 'low':
+                # ── TP1 ──
+                if not tp1_triggered and bar_low <= tp1_price:
+                    tp1_triggered = True
+                    stake_remaining_ratio = 1 - params.tp1_close_ratio
+                    trade.tp1_hit = True
+                    # TP1 不平仓，继续循环（同 bar 内可能还要触发 TP2）
 
-    # ── 6. 时间止损（超时按收盘价平仓）──
+                # ── TP2 ──
+                if tp1_triggered and bar_low <= tp2_price:
+                    exit_now = (tp2_price, 'tp2')
+                    break
+
+                # ── 更新 best_pnl_pct / 移动止损（本 bar 最好盈利）──
+                current_pnl_pct = (entry_price - bar_low) / entry_price * 100
+                if current_pnl_pct > best_pnl_pct:
+                    best_pnl_pct = current_pnl_pct
+                    if best_pnl_pct >= params.trail_activate_pct:
+                        # M5: 相对回撤语义 — trigger = best * (1 - retrace_ratio)
+                        trigger_pct = best_pnl_pct * (1 - params.trail_retrace_ratio)
+                        trail_stop_price = entry_price * (1 - trigger_pct / 100)
+
+        if exit_now is not None:
+            return _close_trade(
+                exit_now[0], bar['time'], exit_now[1],
+                tp1_triggered, bar_offset,
+            )
+
+    # ── 时间止损（超时按收盘价平仓）──
     last_idx = min(entry_idx + 1 + params.max_hold_bars, len(klines) - 1)
-    exit_price = klines[last_idx]['close']
-    # 做空平仓（买入覆盖）滑点
-    exit_price = exit_price * (1 + params.slippage_pct / 100)
-    pnl_pct = (entry_price - exit_price) / entry_price * 100
-    tp1_pnl = 0
-    if tp1_triggered:
-        tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
-    remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
-    fee = notional * params.fee_pct / 100 * 2
-
-    trade.exit_price = exit_price
-    trade.exit_time = klines[last_idx]['time']
-    trade.pnl_pct = pnl_pct
-    trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
-    trade.exit_reason = 'time_stop'
-    trade.hold_bars = params.max_hold_bars
-    trade.tp1_hit = tp1_triggered
-    return trade
+    return _close_trade(
+        klines[last_idx]['close'], klines[last_idx]['time'], 'time_stop',
+        tp1_triggered, params.max_hold_bars,
+    )
 
 
 

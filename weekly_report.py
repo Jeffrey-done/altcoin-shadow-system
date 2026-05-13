@@ -171,6 +171,32 @@ def calculate_weekly_stats(short_trades):
     for key in strategy_breakdown:
         strategy_breakdown[key]['pnl'] = round(strategy_breakdown[key]['pnl'], 2)
 
+    # H10: 滑点成本统计
+    # 入场滑点：每笔 notional * slippage_pct / 100（单边）
+    # 由于我们只跟踪入场滑点，这里严格只算入场成本（平仓滑点尚未纳入 Trade 模型）
+    slippage_entries = []
+    total_slippage_cost = 0.0
+    trades_with_slippage = 0
+    for t in short_trades:
+        sp = getattr(t, 'slippage_pct', 0.0) or 0.0
+        if sp > 0 and t.notional > 0:
+            cost = t.notional * sp / 100
+            total_slippage_cost += cost
+            trades_with_slippage += 1
+            slippage_entries.append({
+                'symbol': t.symbol,
+                'slippage_pct': round(sp, 4),
+                'cost_usd': round(cost, 2),
+                'exchange': getattr(t, 'exchange', 'shadow'),
+            })
+    # 挑滑点最大的前 5 笔以便于诊断
+    slippage_entries.sort(key=lambda x: x['cost_usd'], reverse=True)
+    top_slippage = slippage_entries[:5]
+    avg_slippage_pct = (
+        sum(e['slippage_pct'] for e in slippage_entries) / len(slippage_entries)
+        if slippage_entries else 0.0
+    )
+
     return {
         'total_pnl': round(total_pnl, 2),
         'short_pnl': round(short_pnl, 2),
@@ -186,6 +212,11 @@ def calculate_weekly_stats(short_trades):
         'daily_breakdown': daily_breakdown,
         'avg_hold_hours': avg_hold_hours,
         'strategy_breakdown': strategy_breakdown,
+        # 滑点统计（H10）
+        'slippage_total_cost': round(total_slippage_cost, 2),
+        'slippage_trades_count': trades_with_slippage,
+        'slippage_avg_pct': round(avg_slippage_pct, 4),
+        'slippage_top': top_slippage,
     }
 
 
@@ -296,6 +327,27 @@ def format_tg_report(stats, suggestions, week_start, week_end):
         for day, pnl in stats['daily_breakdown'].items():
             emoji = "🟢" if pnl >= 0 else "🔴"
             lines.append(f"  {emoji} {day}: <code>{pnl:+.2f}U</code>")
+
+    # 滑点成本（H10：让用户看到滑点吃掉多少利润）
+    if stats.get('slippage_trades_count', 0) > 0:
+        lines.append("")
+        lines.append("<b>--- 滑点成本 ---</b>")
+        slippage_pct_of_pnl = 0.0
+        if stats['total_pnl'] > 0:
+            slippage_pct_of_pnl = stats['slippage_total_cost'] / stats['total_pnl'] * 100
+        lines.append(
+            f"入场滑点总成本：<code>{stats['slippage_total_cost']:+.2f}U</code>"
+            f"（{stats['slippage_trades_count']}笔，均{stats['slippage_avg_pct']:.3f}%）"
+        )
+        if stats['total_pnl'] > 0:
+            lines.append(f"  占盈利比重：{slippage_pct_of_pnl:.1f}%")
+        if stats.get('slippage_top'):
+            lines.append("  Top 滑点：")
+            for e in stats['slippage_top'][:3]:
+                lines.append(
+                    f"    • {e['symbol']} [{e['exchange']}] "
+                    f"{e['slippage_pct']:.2f}% = {e['cost_usd']:.2f}U"
+                )
 
     # 建议
     if suggestions:

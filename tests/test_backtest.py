@@ -23,7 +23,7 @@ def _make_params(**kwargs):
         tp1_close_ratio=0.5,
         hard_stop_pct=3.0,
         trail_activate_pct=3.0,
-        trail_drawdown_pct=0.10,
+        trail_retrace_ratio=0.4,  # M5 新语义：从最高盈利回撤 40% 触发
         max_hold_bars=24,
         leverage=10,
         stake=100.0,
@@ -31,6 +31,8 @@ def _make_params(**kwargs):
         fee_pct=0.04,
     )
     defaults.update(kwargs)
+    # 兼容旧测试用例用 trail_drawdown_pct 的场景（保留字段兼容性）
+    defaults.pop('trail_drawdown_pct', None)
     return BacktestParams(**defaults)
 
 
