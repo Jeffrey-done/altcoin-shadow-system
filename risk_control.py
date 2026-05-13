@@ -324,7 +324,11 @@ def refresh_open_stake() -> None:
 
 def is_in_cooldown(symbol: str) -> tuple:
     """
-    检查某币种是否在止损平仓后的冷却期内。
+    检查某币种是否在冷却期内。
+
+    规则：
+      1. 止损平仓后 → 冷却 COOLDOWN_HOURS（默认24h）
+      2. 止盈平仓后 → 当日不再开仓（防止趋势反转时二次追空亏损）
 
     使用 close_type 枚举判断（而非硬编码中文字符串），
     旧数据如果没有 close_type 字段，则回退到 close_reason 字符串匹配。
@@ -335,6 +339,7 @@ def is_in_cooldown(symbol: str) -> tuple:
     from models import CloseType
     trades = load_json(TRADES_FILE, [])
     now = utcnow()
+    today = today_str()
     cooldown_hours = config.COOLDOWN_HOURS
 
     for t in reversed(trades):
@@ -343,30 +348,36 @@ def is_in_cooldown(symbol: str) -> tuple:
         if t.get('status') != 'closed':
             continue
 
-        # 优先用 close_type 枚举判断
-        ct = t.get('close_type')
-        if ct is not None:
-            if not CloseType.is_stop_loss(ct):
-                continue
-        else:
-            # 旧数据回退：字符串包含 '止损' / 'stop'
-            close_reason = t.get('close_reason', '').lower()
-            if '止损' not in close_reason and 'stop' not in close_reason:
-                continue
-
-        # 找到了止损平仓记录，检查时间
         closed_at = t.get('closed_at', '')
         if not closed_at:
             continue
-        try:
-            closed_dt = parse_iso(closed_at)
-            hours_since = (now - closed_dt).total_seconds() / 3600
-            if hours_since < cooldown_hours:
-                remaining = cooldown_hours - hours_since
-                reason = f"止损平仓后冷却中（{hours_since:.1f}h/{cooldown_hours}h，剩余{remaining:.1f}h）"
+
+        # 优先用 close_type 枚举判断是否为止损
+        ct = t.get('close_type')
+        is_stop = False
+        if ct is not None:
+            is_stop = CloseType.is_stop_loss(ct)
+        else:
+            # 旧数据回退：字符串包含 '止损' / 'stop'
+            close_reason = t.get('close_reason', '').lower()
+            is_stop = '止损' in close_reason or 'stop' in close_reason
+
+        if is_stop:
+            # 止损平仓 → 完整冷却期（COOLDOWN_HOURS）
+            try:
+                closed_dt = parse_iso(closed_at)
+                hours_since = (now - closed_dt).total_seconds() / 3600
+                if hours_since < cooldown_hours:
+                    remaining = cooldown_hours - hours_since
+                    reason = f"止损平仓后冷却中（{hours_since:.1f}h/{cooldown_hours}h，剩余{remaining:.1f}h）"
+                    return (True, reason)
+            except Exception:
+                continue
+        else:
+            # 止盈/其他平仓 → 当日不再开同币（防止二次追空）
+            if closed_at.startswith(today):
+                reason = f"今日已平仓过（防止同日二次开仓亏损）"
                 return (True, reason)
-        except Exception:
-            continue
 
     return (False, "")
 
