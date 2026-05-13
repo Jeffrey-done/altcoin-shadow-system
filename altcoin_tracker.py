@@ -450,27 +450,29 @@ def run(check_only: bool = False):
 
         any_updated = False
 
-        # ── 自动修复：TP1已触发但保本止损未设置的交易 ──
-        # 兼容旧版本遗留数据：确保 trail_stop_price 至少为入场价
+        # ── 自动修复：TP1已触发但保本止损未正确设置的交易 ──
+        # 兼容旧版本遗留数据：
+        #   做空：trail_stop_price 应 <= entry（价格涨回入场价时保本平仓）
+        #   做多：trail_stop_price 应 >= entry（价格跌回入场价时保本平仓）
         for trade in open_trades:
             if not trade.tp1_triggered:
                 continue
             entry = trade.entry_price
+            needs_fix = False
             if trade.trail_stop_price is None:
-                # trail_stop_price 完全没设置
-                logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop None → {entry}")
-                trade.trail_stop_price = entry
-                any_updated = True
+                needs_fix = True
             elif trade.direction == 'SHORT' and trade.trail_stop_price > entry:
-                # 做空保本止损应 <= 入场价，如果大于说明还是旧的硬止损值
-                logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop {trade.trail_stop_price} → {entry}")
-                trade.trail_stop_price = entry
-                any_updated = True
+                # 做空：止损在上方，保本 = 入场价，当前值比入场价高说明还是硬止损
+                needs_fix = True
             elif trade.direction == 'LONG' and trade.trail_stop_price < entry:
-                # 做多保本止损应 >= 入场价
-                logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop {trade.trail_stop_price} → {entry}")
+                # 做多：止损在下方，保本 = 入场价，当前值比入场价低说明还是硬止损
+                needs_fix = True
+
+            if needs_fix:
+                old_val = trade.trail_stop_price
                 trade.trail_stop_price = entry
                 any_updated = True
+                logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop {old_val} → {entry}")
 
         for trade in open_trades:
             try:
