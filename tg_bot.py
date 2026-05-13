@@ -72,6 +72,45 @@ def cmd_balance() -> str:
     wins = sum(1 for t in closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
 
+    # ── 实盘余额（LIVE_MODE / OKX_LIVE_MODE 任一开启时显示）──
+    live_lines = []
+    if config.LIVE_MODE:
+        try:
+            from live_executor import check_live_balance
+            bn_bal = check_live_balance()
+            live_lines.append(
+                f"💳 Binance 实盘：<b>{bn_bal['total']:.2f}U</b>"
+                f"（可用 {bn_bal['available']:.2f}）"
+            )
+        except Exception as e:
+            live_lines.append(f"💳 Binance 实盘：查询失败（{e}）")
+
+    if config.OKX_LIVE_MODE:
+        try:
+            from live_executor import check_okx_balance
+            okx_bal = check_okx_balance()
+            live_lines.append(
+                f"💳 OKX 实盘：<b>{okx_bal['total']:.2f}U</b>"
+                f"（可用 {okx_bal['available']:.2f}）"
+            )
+        except Exception as e:
+            live_lines.append(f"💳 OKX 实盘：查询失败（{e}）")
+
+    # 实盘路由提示（当至少一个 LIVE_MODE 开启时）
+    route_line = ""
+    if config.LIVE_MODE or config.OKX_LIVE_MODE:
+        if config.LIVE_MODE and config.OKX_LIVE_MODE:
+            route_line = f"🔀 路由模式：<b>{getattr(config, 'PRIMARY_EXCHANGE', 'binance').upper()}</b>"
+        else:
+            active = 'BINANCE' if config.LIVE_MODE else 'OKX'
+            route_line = f"🔀 路由模式：<b>{active}</b>（仅此所实盘）"
+    else:
+        route_line = "🔀 路由模式：<b>SHADOW</b>（纸上模拟）"
+
+    live_block = ""
+    if live_lines:
+        live_block = "\n\n" + "\n".join(live_lines)
+
     return (
         f"💰 <b>账户概览</b>\n\n"
         f"动态余额：<b>{balance:.2f}U</b>\n"
@@ -81,6 +120,8 @@ def cmd_balance() -> str:
         f"胜率：{win_rate}%（{wins}/{len(closed)}）\n"
         f"复利仓位：{compound_stake:.0f}U\n"
         f"杠杆：{config.LEVERAGE}x\n"
+        f"{route_line}"
+        f"{live_block}"
     )
 
 
@@ -119,9 +160,12 @@ def cmd_positions() -> str:
 
         emoji = "🟢" if pnl_pct > 0 else "🔴"
         tp1_tag = " ✅TP1" if t.get('tp1_triggered') else ""
+        # 交易所标签：shadow 不显示，实盘显示 [BINANCE] / [OKX]
+        ex = t.get('exchange', 'shadow')
+        ex_tag = f" <code>[{ex.upper()}]</code>" if ex != 'shadow' else ""
 
         lines.append(
-            f"{emoji} <b>{symbol}</b> {direction}{tp1_tag}\n"
+            f"{emoji} <b>{symbol}</b> {direction}{ex_tag}{tp1_tag}\n"
             f"   入场: {entry:.6f} → 现价: {current:.6f}\n"
             f"   浮盈: <b>{pnl_pct:+.1f}% = {pnl_usd:+.2f}U</b>"
             f"{f' (TP1锁{tp1_locked:+.2f}U)' if tp1_locked else ''}\n"

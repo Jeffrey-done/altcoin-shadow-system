@@ -113,15 +113,24 @@ class Trade:
     close_reason: Optional[str] = None
     close_type: Optional[str] = None   # CloseType 枚举值（机器可读），用于冷却期/统计
 
+    # 实盘路由（v4.2）
+    exchange: str = 'shadow'          # 'binance' | 'okx' | 'shadow'（纸上交易）
+    live_order_id: Optional[str] = None   # 开仓的交易所订单 ID（纸上交易为 None）
+    close_order_id: Optional[str] = None  # 平仓的交易所订单 ID
+
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',
                      stake: float = config.DEFAULT_STAKE,
-                     leverage: int = config.LEVERAGE) -> Trade:
+                     leverage: int = config.LEVERAGE,
+                     exchange: str = 'shadow',
+                     live_order_id: Optional[str] = None) -> Trade:
         """工厂方法：创建做空交易（带杠杆 + 硬止损）"""
         notional = stake * leverage
         hard_stop = round(price * (1 + config.HARD_STOP_LOSS_PCT / 100), 6)
+        # ID 加交易所后缀，避免 both 模式下两所同币同秒 ID 冲突
+        ex_tag = exchange[:2].upper() if exchange != 'shadow' else 'SH'
         return cls(
-            id=f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{int(time.time())}",
+            id=f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{int(time.time())}",
             symbol=symbol,
             direction='SHORT',
             entry_price=price,
@@ -136,6 +145,8 @@ class Trade:
             stake_remaining=stake,
             hard_stop_price=hard_stop,
             max_hold_days=config.MAX_HOLD_DAYS,
+            exchange=exchange,
+            live_order_id=live_order_id,
         )
 
     @property
@@ -163,6 +174,9 @@ class Trade:
             filtered['leverage'] = config.LEVERAGE
         if 'notional' not in filtered:
             filtered['notional'] = filtered.get('stake', config.DEFAULT_STAKE) * filtered['leverage']
+        # 兼容无 exchange 字段的旧数据（v4.2 之前）
+        if 'exchange' not in filtered:
+            filtered['exchange'] = 'shadow'
         return cls(**filtered)
 
 

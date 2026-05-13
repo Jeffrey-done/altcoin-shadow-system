@@ -177,13 +177,14 @@ def check_main_trades(symbol: str, price: float):
     触发后立即执行平仓并保存。
     使用 LockedJsonFile 确保 read-modify-write 原子性。
 
-    注意：副作用（record_trade_closed / send_tg）必须在 save() 成功后、
-    出锁再执行，否则崩溃时会出现"风控记了账但交易没落盘"的幽灵亏损。
+    注意：副作用（record_trade_closed / send_tg / 交易所 execute_close）必须在
+    save() 成功后、出锁再执行，否则崩溃时会出现"风控记了账但交易没落盘"的幽灵亏损。
     """
-    from altcoin_tracker import evaluate_trade
+    from altcoin_tracker import evaluate_trade, _perform_exchange_close
 
     pending_risk_updates = []   # [(pnl_usd, stake_remaining, close_reason, symbol, direction), ...]
     pending_alerts = []
+    pending_exchange_closes = []  # [(trade_ref, action, amount), ...]
 
     with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
         trades = [Trade.from_dict(t) for t in trades_raw]
@@ -206,18 +207,28 @@ def check_main_trades(symbol: str, price: float):
             elif result.updated:
                 any_updated = True
 
+            # 真实平仓动作（TP1 半仓 or 全仓）
+            if result.pending_exchange_action and trade.exchange != 'shadow':
+                pending_exchange_closes.append((
+                    trade, result.pending_exchange_action, result.pending_close_amount,
+                ))
+
         if any_updated:
             save([t.to_dict() for t in trades])
 
     # ══ 出锁后才触发副作用 ══
-    # 先改风控（此时交易已经落盘）
+    # 1) 实盘发平仓单（JSON 已持久化，失败只会让交易所有悬仓但不会污染 risk_state）
+    for trade, action, close_amount in pending_exchange_closes:
+        _perform_exchange_close(trade, action, close_amount)
+
+    # 2) 改风控（此时交易已经落盘）
     for pnl_usd, stake_remaining, close_reason, sym, direction in pending_risk_updates:
         record_trade_closed(pnl_usd, stake_remaining)
         logger.info(
             f"⚡ 实时平仓: {sym} | {direction} | "
             f"原因={close_reason} | PnL={pnl_usd:+.2f}U"
         )
-    # 再推送
+    # 3) 再推送
     for msg in pending_alerts:
         send_tg(msg)
 
