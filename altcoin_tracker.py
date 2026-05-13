@@ -30,11 +30,11 @@ import ccxt
 import config
 from common import (
     TRADES_FILE,
-    setup_logger, send_tg, atomic_write_json, load_json,
-    utcnow_iso, hold_days, hold_hours, LockedJsonFile,
+    setup_logger, send_tg, load_json,
+    utcnow_iso, hold_hours, LockedJsonFile,
 )
 from models import Trade, CloseType
-from risk_control import record_trade_closed, get_risk_summary
+from risk_control import record_trade_closed
 
 logger = setup_logger("altcoin_tracker")
 
@@ -285,7 +285,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         # 区分保本止损和普通移动止损
         is_breakeven_stop = trade.tp1_triggered and pnl_pct <= 0.5
         if is_breakeven_stop:
-            trade.close_reason = f"保本止损（TP1后价格回到入场价附近）"
+            trade.close_reason = "保本止损（TP1后价格回到入场价附近）"
             trade.close_type = CloseType.BREAKEVEN_STOP
             result.close_reason = f"🛡️ 保本止损（TP1已锁{trade.tp1_locked_pnl:+.2f}U，剩余保本平仓）"
             result.alert_msg = (

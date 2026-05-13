@@ -22,7 +22,7 @@ import requests
 import config
 from common import (
     CANDIDATES_FILE, TRADES_FILE,
-    setup_logger, send_tg, atomic_write_json, load_json,
+    setup_logger, send_tg, load_json,
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
     LockedJsonFile, get_compound_stake,
 )
@@ -30,7 +30,6 @@ from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened, is_in_cooldown
 from signal_score import calculate_signal_score, check_btc_filter
 from exchange_manager import (
-    get_binance, get_okx,
     cross_validate_funding, cross_validate_oi,
     okx_has_swap, cross_validate_price,
 )
@@ -747,7 +746,6 @@ def check_candidates():
         # ── 多账户同步开仓 v5.0 ──
         # 获取所有配置了凭证的交易账户，为每个账户并行执行开仓
         from admin_secrets import get_all_trading_accounts, SHADOW_ACCOUNT_ID, list_accounts
-        from common import get_all_trading_account_ids
         trading_accounts = get_all_trading_accounts()
 
         # v5.1: 影子账户（系统）也参与每次开仓，但强制走 ('shadow', stake) 路由：
@@ -761,7 +759,7 @@ def check_candidates():
             for _acc in list_accounts():
                 if _acc.get('id') == SHADOW_ACCOUNT_ID:
                     if not is_account_trading_enabled(SHADOW_ACCOUNT_ID):
-                        logger.info(f"  ⏩ 影子账户交易开关已关闭，跳过同步")
+                        logger.info("  ⏩ 影子账户交易开关已关闭，跳过同步")
                         break
                     shadow_account = {
                         'id': SHADOW_ACCOUNT_ID,
@@ -1116,7 +1114,7 @@ def check_candidates():
         elif len(set(route_tags)) == 1:
             title_prefix = f"🔴 <b>[{route_tags[0].upper()}] 实盘空单已开仓</b>"
         else:
-            title_prefix = f"🔴 <b>[双所对冲] 实盘空单已开仓</b>"
+            title_prefix = "🔴 <b>[双所对冲] 实盘空单已开仓</b>"
 
         extra_routes_line = ""
         if len(opened_trades) > 1:

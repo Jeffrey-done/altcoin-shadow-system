@@ -17,8 +17,6 @@
 
 import os
 import sys
-import time
-from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -56,7 +54,7 @@ def check_no_signal() -> tuple:
     """检查是否连续多天无信号"""
     trades = load_json(TRADES_FILE, [])
     if not trades:
-        return True, f"无交易记录（可能刚部署）"
+        return True, "无交易记录（可能刚部署）"
 
     # 找最近一次开仓时间
     open_times = [t.get('opened_at', '') for t in trades if t.get('opened_at')]

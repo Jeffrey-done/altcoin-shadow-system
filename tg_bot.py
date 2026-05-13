@@ -25,7 +25,7 @@ import requests as _requests
 import config
 from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
-    setup_logger, load_json, today_str, utcnow_iso,
+    setup_logger, load_json, today_str,
     get_dynamic_balance, get_compound_stake,
     get_current_account_id, filter_trades_by_account,
     TG_BOT_TOKEN, TG_CHAT_ID,
@@ -194,9 +194,9 @@ def cmd_candidates() -> str:
     if not candidates:
         return "📭 <b>候选池为空</b>"
 
-    # 分离：等待中 vs 已触发
+    # 分离：等待中 vs 已触发（tg_bot 只显示等待中的候选，已触发的已经开仓了，
+    # 查看请用 /positions；历史上这里曾一并展示但信息过密故移除）
     waiting = [c for c in candidates if not c.get('triggered')]
-    triggered = [c for c in candidates if c.get('triggered')]
 
     lines = [f"📋 <b>候选池（{len(waiting)}个等待中）</b>\n"]
 
@@ -405,7 +405,6 @@ def _send_reply(chat_id: str, text: str):
 
 def _poll_updates():
     """拉取新消息"""
-    global _last_update_id
     try:
         resp = _requests.get(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates",

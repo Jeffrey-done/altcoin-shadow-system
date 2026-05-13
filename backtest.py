@@ -21,7 +21,7 @@ import time
 import json
 import itertools
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -786,7 +786,7 @@ def print_grid_results(results: List[BacktestResult], top_n: int = 10):
     print()
     if results:
         best = results[0]
-        print(f"  🥇 最优参数:")
+        print("  🥇 最优参数:")
         print(f"     TP1={best.params['tp1_pct']}% | TP2={best.params['tp2_pct']}% | "
               f"止损={best.params['hard_stop_pct']}%")
         print(f"     RSI>{best.params['daily_rsi_min']} | 回落>{best.params['h4_rsi_drop']}点")
@@ -1003,7 +1003,7 @@ def print_batch_report(report: dict, results: List[BacktestResult] = None):
             print(f"    {sym_a} <-> {sym_b}: {val:.4f}")
 
     # 推荐组合
-    print(f"\n  🏆 推荐组合 (低相关性 Top 币种):")
+    print("\n  🏆 推荐组合 (低相关性 Top 币种):")
     for i, coin in enumerate(recommended, 1):
         print(f"    {i}. {coin['symbol']} (评分: {coin['score']:.4f}, "
               f"胜率: {coin['win_rate']}%, 盈亏比: {coin['profit_loss_ratio']:.2f})")

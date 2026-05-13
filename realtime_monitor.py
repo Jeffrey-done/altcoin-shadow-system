@@ -30,15 +30,13 @@ import os
 import sys
 import time
 import threading
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from common import (
     TRADES_FILE,
-    setup_logger, send_tg, atomic_write_json, load_json,
-    utcnow_iso, to_binance_symbol, LockedJsonFile,
+    setup_logger, send_tg, load_json, LockedJsonFile,
 )
 from models import Trade
 from risk_control import record_trade_closed
@@ -359,6 +357,12 @@ def on_price_update(symbol: str, price: float):
 class BinanceWSMonitor:
     """Binance WebSocket 实时价格监控器"""
 
+    # WS 消息解析错误告警阈值：连续 N 次解析失败 → TG 告警
+    # （Binance 改 miniTicker 字段格式 / 返回畸形 JSON 时能及时暴露，
+    # 避免"连接正常但所有价格事件被丢弃、止损全不触发"的幽灵失效）
+    PARSE_ERROR_ALERT_THRESHOLD = 50
+    PARSE_ERROR_ALERT_COOLDOWN_SEC = 3600  # 同一类错误每小时最多告警一次
+
     def __init__(self):
         self.ws = None
         self.current_symbols = []
@@ -367,6 +371,11 @@ class BinanceWSMonitor:
         self._connected = False
         self._disconnected_since = time.time()
         self._disconnect_alerted = False
+        # H8: WebSocket 消息解析错误统计
+        self._parse_error_count = 0
+        self._parse_success_count = 0
+        self._last_parse_alert_ts = 0.0
+        self._last_parse_error_sample = ""
 
     def _build_url(self, symbols: list) -> str:
         """构建 combined stream URL"""
@@ -377,11 +386,17 @@ class BinanceWSMonitor:
         return f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
 
     def _on_message(self, ws, message):
-        """WebSocket 消息回调"""
+        """WebSocket 消息回调。
+
+        H8: 消息解析错误不再被静默吞掉；累计到阈值触发 TG 告警，
+        覆盖"连接正常但 Binance 改了字段格式 / 返回畸形数据 → 价格事件全部被丢
+        → 止损全部不触发"的幽灵失效场景。
+        """
         try:
             msg = json.loads(message)
             data = msg.get('data', {})
             if not data or 's' not in data or 'c' not in data:
+                # 非价格消息（例如心跳 / 订阅响应 / 错误响应），不计入解析失败
                 return
 
             bin_sym = data['s']  # e.g. "PEPEUSDT"
@@ -396,8 +411,35 @@ class BinanceWSMonitor:
 
             if ccxt_sym and price > 0:
                 on_price_update(ccxt_sym, price)
+                self._parse_success_count += 1
         except Exception as e:
-            pass  # 忽略解析错误，继续处理下一条
+            self._parse_error_count += 1
+            self._last_parse_error_sample = f"{type(e).__name__}: {e}"
+            # 首次出错 & 每 100 次打印一条 debug，避免日志刷屏但保留可观测性
+            if self._parse_error_count == 1 or self._parse_error_count % 100 == 0:
+                logger.warning(
+                    f"WS 消息解析失败 (累计{self._parse_error_count}/"
+                    f"成功{self._parse_success_count}): {self._last_parse_error_sample}"
+                )
+            # 达到阈值且距离上次告警超过冷却时间 → TG 告警
+            if self._parse_error_count >= self.PARSE_ERROR_ALERT_THRESHOLD:
+                now_ts = time.time()
+                if now_ts - self._last_parse_alert_ts > self.PARSE_ERROR_ALERT_COOLDOWN_SEC:
+                    self._last_parse_alert_ts = now_ts
+                    try:
+                        send_tg(
+                            f"🚨 <b>WebSocket 消息解析异常</b>\n\n"
+                            f"累计解析失败: <b>{self._parse_error_count}</b> 次\n"
+                            f"累计成功: {self._parse_success_count} 次\n"
+                            f"最近错误: <code>{self._last_parse_error_sample[:200]}</code>\n\n"
+                            f"⚠️ WebSocket 连接正常但价格事件可能无法触发止损\n"
+                            f"请检查 Binance miniTicker 字段格式是否变化，"
+                            f"必要时手动检查持仓并切换到轮询模式"
+                        )
+                    except Exception as _e:
+                        logger.debug(f"TG 告警发送失败（非致命）: {_e}")
+                    # 告警后重置计数，避免一直卡在阈值之上
+                    self._parse_error_count = 0
 
     def _on_error(self, ws, error):
         logger.warning(f"WebSocket 错误: {error}")
@@ -419,7 +461,7 @@ class BinanceWSMonitor:
             if self.ws:
                 try:
                     self.ws.close()
-                except:
+                except Exception:
                     pass
                 self.ws = None
 
@@ -512,7 +554,7 @@ def main():
     logger.info("=" * 50)
     logger.info("⚡ 实时止盈止损监控器启动 v2.1")
     logger.info(f"   模式: {'WebSocket' if websocket else '轮询(5秒)'}")
-    logger.info(f"   监控: 做空交易")
+    logger.info("   监控: 做空交易")
     logger.info("=" * 50)
 
     # 先做一次快照，否则首次 WebSocket 连接时拿不到 symbols

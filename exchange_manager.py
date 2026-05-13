@@ -14,14 +14,13 @@
   - 单个交易所故障不影响系统运行（优雅降级）
 """
 
-import time
 from typing import Optional
 
 import ccxt
 import requests
 
 import config
-from common import setup_logger, to_binance_symbol
+from common import setup_logger
 
 logger = setup_logger("exchange_manager")
 
@@ -514,41 +513,62 @@ def get_btc_24h_change_multi() -> float:
 def cross_validate_price(symbol: str, binance_price: float) -> dict:
     """
     对比 Binance 和 OKX 的价格，返回偏差信息。
-    
+
     Returns:
         {
-            'available': bool,      # OKX 是否有数据
+            'available': bool,      # OKX 是否有数据（异常 / OKX 未启用 / 无数据 → False）
             'okx_price': float,     # OKX 价格
             'divergence_pct': float, # 偏差百分比（绝对值）
-            'pass': bool,           # 是否通过（偏差<阈值）
-            'reason': str,          # 描述
+            'pass': bool,           # 是否通过（偏差<阈值 或 数据不可用按保守方式放行）
+            'reason': str,          # 描述：通过为 ''，不通过或异常写明原因
         }
+
+    H9: 异常路径不再静默 fail-open。异常时 `available=False` 并写 reason 记录原因 +
+    logger.warning，供上层风控门在"偏差超限"和"数据缺失"两种场景下做不同处理
+    （目前策略保持"无数据时不阻止开仓"，但至少日志可见，避免 OKX 抽风时整个
+    价格偏差风控悄悄失效却没人知道）。
     """
-    result = {'available': False, 'okx_price': 0, 'divergence_pct': 0, 'pass': True, 'reason': ''}
-    
+    result = {
+        'available': False,
+        'okx_price': 0,
+        'divergence_pct': 0,
+        'pass': True,
+        'reason': '',
+    }
+
     if not config.OKX_ENABLED:
+        result['reason'] = 'OKX 未启用'
         return result
-    
+
     try:
         okx = get_okx()
         if okx is None:
+            result['reason'] = 'OKX 实例不可用'
             return result
-            
+
         ticker = okx.fetch_ticker(symbol)
         okx_price = ticker.get('last', 0)
         if okx_price <= 0:
+            result['reason'] = f'OKX ticker 无效 (last={okx_price})'
             return result
-        
+
         result['available'] = True
         result['okx_price'] = okx_price
-        
+
         divergence = abs(binance_price - okx_price) / binance_price * 100
         result['divergence_pct'] = round(divergence, 2)
-        
+
         if divergence > config.PRICE_DIVERGENCE_MAX_PCT:
             result['pass'] = False
-            result['reason'] = f"价格偏差{divergence:.1f}%（Binance={binance_price:.6f} vs OKX={okx_price:.6f}）"
-        
+            result['reason'] = (
+                f"价格偏差{divergence:.1f}%（Binance={binance_price:.6f} "
+                f"vs OKX={okx_price:.6f}）"
+            )
+
         return result
     except Exception as e:
+        # H9: 不再静默 fail-open；标记数据不可用，写清原因和日志
+        result['available'] = False
+        result['reason'] = f'OKX 查询异常: {type(e).__name__}: {e}'
+        logger.warning(f"cross_validate_price 异常 ({symbol}): {e}")
         return result
