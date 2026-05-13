@@ -12,6 +12,9 @@ v4.1 改进（防止任务漏跑）：
 import time
 import threading
 import traceback
+import multiprocessing
+import os
+import sys
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
@@ -20,14 +23,74 @@ from common import setup_logger
 logger = setup_logger("scheduler")
 
 
-def run_task(name: str, func, timeout: int = None):
+def _process_target(module: str, func_name: str, args: tuple, kwargs: dict):
+    """
+    子进程入口：在新进程里 import 模块并执行函数。
+    子进程会继承一个全新的 Python 解释器，所以 fcntl.flock 锁会被 OS 在
+    进程退出时自动释放，避免线程终止时 flock 残留。
+    """
+    try:
+        # 保证子进程也能找到工作目录的模块
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        mod = __import__(module, fromlist=[func_name])
+        func = getattr(mod, func_name)
+        func(*args, **kwargs)
+    except Exception as e:
+        # 写到 stderr，父进程通过 logger 捕获不了子进程异常
+        print(f"[subprocess] {module}.{func_name} failed: {e}", file=sys.stderr)
+        traceback.print_exc()
+
+
+def run_task(name: str, func, timeout: int = None,
+             use_process: bool = False,
+             process_module: Optional[str] = None,
+             process_func: Optional[str] = None,
+             process_args: tuple = (),
+             process_kwargs: Optional[dict] = None):
     """
     安全执行任务，捕获异常，支持超时。
     超时后尝试通过 ctypes 向线程注入异常来终止它，防止僵尸线程持续占用资源。
+
+    M10: 若 use_process=True，改用子进程运行；超时直接 process.terminate()
+    让 OS 回收所有资源（包括 fcntl.flock）。因为 multiprocessing.Process 不能
+    序列化闭包/lambda，所以需要传入顶层的 module/func name。
     """
     import config
     if timeout is None:
         timeout = config.TASK_TIMEOUT_SECONDS
+
+    if use_process:
+        if not process_module or not process_func:
+            logger.error(f"[{name}] use_process=True 但未提供 process_module/process_func，回退线程")
+            use_process = False
+
+    if use_process:
+        logger.info(f"[{name}] 开始执行（子进程模式，超时={timeout}s）")
+        p = multiprocessing.Process(
+            target=_process_target,
+            args=(process_module, process_func, process_args, process_kwargs or {}),
+            daemon=True,
+        )
+        p.start()
+        p.join(timeout=timeout)
+
+        if p.is_alive():
+            logger.error(f"[{name}] ⚠️ 子进程超时（>{timeout}s），terminate")
+            p.terminate()
+            p.join(timeout=5)
+            if p.is_alive():
+                logger.error(f"[{name}] 子进程 terminate 失败，强制 kill")
+                p.kill()
+                p.join(timeout=2)
+            from common import send_tg
+            send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n子进程已强制终止，flock 已由 OS 释放")
+        elif p.exitcode != 0:
+            logger.error(f"[{name}] 子进程异常退出 exitcode={p.exitcode}")
+        else:
+            logger.info(f"[{name}] 完成")
+        return
 
     exception = [None]
 
@@ -147,12 +210,22 @@ def main_loop():
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
     logger.info("=== 调度器启动 v4.1 ===")
 
+    # 启动时先做 in-flight journal 恢复：反查交易所 pending clOrdId，
+    # 发现"交易所已成交但 trades.json 没记录"的幽灵订单立即告警。
+    try:
+        from journal_recovery import recover_inflight
+        stats = recover_inflight()
+        if stats.get('ghost', 0) > 0:
+            logger.critical(
+                f"🚨 启动发现 {stats['ghost']} 个幽灵订单，需人工处理（详见 TG）"
+            )
+    except Exception as e:
+        logger.error(f"journal 恢复异常（非致命，跳过）: {e}")
+
     # 启动时对账：遍历所有交易账户，修正风控状态与交易记录的漂移（幽灵亏损预防）
     try:
         from risk_control import reconcile_risk_state
-        from common import get_all_trading_account_ids, get_current_account_id
-
-        # 收集需要对账的账户：活跃账户 + 所有配置了凭证的交易账户
+        from common import get_all_trading_account_ids, get_current_account_id        # 收集需要对账的账户：活跃账户 + 所有配置了凭证的交易账户
         account_ids_to_reconcile = set()
         active_id = get_current_account_id()
         if active_id:
@@ -209,20 +282,29 @@ def main_loop():
 
         # ── 每小时 :00 日线扫描 ──
         if _due_for_hourly('scan_daily', now, 0):
-            from altcoin_scanner import scan_daily
-            run_task("日线扫描", scan_daily)
+            # M10: 用子进程，超时 OS 自动释放 flock
+            run_task(
+                "日线扫描", None,
+                use_process=True,
+                process_module='altcoin_scanner', process_func='scan_daily',
+            )
             _mark_done('scan_daily', now)
 
         # ── 每小时 :15 止盈止损检查 ──
         if _due_for_hourly('tracker_check', now, 15):
+            # 止盈检查不耗时，保持线程模式
             from altcoin_tracker import run as tracker_run
             run_task("止盈检查", lambda: tracker_run(check_only=True))
             _mark_done('tracker_check', now)
 
         # ── 每小时 :30 候选确认 ──
         if _due_for_hourly('check_candidates', now, 30):
-            from altcoin_scanner import check_candidates
-            run_task("候选确认", check_candidates)
+            # M10: 候选确认可能触发多所并行开仓，长耗时任务用子进程
+            run_task(
+                "候选确认", None,
+                use_process=True,
+                process_module='altcoin_scanner', process_func='check_candidates',
+            )
             _mark_done('check_candidates', now)
 
         # ── 每 6 小时 :45 健康检查 ──
@@ -233,20 +315,35 @@ def main_loop():
 
         # ── 每日 08:00 UTC 日报 ──
         if _due_for_daily('daily_report', now, 8, 0):
-            from altcoin_tracker import run as tracker_run
-            run_task("日报推送", lambda: tracker_run(check_only=False))
+            # M10: 日报扫描全部持仓 + TG 推送，用子进程
+            run_task(
+                "日报推送", None,
+                use_process=True,
+                process_module='altcoin_tracker', process_func='run',
+                process_kwargs={'check_only': False},
+            )
             _mark_done('daily_report', now)
 
-        # ── 每日 00:01 UTC 清理过期交易 ──
+        # ── 每日 00:01 UTC 清理过期交易 + journal ──
         if _due_for_daily('archive_trades', now, 0, 1):
-            from common import cleanup_old_trades
-            run_task("清理过期交易", cleanup_old_trades)
+            from common import cleanup_old_trades, journal_cleanup_failed
+            def _daily_cleanup():
+                cleanup_old_trades()
+                cleared = journal_cleanup_failed(retain_hours=72)
+                if cleared > 0:
+                    logger.info(f"清理 journal 过期 failed 条目 {cleared} 个")
+            run_task("清理过期交易", _daily_cleanup)
             _mark_done('archive_trades', now)
 
         # ── 每周一 09:00 UTC 自动优化建议 ──
         if _due_for_weekly('auto_optimize', now, config.AUTO_OPTIMIZE_DAY, 9, 0):
-            from auto_optimize import run_auto_optimize
-            run_task("自动优化", run_auto_optimize)
+            # M10: 自动优化耗时很久，必须用子进程防止阻塞主循环
+            run_task(
+                "自动优化", None,
+                timeout=max(config.TASK_TIMEOUT_SECONDS, 1800),  # 至少 30 分钟
+                use_process=True,
+                process_module='auto_optimize', process_func='run_auto_optimize',
+            )
             _mark_done('auto_optimize', now)
 
         # 睡眠30秒

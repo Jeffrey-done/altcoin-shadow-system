@@ -121,13 +121,34 @@ class Trade:
     # 多账户隔离（v4.3）
     account_id: str = ''              # 所属账户 ID（空=旧数据/单账户兼容）
 
+    # 幂等键（v5.1，配合 in-flight journal 防幽灵仓位）
+    client_order_id: str = ''         # 下单时使用的 clOrdId / newClientOrderId
+
+    # 滑点追踪（H10）
+    ref_price_at_order: float = 0.0   # 下单前的 ticker 参考价
+    slippage_pct: float = 0.0         # 入场滑点：abs(entry - ref)/ref * 100
+
+    # TP1 实际成交追踪（H7）
+    tp1_closed_shares: float = 0.0    # TP1 实际平掉的币数量（用交易所返回的 filled）
+    tp1_exit_price: float = 0.0       # TP1 实际平仓均价
+
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',
                      stake: float = config.DEFAULT_STAKE,
                      leverage: int = config.LEVERAGE,
                      exchange: str = 'shadow',
-                     live_order_id: Optional[str] = None) -> Trade:
-        """工厂方法：创建做空交易（带杠杆 + 硬止损）"""
+                     live_order_id: Optional[str] = None,
+                     client_order_id: Optional[str] = None,
+                     ref_price_at_order: Optional[float] = None,
+                     slippage_pct: float = 0.0) -> Trade:
+        """工厂方法：创建做空交易（带杠杆 + 硬止损）
+
+        参数:
+          client_order_id: 若调用方已生成幂等键（配合 in-flight journal），
+            直接传入作为 Trade.id 的一部分，保证 journal / trade / 交易所三端一致。
+          ref_price_at_order: 下单前的 ticker 参考价（用于事后分析滑点成本）
+          slippage_pct: 实际滑点百分比（abs(price - ref_price)/ref_price * 100）
+        """
         import secrets as _secrets
         from common import get_current_account_id
         notional = stake * leverage
@@ -137,8 +158,9 @@ class Trade:
         ex_tag = exchange[:2].upper() if exchange != 'shadow' else 'SH'
         ts_ms = int(time.time() * 1000)
         rand = _secrets.token_hex(3)
+        trade_id = f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{ts_ms}-{rand}"
         return cls(
-            id=f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{ts_ms}-{rand}",
+            id=trade_id,
             symbol=symbol,
             direction='SHORT',
             entry_price=price,
@@ -156,6 +178,9 @@ class Trade:
             exchange=exchange,
             live_order_id=live_order_id,
             account_id=get_current_account_id(),
+            client_order_id=client_order_id or '',
+            ref_price_at_order=ref_price_at_order if ref_price_at_order else price,
+            slippage_pct=round(slippage_pct, 4),
         )
 
     @property

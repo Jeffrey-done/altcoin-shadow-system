@@ -23,7 +23,7 @@ from common import (
     RISK_FILE, TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     utcnow_iso, today_str, parse_iso, utcnow,
-    get_dynamic_balance, LockedJsonFile,
+    get_dynamic_balance, get_realized_balance, LockedJsonFile,
     get_current_account_id, filter_trades_by_account,
 )
 
@@ -333,11 +333,14 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
             dirty = True
 
         dynamic_bal = get_dynamic_balance(account_id=_resolve_account_id(account_id))
-        max_position = dynamic_bal * config.RISK_MAX_POSITION_PCT
+        # M2: 持仓占比风控基准改为"已实现余额"，不含浮动 TP1 锁定利润，
+        # 防止 TP1 后上限放大形成加仓正反馈。
+        realized_bal = get_realized_balance(account_id=_resolve_account_id(account_id))
+        max_position = realized_bal * config.RISK_MAX_POSITION_PCT
         if state.total_open_stake + stake > max_position:
             reason = (
                 f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
-                f"> 上限{max_position:.0f}U）"
+                f"> 上限{max_position:.0f}U，基于已实现余额{realized_bal:.0f}U）"
             )
             if dirty:
                 data = _save_state_in_lock(data, state, account_id)
@@ -457,7 +460,7 @@ def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
         trades = filter_trades_by_account(trades, acc_id)
 
     now = utcnow()
-    today = today_str()
+    today_dt = now.date()
     cooldown_hours = config.COOLDOWN_HOURS
 
     for t in reversed(trades):
@@ -489,9 +492,18 @@ def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
             except Exception:
                 continue
         else:
-            if closed_at.startswith(today):
-                reason = f"今日已平仓过（防止同日二次开仓亏损）"
-                return (True, reason)
+            # M4: 用 parse_iso().date() 比较而不是 startswith
+            # 防止时区漂移写入的 closed_at 字段（如本地时间串）绕过"同日已平仓"保护
+            try:
+                closed_date = parse_iso(closed_at).date()
+                if closed_date == today_dt:
+                    reason = f"今日已平仓过（防止同日二次开仓亏损）"
+                    return (True, reason)
+            except Exception:
+                # 解析失败 → 退回到保守的 startswith 作为 fallback
+                if closed_at.startswith(now.strftime('%Y-%m-%d')):
+                    reason = f"今日已平仓过（防止同日二次开仓亏损）"
+                    return (True, reason)
 
     return (False, "")
 
