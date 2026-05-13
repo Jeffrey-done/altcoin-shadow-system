@@ -336,6 +336,91 @@ OKX_DEFAULT_LEVERAGE = 10
 - `/positions` — 每笔持仓带 `[BINANCE]` / `[OKX]` 标签
 - 触发信号开仓时推送会带 `[BINANCE 实盘]` / `[OKX 实盘]` / `[双所对冲]` 前缀
 
+## 🔐 管理员面板（实盘开关与 API 密钥 web UI）
+
+一个"高安全、扫不到"的配置面板，让你不用 SSH 上服务器改 `config.py` / `.env`。
+所有开关和 API key 都能在浏览器里改，修改后 **30 秒内跨所有进程生效**
+（scheduler / realtime_monitor / dashboard 都会热加载）。
+
+### 安全模型（8 层防御）
+
+| 层级 | 防御 |
+|------|------|
+| **L1 IP 白名单** | `ADMIN_ALLOWED_IPS` 设置后，非白名单 IP 全部 404 |
+| **L2 Secret URL 前缀** | 面板挂在 `/<ADMIN_URL_SECRET>/`；secret 未设则 blueprint 不加载，扫描器根本扫不到 |
+| **L3 IP 失败锁定** | 每 IP 5 次登录失败 → 锁 30 分钟；锁定期**返回 404**（不是 401），攻击者连"路径存在"都判断不了 |
+| **L4 双因子** | 密码（PBKDF2-SHA256, 600k 迭代）**+** TOTP（Google Authenticator 兼容） |
+| **L5 Session** | 30 分钟空闲 / 4 小时绝对过期；写操作额外要求 5 分钟内有新鲜 TOTP |
+| **L6 CSRF** | 所有 POST 必须带 `X-Admin-CSRF` 头 |
+| **L7 审计 + TG** | 所有写操作记到 `admin_audit.log` 并推 TG |
+| **L8 响应头** | `X-Robots-Tag: noindex, X-Frame-Options: DENY, CSP: strict`，无缓存 |
+
+### 启用面板
+
+**1. 生成一个足够长的 secret URL 前缀**
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# 输出类似: Kx3mQ8-pLz2yH9rW5vNcE7bDgJ6fSu4AtT1oIkXzM0s
+```
+
+**2. 写 `.env`**
+```bash
+# 必须，面板挂载路径的 secret
+ADMIN_URL_SECRET=Kx3mQ8-pLz2yH9rW5vNcE7bDgJ6fSu4AtT1oIkXzM0s
+
+# 强烈推荐（只让你的出口 IP 访问）
+ADMIN_ALLOWED_IPS=123.45.67.89
+
+# 推荐（反向代理强制 HTTPS 后开）
+DASHBOARD_FORCE_HTTPS_COOKIE=1
+
+# 推荐（跨重启保留登录态）
+DASHBOARD_SECRET_KEY=<另一个 32 字节随机串>
+```
+
+**3. 重启 dashboard**
+启动时会看到：
+```
+🔐 Admin Panel 已挂载: /<ADMIN_URL_SECRET>/  (secret 长度=43)
+```
+
+**4. 首次访问：浏览器打开 `https://你的域名/Kx3mQ8-.../setup`**
+- 用 Google Authenticator / 1Password 扫 TOTP 二维码
+- 设置 ≥12 字符的密码
+- 输入 Authenticator 当前 6 位码确认绑定
+
+之后每次登录都需要**密码 + 6 位动态码**。
+
+### 面板能做什么
+
+- **实盘开关**：`LIVE_MODE` / `OKX_LIVE_MODE` / `PRIMARY_EXCHANGE` 一键切换
+- **API 凭证管理**：Binance/OKX 的 key、secret、passphrase 都在这儿改；
+  存到独立的 `admin_secrets.json`（0600 权限），和 `.env` 解耦
+- **风控参数**：单日亏损上限、最大开仓次数、持仓占比等都能调（都有硬上下界校验）
+- **止盈止损**：TP1/TP2 乘数、硬止损、TP1 平仓比例
+- **审计日志**：所有变更带时间戳、IP、操作类型
+
+每次写操作都会：
+1. 前端弹出 TOTP 输入框，6 位数字输完自动提交
+2. 审计日志新增一条 JSON 记录
+3. TG 推送告警（`⚙️ Admin 修改运行时配置` 或 `🔑 Admin 更新 API 凭证`）
+
+### 如果出事了
+
+- **忘密码或 TOTP**：SSH 上服务器 `rm admin_secrets.json`，重新 setup
+- **凭证被泄露**：面板里点「清除凭证」按钮，会同时关掉对应的 LIVE_MODE
+- **账户被爆破**：查看 `admin_audit.log`，看 IP 和失败记录；
+  必要时 `rm .admin_ratelimit.json` 手动解锁
+- **面板被人找到了**：换 `ADMIN_URL_SECRET`，重启 dashboard；
+  同时把 `DASHBOARD_SECRET_KEY` 也换掉，踢掉所有现有 session
+
+### 不要做的事
+
+- ❌ 不要把 `ADMIN_URL_SECRET` 写到任何公开地方（聊天记录 / 截图 / git commit）
+- ❌ 不要用短密码（强制要求 ≥12 字符）
+- ❌ 不要在公网上跑 HTTP（必须 nginx/caddy 强制 HTTPS，否则登录密码会明文传输）
+- ❌ 不要把 dashboard 绑到 0.0.0.0 公网直接暴露；应该只绑 localhost，反向代理过来
+
 ## 技术栈
 
 - **语言**: Python 3.9+

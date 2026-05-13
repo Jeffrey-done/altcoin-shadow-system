@@ -85,6 +85,12 @@ def _build_trade_snapshot(trade: Trade) -> dict:
 
 def refresh_snapshot():
     """扫描 trades 文件，重建内存快照。每 30s 调用一次即可。"""
+    # 顺带热加载 runtime_config；admin 面板改了 config 后 30s 内在本进程生效
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc()
+    except Exception:
+        pass
     try:
         trades_raw = load_json(TRADES_FILE, [])
     except Exception as e:
