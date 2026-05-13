@@ -215,9 +215,14 @@ python3 dashboard.py --port 8080
 TG_BOT_TOKEN=your_telegram_bot_token
 TG_CHAT_ID=your_chat_id
 
-# 实盘模式（可选，默认影子交易）
+# Binance 合约实盘（可选，默认影子交易）
 BINANCE_API_KEY=your_api_key
 BINANCE_SECRET=your_api_secret
+
+# OKX 合约实盘（可选，默认关闭）
+OKX_API_KEY=your_okx_api_key
+OKX_SECRET=your_okx_secret
+OKX_PASSPHRASE=your_okx_passphrase
 
 # Dashboard 认证（可选）
 DASHBOARD_TOKEN=your_dashboard_token
@@ -225,6 +230,111 @@ DASHBOARD_TOKEN=your_dashboard_token
 # 日志级别（可选，默认 INFO）
 LOG_LEVEL=INFO
 ```
+
+## 实盘交易（Binance + OKX 双交易所路由）
+
+系统默认运行在**影子交易模式**（纸上模拟）。开启任一交易所的实盘前，请务必：
+1. 纸上交易验证至少 2 周，胜率 > 50%，盈亏比 > 1.5
+2. 运行 `python3 check_live.py` 自检通过
+3. `DEFAULT_STAKE` 先降到 20U 小仓位实测
+
+### 开关与路由模式
+
+| 配置项 | 取值 | 效果 |
+|------|------|------|
+| `LIVE_MODE=False` + `OKX_LIVE_MODE=False` | 默认 | 影子模式，不下任何真实单 |
+| `LIVE_MODE=True` + `OKX_LIVE_MODE=False` | 单所 | 所有信号只在 Binance 下单 |
+| `LIVE_MODE=False` + `OKX_LIVE_MODE=True` | 单所 | 所有信号只在 OKX 下单 |
+| 两个都 `True`，`PRIMARY_EXCHANGE='binance'` | 双所 | 信号只在 Binance 下单（OKX 仅数据源）|
+| 两个都 `True`，`PRIMARY_EXCHANGE='okx'` | 双所 | 信号只在 OKX 下单 |
+| 两个都 `True`，`PRIMARY_EXCHANGE='both'` | 双所 | **每笔信号在两所各开半仓**（保证金 50/50 分散对手方风险）|
+| 两个都 `True`，`PRIMARY_EXCHANGE='auto'` | 双所 | 按币种覆盖决定；`PRIMARY_EXCHANGE_FALLBACK` 决定冲突时的选择 |
+
+### 开启币安实盘（推荐首选）
+
+**1. Binance 账户准备**
+- 合约账户持仓模式切换为 **对冲模式 (Hedge Mode)**
+  `合约 → 偏好设置 → 持仓模式 → 对冲模式`
+  代码里用了 `positionSide=SHORT/LONG`，单向模式会直接报错。
+- USDT 本位永续合约已开通
+
+**2. API Key 权限**
+- ✅ 允许合约交易 (Enable Futures)
+- ❌ **不要**勾选"允许提现"
+- ❌ **不要**勾选"允许现货交易"（除非你有其他用途）
+- 建议绑定 IP 白名单
+
+**3. 配置 `.env`**
+```bash
+BINANCE_API_KEY=...
+BINANCE_SECRET=...
+```
+
+**4. 改 `config.py`**
+```python
+LIVE_MODE = True
+DEFAULT_STAKE = 20    # ⚠️ 先用 20U 小仓位验证
+```
+
+**5. 自检**
+```bash
+python3 check_live.py            # 检查两所
+python3 check_live.py binance    # 只检查币安
+```
+全部显示 ✓ 后重启调度器。
+
+### 开启 OKX 实盘
+
+**1. OKX 账户准备**
+- 合约账户持仓模式切换为 **双向持仓 (long_short_mode)**
+  `交易 → 设置 → 合约持仓模式 → 双向持仓`
+- USDT 本位永续合约已开通
+
+**2. API Key 权限**
+- ✅ 允许交易（含合约）
+- ❌ 不要勾选"允许提现"
+- 绑定 IP 白名单
+
+**3. 配置 `.env`**
+```bash
+OKX_API_KEY=...
+OKX_SECRET=...
+OKX_PASSPHRASE=...
+```
+
+**4. 改 `config.py`**
+```python
+OKX_LIVE_MODE = True
+OKX_DEFAULT_LEVERAGE = 10
+```
+
+### 两所同时下单（`PRIMARY_EXCHANGE='both'`）
+
+适合想分散交易对手方风险的场景。每笔信号在两所**分别开一笔独立的 Trade**，
+保证金各占一半。止盈止损是**两所独立执行**的（价格在 A 所触发止盈不会自动关 B 所），
+各自走 `reduceOnly` 的真实平仓单。
+
+风控层面：`record_trade_opened` 会被调用两次（一次 Binance、一次 OKX），
+所以 `RISK_MAX_DAILY_TRADES` 在 both 模式下会更快被消耗。如果不希望这样，
+把 `DEFAULT_STAKE` 降一半，或把 `RISK_MAX_DAILY_TRADES` 调大。
+
+### 实盘安全特性
+
+- **幂等键**：所有开仓/平仓都带 `client_order_id` (Binance) / `clOrdId` (OKX)，
+  网络重试不会导致重复下单。
+- **滑点告警**：成交均价与下单前 ticker 偏差 > `SLIPPAGE_ALERT_PCT`（默认 0.5%）
+  自动推 TG 告警，但不回滚（防止止损单在极端行情下被拒）。
+- **reduceOnly 平仓**：平仓订单强制 `reduceOnly=True`，即使计算错误也不会反向开仓。
+- **失败不污染状态**：交易所下单失败时**不记账**（`record_trade_opened` 不调用），
+  不会产生"幽灵亏损"。
+- **平仓失败告警**：如果系统已把 JSON 标记为 closed 但交易所下单失败（网络/权限问题），
+  会推 TG 警告让你**手动去交易所平仓**，避免仓位裸奔。
+
+### TG 实盘指令
+
+- `/balance` — 显示动态余额 + 各交易所实盘余额 + 当前路由模式
+- `/positions` — 每笔持仓带 `[BINANCE]` / `[OKX]` 标签
+- 触发信号开仓时推送会带 `[BINANCE 实盘]` / `[OKX 实盘]` / `[双所对冲]` 前缀
 
 ## 技术栈
 

@@ -472,6 +472,75 @@ def scan_daily():
 # ══════════════════════════════════════════════════════════════════
 #  第二阶段：4h 确认（每1小时）
 # ══════════════════════════════════════════════════════════════════
+#  实盘路由辅助
+# ══════════════════════════════════════════════════════════════════
+
+def _resolve_exchange_routes(symbol: str, stake: float) -> list:
+    """
+    根据 config.LIVE_MODE / OKX_LIVE_MODE / PRIMARY_EXCHANGE 决定一笔信号
+    要在哪些交易所开仓。
+
+    返回 [(exchange_name, stake_portion), ...]：
+      - 两个 LIVE_MODE 都关 → 纯纸上：[('shadow', stake)]
+      - 只开 Binance       → [('binance', stake)]
+      - 只开 OKX           → [('okx', stake)]
+      - 两个都开 + PRIMARY_EXCHANGE='binance' → [('binance', stake)]
+      - 两个都开 + PRIMARY_EXCHANGE='okx'     → [('okx', stake)]
+      - 两个都开 + PRIMARY_EXCHANGE='both'    → [('binance', stake/2), ('okx', stake/2)]
+      - 两个都开 + PRIMARY_EXCHANGE='auto'    → 按该币种在哪家有合约决定
+    """
+    binance_on = config.LIVE_MODE
+    okx_on = config.OKX_LIVE_MODE
+
+    # 纯纸上
+    if not binance_on and not okx_on:
+        return [('shadow', stake)]
+
+    # 单所实盘
+    if binance_on and not okx_on:
+        return [('binance', stake)]
+    if okx_on and not binance_on:
+        return [('okx', stake)]
+
+    # 两所都打开 → 看 PRIMARY_EXCHANGE
+    mode = getattr(config, 'PRIMARY_EXCHANGE', 'binance').lower()
+
+    if mode == 'binance':
+        return [('binance', stake)]
+    if mode == 'okx':
+        return [('okx', stake)]
+    if mode == 'both':
+        # 保证金各一半，向下取整到 1U（避免浮点尾数导致交易所拒单）
+        half = max(1.0, round(stake / 2, 2))
+        return [('binance', half), ('okx', half)]
+    if mode == 'auto':
+        # 按品种覆盖决定
+        try:
+            from exchange_manager import okx_has_swap
+            has_okx = okx_has_swap(symbol)
+        except Exception:
+            has_okx = False
+        # Binance 默认全覆盖（系统主数据源就是 Binance）
+        if has_okx:
+            fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
+            return [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
+        return [('binance', stake)]
+
+    # 未知模式 → 安全默认
+    logger.warning(f"未知 PRIMARY_EXCHANGE={mode}，回退到 binance")
+    return [('binance', stake)]
+
+
+def trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h) -> str:
+    """统一生成开仓的 reason 字段，避免内联条件重复"""
+    if trigger_abandon:
+        return f"弃盘点: {abandon['reason']}"
+    return f"4h RSI从{rsi_4h_peak:.0f}回落至{rsi_4h}"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  第二阶段：4h 确认（每1小时）
+# ══════════════════════════════════════════════════════════════════
 
 def check_candidates():
     """检查候选池，4h RSI 回落 或 弃盘点 触发时自动开仓"""
@@ -601,30 +670,85 @@ def check_candidates():
                 c.triggered = False
                 continue
 
-        # ── 实盘下单（LIVE_MODE=True 时实际发单并用成交价记账）──
-        live_amount = 0.0
-        if config.LIVE_MODE:
-            from live_executor import execute_open_short as _live_open
-            # client_order_id = 幂等键；用 symbol+timestamp 拼出唯一标识
-            ts = int(time.time() * 1000)
-            coid = f"short-{c.symbol.replace('/USDT','').replace('/','')}-{ts}"[:36]
-            live_result = _live_open(c.symbol, actual_stake,
-                                     leverage=config.LEVERAGE,
-                                     client_order_id=coid)
-            if not live_result["success"]:
-                logger.error(f"  ❌ 实盘下单失败 {c.symbol}: {live_result['error']}")
-                send_tg(
-                    f"❌ <b>实盘下单失败</b>\n\n"
-                    f"币种：{c.symbol}\n"
-                    f"原因：{live_result['error']}\n"
-                    f"本次跳过，不记录风控扣账。"
-                )
-                continue
-            # 用成交均价作为 entry_price（关键：影子模式下会是 0，回退到 ticker）
-            if live_result["price"] > 0:
-                price = live_result["price"]
-            live_amount = live_result["amount"]
+        # ── 实盘路由：决定这次信号要在哪些交易所开仓 ──
+        # 返回 [(exchange_name, stake_portion), ...]
+        # - 'shadow' 表示纯纸上模拟（两个 LIVE_MODE 都关）
+        # - 单所实盘：一个条目，stake_portion = actual_stake
+        # - both 模式：两个条目，stake 各半，分散交易对手风险
+        routes = _resolve_exchange_routes(c.symbol, actual_stake)
+        if not routes:
+            logger.warning(f"  ⚠️ 无可用交易所路由 {c.symbol}，跳过")
+            continue
 
+        # ── 锁内二次校验准备 ──
+        # 已开仓判重改为按 (symbol, exchange) 粒度：
+        # 同币在 Binance 和 OKX 各开一次是允许的（both 模式本身如此）
+        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+            already_open_pairs = {
+                (t.get('symbol'), t.get('exchange', 'shadow'))
+                for t in trades_raw if t.get('status') == 'open'
+            }
+
+            opened_trades = []     # [(trade_dict, send_msg_bool)]
+            opened_any = False
+
+            for route_exchange, route_stake in routes:
+                # 同币同所已有持仓 → 跳过这一条路由（但其他路由可继续）
+                if (c.symbol, route_exchange) in already_open_pairs:
+                    logger.warning(
+                        f"  ⏩ 跳过 {c.symbol}@{route_exchange}：锁内发现已有持仓"
+                    )
+                    continue
+
+                # 为每条路由生成独立的 client_order_id + 下真单（影子模式内部直接成功）
+                from live_executor import execute_open, make_client_order_id
+                coid = make_client_order_id('sho', c.symbol, route_exchange)
+
+                if route_exchange == 'shadow':
+                    # 纯影子交易：不调 API，直接用 ticker 价记账
+                    live_result = {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""}
+                else:
+                    live_result = execute_open(
+                        c.symbol, 'SHORT', route_stake,
+                        exchange_name=route_exchange,
+                        leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
+                        client_order_id=coid,
+                    )
+
+                if not live_result["success"]:
+                    logger.error(
+                        f"  ❌ {route_exchange} 下单失败 {c.symbol}: {live_result['error']}"
+                    )
+                    send_tg(
+                        f"❌ <b>[{route_exchange.upper()}] 实盘下单失败</b>\n\n"
+                        f"币种：{c.symbol}\n"
+                        f"原因：{live_result['error']}\n"
+                        f"本次跳过，不记录风控扣账。"
+                    )
+                    continue
+
+                # 成交均价优先，否则回退到 ticker 价格（影子模式总是走这条）
+                entry_price = live_result["price"] if live_result["price"] > 0 else price
+
+                trade = Trade.create_short(
+                    c.symbol, entry_price, reason=trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h),
+                    stake=route_stake,
+                    leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
+                    exchange=route_exchange,
+                    live_order_id=live_result.get("order_id") or None,
+                )
+                opened_trades.append((trade, entry_price, route_exchange, route_stake))
+                trades_raw.append(trade.to_dict())
+                opened_any = True
+
+            if not opened_any:
+                # 所有路由都失败/重复 → 跳过这个信号
+                c.triggered = False
+                continue
+
+            save(trades_raw)
+
+        # ══ 交易写盘成功后，才改风控状态 + 发推送 ══
         c.triggered = True
         triggered_any = True
 
@@ -636,35 +760,21 @@ def check_candidates():
             c.trigger_type = '4h_rsi'
         c.trigger_reason = trigger_reason
 
-        logger.info(f"  🚨 触发信号: {c.symbol} @ {price} [{trigger_reason}]")
-
-        # 创建影子空单（带杠杆 + 硬止损 + 评分仓位）
-        trade = Trade.create_short(c.symbol, price, reason=trigger_reason, stake=actual_stake)
-
-        # ══ 持锁 read-modify-write：防止与 tracker / realtime_monitor 竞态 ══
-        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
-            # 锁内二次校验：避免两次扫描间另一进程已经给这个币开了仓
-            already_open = any(
-                t.get('symbol') == c.symbol and t.get('status') == 'open'
-                for t in trades_raw
-            )
-            if already_open:
-                logger.warning(f"  ⏩ 跳过 {c.symbol}：锁内二次校验发现已有持仓")
-                c.triggered = False  # 回滚标记，下次还能检查
-                continue
-            trades_raw.append(trade.to_dict())
-            save(trades_raw)
-
-        # ══ 交易写盘成功后，才改风控状态 ══
-        # 顺序关键：先 trades 后 risk_state，确保不会出现"风控扣了但trades没记"的幽灵亏损
-        record_trade_opened(actual_stake)
-
         logger.info(
-            f"  ✅ 已开空单: {c.symbol} @ {price} | "
-            f"评分={score_result['score']}[{score_result['grade']}] | "
-            f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
-            f"硬止损={trade.hard_stop_price}"
+            f"  🚨 触发信号: {c.symbol} 开仓 {len(opened_trades)} 笔 "
+            f"[{', '.join(t[2] for t in opened_trades)}] [{trigger_reason}]"
         )
+
+        # 每一条 Trade 都单独记录风控 + 推送（因为每笔都是独立的风控事件）
+        for trade, entry_price, route_exchange, route_stake in opened_trades:
+            record_trade_opened(route_stake)
+
+            logger.info(
+                f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "
+                f"评分={score_result['score']}[{score_result['grade']}] | "
+                f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
+                f"硬止损={trade.hard_stop_price} | 订单={trade.live_order_id or 'SHADOW'}"
+            )
 
         # 推送通知
         yao_tag = "🔥妖币" if c.yao_score >= 2 else "📌普通超买"
@@ -680,9 +790,28 @@ def check_candidates():
         tp2_pct = round((1 - config.TP2_MULTIPLIER) * 100, 1)
         hard_stop_pct = config.HARD_STOP_LOSS_PCT
 
+        # 多路由开仓时，用第一笔作为主展示，额外列出其他路由摘要
+        primary_trade, primary_price, primary_ex, _ = opened_trades[0]
+
+        # 标题：区分影子 / 币安实盘 / OKX实盘 / 两所同开
+        route_tags = [t[2] for t in opened_trades]
+        if set(route_tags) == {'shadow'}:
+            title_prefix = "🔴 <b>影子空单已开仓</b>"
+        elif len(set(route_tags)) == 1:
+            title_prefix = f"🔴 <b>[{route_tags[0].upper()}] 实盘空单已开仓</b>"
+        else:
+            title_prefix = f"🔴 <b>[双所对冲] 实盘空单已开仓</b>"
+
+        extra_routes_line = ""
+        if len(opened_trades) > 1:
+            extra_routes_line = "\n📮 路由：" + " + ".join(
+                f"{t[2].upper()}({t[0].stake}U×{t[0].leverage}x)"
+                for t in opened_trades
+            )
+
         msg = (
-            f"🔴 <b>影子空单已开仓</b> {yao_tag}\n\n"
-            f"📌 <b>{c.symbol}</b>\n"
+            f"{title_prefix} {yao_tag}\n\n"
+            f"📌 <b>{c.symbol}</b>{extra_routes_line}\n"
             f"📊 信号评分：<b>{score_result['score']}分 [{score_result['grade']}]</b>\n"
             f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
             f"妖={score_result['details'].get('yao',0):.0f} "
@@ -690,11 +819,11 @@ def check_candidates():
             f"热度={score_result['details'].get('heat',0):.0f}"
             f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}"
             f"{(' 量价背离=+' + str(vol_divergence.get('score_bonus', 0))) if vol_divergence.get('divergence') else ''}\n\n"
-            f"入场价：{price:.6f} U\n"
-            f"保证金：{trade.stake}U × {trade.leverage}x = <b>{trade.notional}U</b>\n"
-            f"止盈一档：{trade.take_profit_1:.6f}（-{tp1_pct}%，+{trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
-            f"止盈二档：{trade.take_profit_2:.6f}（-{tp2_pct}%，+{trade.notional*tp2_pct/100*(1-config.TP1_CLOSE_RATIO):.1f}U）\n"
-            f"硬止损：{trade.hard_stop_price:.6f}（+{hard_stop_pct}%，-{trade.notional*hard_stop_pct/100:.1f}U）\n"
+            f"入场价：{primary_price:.6f} U ({primary_ex})\n"
+            f"保证金：{primary_trade.stake}U × {primary_trade.leverage}x = <b>{primary_trade.notional}U</b>\n"
+            f"止盈一档：{primary_trade.take_profit_1:.6f}（-{tp1_pct}%，+{primary_trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
+            f"止盈二档：{primary_trade.take_profit_2:.6f}（-{tp2_pct}%，+{primary_trade.notional*tp2_pct/100*(1-config.TP1_CLOSE_RATIO):.1f}U）\n"
+            f"硬止损：{primary_trade.hard_stop_price:.6f}（+{hard_stop_pct}%，-{primary_trade.notional*hard_stop_pct/100:.1f}U）\n"
             f"移动止损：最高盈利回撤{config.TRAIL_STOP_DRAWDOWN_PCT*100:.0f}%触发\n\n"
             f"{trigger_desc}\n\n"
             f"日线RSI：{c.rsi_1d}（超买）\n"

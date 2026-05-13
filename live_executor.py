@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-实盘执行模块 v2.0
-支持 Binance + OKX 双交易所实盘执行。
-当 LIVE_MODE=True 时，通过 Binance API 真实下单。
-当 OKX_LIVE_MODE=True 时，通过 OKX API 真实下单。
-当两者都为 False 时，只记录影子交易（纸上模拟）。
+实盘执行模块 v3.0
+支持 Binance + OKX 双交易所实盘执行 + 统一路由接口。
+
+工作模式：
+  - LIVE_MODE=False 且 OKX_LIVE_MODE=False：纸上模拟（execute_* 返回 SHADOW）
+  - LIVE_MODE=True：通过 Binance API 真实下单（推荐为主交易所）
+  - OKX_LIVE_MODE=True：通过 OKX API 真实下单
+  - 两个同时 True：由 execute_open(exchange_name=...) 路由决定走哪家
+
+关键特性（v3.0，与 Binance 对齐）：
+  - OKX 补齐 client_order_id（clOrdId）防止网络重试重复下单
+  - OKX 补齐滑点告警（> SLIPPAGE_ALERT_PCT 写 WARN，配合 TG 推送）
+  - 统一 execute_open / execute_close 返回格式（含 amount / 订单号）
+  - 未配置 API 凭证时优雅降级，不让扫描器崩溃
 
 ⚠️ 警告：开启实盘前务必：
   1. 纸上交易验证至少2周
   2. 确认胜率>50%、盈亏比>1.5
   3. 从最小仓位开始（DEFAULT_STAKE=20）
   4. 配置好对应交易所的 API 凭证
+  5. Binance 合约账户设为"对冲模式(Hedge Mode)"
+  6. OKX 合约账户设为"双向持仓模式"
 """
 
 import os
@@ -19,11 +30,15 @@ from typing import Optional
 import ccxt
 
 import config
-from common import setup_logger, to_binance_symbol
+from common import setup_logger
 from exchange_manager import get_binance, get_okx, to_okx_inst_id
 
 logger = setup_logger("live_executor")
 
+
+# ══════════════════════════════════════════════════════════════════
+#  Binance 实盘
+# ══════════════════════════════════════════════════════════════════
 
 def get_live_exchange():
     """创建已认证的 Binance 合约交易所实例"""
@@ -46,10 +61,29 @@ def get_live_exchange():
     return exchange
 
 
+def _check_slippage(symbol: str, exchange_name: str,
+                    ref_price: float, fill_price: float) -> Optional[str]:
+    """
+    滑点校验工具：返回告警消息（若超阈值），否则 None。
+    ref_price 一般是下单前 ticker 的 last；fill_price 是成交均价。
+    """
+    if ref_price <= 0 or fill_price <= 0:
+        return None
+    slippage_pct = abs(fill_price - ref_price) / ref_price * 100
+    if slippage_pct > config.SLIPPAGE_ALERT_PCT:
+        msg = (
+            f"[{exchange_name}] 滑点异常 {symbol}: "
+            f"ticker={ref_price:.6f} 成交={fill_price:.6f} ({slippage_pct:.2f}%)"
+        )
+        logger.warning(f"⚠️ {msg}")
+        return msg
+    return None
+
+
 def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
                        client_order_id: Optional[str] = None) -> dict:
     """
-    实盘开空单。
+    实盘开空单（Binance）。
 
     参数:
       symbol: ccxt 格式 (如 'PEPE/USDT')
@@ -97,17 +131,10 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
         fill_price = float(order.get('average') or order.get('price') or ref_price)
         filled_amount = float(order.get('filled') or amount)
 
-        # 滑点校验：成交价与 ticker 偏差 > 0.5% 告警（但不回滚）
-        if ref_price > 0:
-            slippage_pct = abs(fill_price - ref_price) / ref_price * 100
-            if slippage_pct > 0.5:
-                logger.warning(
-                    f"⚠️ 滑点异常 {symbol}: ticker={ref_price:.6f} 成交={fill_price:.6f} "
-                    f"({slippage_pct:.2f}%)"
-                )
+        _check_slippage(symbol, 'Binance', ref_price, fill_price)
 
         logger.info(
-            f"✅ 实盘开空: {symbol} | 成交={fill_price:.6f} | "
+            f"✅ Binance 开空: {symbol} | 成交={fill_price:.6f} | "
             f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
         )
 
@@ -120,7 +147,7 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
         }
 
     except Exception as e:
-        logger.error(f"❌ 实盘开空失败 ({symbol}): {e}")
+        logger.error(f"❌ Binance 开空失败 ({symbol}): {e}")
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
@@ -159,8 +186,10 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
         fill_price = float(order.get('average') or order.get('price') or ref_price)
         filled_amount = float(order.get('filled') or amount)
 
+        _check_slippage(symbol, 'Binance', ref_price, fill_price)
+
         logger.info(
-            f"✅ 实盘开多: {symbol} | 成交={fill_price:.6f} | "
+            f"✅ Binance 开多: {symbol} | 成交={fill_price:.6f} | "
             f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
         )
 
@@ -173,56 +202,64 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
         }
 
     except Exception as e:
-        logger.error(f"❌ 实盘开多失败 ({symbol}): {e}")
+        logger.error(f"❌ Binance 开多失败 ({symbol}): {e}")
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def execute_close_position(symbol: str, direction: str, amount: float) -> dict:
+def execute_close_position(symbol: str, direction: str, amount: float,
+                           client_order_id: Optional[str] = None) -> dict:
     """
-    实盘平仓。
+    Binance 实盘平仓。
 
     参数:
       symbol: ccxt 格式
       direction: 'SHORT' 或 'LONG'
       amount: 平仓数量
+      client_order_id: 平仓幂等键（防止 evaluate 在同一秒被触发多次重复平仓）
     """
     if not config.LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
 
     exchange = get_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
     try:
         if direction == 'SHORT':
-            # 平空 = 买入
-            side = 'buy'
+            side = 'buy'       # 平空 = 买入
             position_side = 'SHORT'
         else:
-            # 平多 = 卖出
-            side = 'sell'
+            side = 'sell'      # 平多 = 卖出
             position_side = 'LONG'
 
+        params = {'positionSide': position_side, 'reduceOnly': True}
+        if client_order_id:
+            params['newClientOrderId'] = client_order_id
+
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side=side,
-            amount=amount,
-            params={'positionSide': position_side},
+            symbol=symbol, type='market', side=side,
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ 实盘平仓: {symbol} {direction} | 数量={amount:.4f} | 订单={order['id']}")
+        fill_price = float(order.get('average') or order.get('price') or 0)
+        filled_amount = float(order.get('filled') or amount)
+
+        logger.info(
+            f"✅ Binance 平仓: {symbol} {direction} | 数量={filled_amount:.4f} | "
+            f"成交={fill_price:.6f} | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', 0)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
-        logger.error(f"❌ 实盘平仓失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        logger.error(f"❌ Binance 平仓失败 ({symbol}): {e}")
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
 def check_live_balance() -> dict:
@@ -255,108 +292,130 @@ def get_okx_live_exchange():
     return get_okx(authenticated=True)
 
 
-def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE) -> dict:
+def _okx_cloid(prefix: str, symbol: str, ts_ms: int) -> str:
     """
-    OKX 实盘开空单。
+    生成 OKX clOrdId：只保留字母数字，长度 ≤32（OKX 限制）。
+    prefix 建议 'sho'/'lng'/'cls' 三字母，便于风控/审计回溯。
+    """
+    base = symbol.replace('/USDT', '').replace('/', '').replace('-', '')
+    coid = f"{prefix}{base}{ts_ms}"
+    # OKX clOrdId 只能 alphanumeric，且长度 1-32
+    coid = ''.join(c for c in coid if c.isalnum())
+    return coid[:32]
+
+
+def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE,
+                            client_order_id: Optional[str] = None) -> dict:
+    """
+    OKX 实盘开空单（v3.0：补齐幂等键 + 滑点告警 + 成交均价回填）。
     """
     if not config.OKX_LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": 0, "error": ""}
 
     exchange = get_okx_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "OKX 交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
     try:
-        # OKX 设置杠杆
-        inst_id = to_okx_inst_id(symbol)
         exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
 
-        # 计算下单数量
         ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
+        ref_price = ticker['last']
         notional = stake * leverage
-        amount = notional / price
+        amount = notional / ref_price
 
-        # 市价做空
+        params = {'tdMode': 'cross', 'posSide': 'short'}
+        if client_order_id:
+            # OKX 用 clOrdId；ccxt 已支持透传
+            params['clOrdId'] = client_order_id
+
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side='sell',
-            amount=amount,
-            params={
-                'tdMode': 'cross',
-                'posSide': 'short',
-            },
+            symbol=symbol, type='market', side='sell',
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ OKX 开空: {symbol} | 数量={amount:.4f} | 杠杆={leverage}x | 订单={order['id']}")
+        fill_price = float(order.get('average') or order.get('price') or ref_price)
+        filled_amount = float(order.get('filled') or amount)
+
+        _check_slippage(symbol, 'OKX', ref_price, fill_price)
+
+        logger.info(
+            f"✅ OKX 开空: {symbol} | 成交={fill_price:.6f} | "
+            f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', price)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
         logger.error(f"❌ OKX 开空失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE) -> dict:
-    """
-    OKX 实盘开多单。
-    """
+def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE,
+                           client_order_id: Optional[str] = None) -> dict:
+    """OKX 实盘开多单"""
     if not config.OKX_LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": 0, "error": ""}
 
     exchange = get_okx_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "OKX 交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
     try:
         exchange.set_leverage(leverage, symbol, params={'mgnMode': 'cross'})
 
         ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
+        ref_price = ticker['last']
         notional = stake * leverage
-        amount = notional / price
+        amount = notional / ref_price
+
+        params = {'tdMode': 'cross', 'posSide': 'long'}
+        if client_order_id:
+            params['clOrdId'] = client_order_id
 
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side='buy',
-            amount=amount,
-            params={
-                'tdMode': 'cross',
-                'posSide': 'long',
-            },
+            symbol=symbol, type='market', side='buy',
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ OKX 开多: {symbol} | 数量={amount:.4f} | 杠杆={leverage}x | 订单={order['id']}")
+        fill_price = float(order.get('average') or order.get('price') or ref_price)
+        filled_amount = float(order.get('filled') or amount)
+
+        _check_slippage(symbol, 'OKX', ref_price, fill_price)
+
+        logger.info(
+            f"✅ OKX 开多: {symbol} | 成交={fill_price:.6f} | "
+            f"数量={filled_amount:.4f} | 杠杆={leverage}x | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', price)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
         logger.error(f"❌ OKX 开多失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
-def execute_okx_close_position(symbol: str, direction: str, amount: float) -> dict:
-    """
-    OKX 实盘平仓。
-    """
+def execute_okx_close_position(symbol: str, direction: str, amount: float,
+                                client_order_id: Optional[str] = None) -> dict:
+    """OKX 实盘平仓"""
     if not config.OKX_LIVE_MODE:
-        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "error": ""}
+        return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": amount, "error": ""}
 
     exchange = get_okx_live_exchange()
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "error": "OKX 交易所连接失败"}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
     try:
         if direction == 'SHORT':
@@ -366,29 +425,34 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float) -> di
             side = 'sell'
             pos_side = 'long'
 
+        params = {'tdMode': 'cross', 'posSide': pos_side, 'reduceOnly': True}
+        if client_order_id:
+            params['clOrdId'] = client_order_id
+
         order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side=side,
-            amount=amount,
-            params={
-                'tdMode': 'cross',
-                'posSide': pos_side,
-            },
+            symbol=symbol, type='market', side=side,
+            amount=amount, params=params,
         )
 
-        logger.info(f"✅ OKX 平仓: {symbol} {direction} | 数量={amount:.4f} | 订单={order['id']}")
+        fill_price = float(order.get('average') or order.get('price') or 0)
+        filled_amount = float(order.get('filled') or amount)
+
+        logger.info(
+            f"✅ OKX 平仓: {symbol} {direction} | 数量={filled_amount:.4f} | "
+            f"成交={fill_price:.6f} | 订单={order['id']}"
+        )
 
         return {
             "success": True,
             "order_id": order.get('id', ''),
-            "price": float(order.get('average', 0)),
+            "price": fill_price,
+            "amount": filled_amount,
             "error": "",
         }
 
     except Exception as e:
         logger.error(f"❌ OKX 平仓失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "error": str(e)}
+        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
 
 def check_okx_balance() -> dict:
@@ -416,35 +480,70 @@ def check_okx_balance() -> dict:
 #  统一执行接口（根据 exchange 参数自动路由）
 # ══════════════════════════════════════════════════════════════════
 
+def _is_exchange_live(exchange_name: str) -> bool:
+    """判断某交易所是否处于实盘模式（用于上层决定是否需要 fallback 为影子）"""
+    if exchange_name == 'binance':
+        return config.LIVE_MODE
+    if exchange_name == 'okx':
+        return config.OKX_LIVE_MODE
+    return False
+
+
 def execute_open(symbol: str, direction: str, stake: float,
-                 exchange_name: str = 'binance', leverage: int = None) -> dict:
+                 exchange_name: str = 'binance', leverage: Optional[int] = None,
+                 client_order_id: Optional[str] = None) -> dict:
     """
     统一开仓接口，根据交易所名称路由到对应执行函数。
 
     参数:
       exchange_name: 'binance' | 'okx'
       direction: 'SHORT' | 'LONG'
+      client_order_id: 幂等键；若为 None，上层应传入 symbol+timestamp 的拼接串
     """
     if exchange_name == 'okx':
         lev = leverage or config.OKX_DEFAULT_LEVERAGE
         if direction == 'SHORT':
-            return execute_okx_open_short(symbol, stake, lev)
+            return execute_okx_open_short(symbol, stake, lev, client_order_id=client_order_id)
         else:
-            return execute_okx_open_long(symbol, stake, lev)
+            return execute_okx_open_long(symbol, stake, lev, client_order_id=client_order_id)
     else:
         lev = leverage or config.LEVERAGE
         if direction == 'SHORT':
-            return execute_open_short(symbol, stake, lev)
+            return execute_open_short(symbol, stake, lev, client_order_id=client_order_id)
         else:
-            return execute_open_long(symbol, stake, lev)
+            return execute_open_long(symbol, stake, lev, client_order_id=client_order_id)
 
 
 def execute_close(symbol: str, direction: str, amount: float,
-                  exchange_name: str = 'binance') -> dict:
+                  exchange_name: str = 'binance',
+                  client_order_id: Optional[str] = None) -> dict:
     """
     统一平仓接口，根据交易所名称路由。
+    影子交易（exchange_name='shadow'）直接返回成功，不发真实订单。
     """
+    if exchange_name == 'shadow':
+        return {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
     if exchange_name == 'okx':
-        return execute_okx_close_position(symbol, direction, amount)
-    else:
-        return execute_close_position(symbol, direction, amount)
+        return execute_okx_close_position(symbol, direction, amount, client_order_id=client_order_id)
+    return execute_close_position(symbol, direction, amount, client_order_id=client_order_id)
+
+
+def make_client_order_id(prefix: str, symbol: str, exchange_name: str = 'binance',
+                         ts_ms: Optional[int] = None) -> str:
+    """
+    生成幂等键（跨所统一接口）。
+      - Binance: 允许 - 和字母数字，长度 ≤ 36
+      - OKX:    只允许字母数字，长度 ≤ 32
+    上层直接调用此函数，不用关心交易所差异。
+    """
+    import time as _time
+    if ts_ms is None:
+        ts_ms = int(_time.time() * 1000)
+
+    base = symbol.replace('/USDT', '').replace('/', '').replace('-', '')
+
+    if exchange_name == 'okx':
+        return _okx_cloid(prefix, symbol, ts_ms)
+    # Binance：保留连字符便于肉眼阅读
+    coid = f"{prefix}-{base}-{ts_ms}"
+    return coid[:36]
