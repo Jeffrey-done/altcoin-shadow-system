@@ -204,6 +204,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U, 保本止损已激活")
 
+    # TP1 刚触发时不再继续检查 TP2（避免同 tick 双触发导致平仓数量错误）
+    # 下一次 evaluate 时 tp1_triggered 已为 True、remaining_shares 会正确反映 50% 仓位
+    if tp1_hit:
+        trade.current_price = current_price
+        return result
+
     # TP2：第二档止盈
     tp2_hit = False
     if trade.tp1_triggered and trade.take_profit_2:
@@ -358,32 +364,49 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     # 使用开仓时记录的 account_id，确保平仓用正确账户的凭证
     acc_id = trade.account_id if trade.account_id else None
 
-    try:
-        result = execute_close(
-            trade.symbol, trade.direction, close_amount,
-            exchange_name=trade.exchange, client_order_id=coid,
-            account_id=acc_id,
-        )
-    except Exception as e:
-        logger.error(f"❌ [{trade.exchange}] 平仓调用异常 {trade.symbol}: {e}")
-        send_tg(
-            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败</b>\n\n"
-            f"币种：{trade.symbol}\n"
-            f"动作：{action}\n"
-            f"异常：{e}\n\n"
-            f"⚠️ JSON 已标记为平仓，但交易所可能仍有持仓，请立即手动检查！"
-        )
-        return
+    # 最多重试 3 次（指数退避：0.5s → 1s → 2s），覆盖网络抖动和限速
+    import time as _time
+    max_retries = 3
+    result = None
+    last_error = None
 
-    if not result.get("success"):
+    for attempt in range(max_retries):
+        try:
+            result = execute_close(
+                trade.symbol, trade.direction, close_amount,
+                exchange_name=trade.exchange, client_order_id=coid,
+                account_id=acc_id,
+            )
+            if result.get("success"):
+                break  # 成功，跳出重试
+            last_error = result.get('error', '未知错误')
+            # 幂等键保证不会重复成交，安全重试
+            logger.warning(
+                f"[{trade.exchange}] 平仓尝试 {attempt+1}/{max_retries} 失败 "
+                f"{trade.symbol}: {last_error}"
+            )
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(
+                f"[{trade.exchange}] 平仓尝试 {attempt+1}/{max_retries} 异常 "
+                f"{trade.symbol}: {e}"
+            )
+            result = None
+
+        if attempt < max_retries - 1:
+            _time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s, 2s
+
+    # 所有重试都失败
+    if result is None or not result.get("success"):
+        error_msg = last_error or "未知错误"
         logger.error(
-            f"❌ [{trade.exchange}] 平仓失败 {trade.symbol}: {result.get('error')}"
+            f"❌ [{trade.exchange}] 平仓失败（{max_retries}次重试后）{trade.symbol}: {error_msg}"
         )
         send_tg(
-            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败</b>\n\n"
+            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败（已重试{max_retries}次）</b>\n\n"
             f"币种：{trade.symbol}\n"
             f"动作：{action}\n"
-            f"原因：{result.get('error')}\n\n"
+            f"原因：{error_msg}\n\n"
             f"⚠️ JSON 已标记为平仓，但交易所可能仍有持仓，请立即手动检查！"
         )
         return
@@ -483,7 +506,15 @@ def run(check_only: bool = False):
                 current = binance.fetch_ticker(trade.symbol)['last']
             except Exception as e:
                 logger.warning(f"获取价格失败 ({trade.symbol}): {e}")
-                current = trade.entry_price
+                # 不使用 entry_price 代替（会导致止损失效），跳过本轮评估
+                # realtime_monitor WebSocket 作为备份覆盖
+                send_tg(
+                    f"⚠️ <b>价格获取失败</b>\n\n"
+                    f"币种：{trade.symbol}\n"
+                    f"原因：{e}\n"
+                    f"本轮跳过该仓位评估，等待下一轮或 WebSocket 覆盖"
+                )
+                continue
 
             result = evaluate_trade(trade, current)
 

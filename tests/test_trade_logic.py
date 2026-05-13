@@ -98,16 +98,20 @@ class TestTakeProfit:
         assert result.pnl_usd > 0  # 盈利
 
     def test_tp2_requires_tp1_first(self):
-        """TP2 必须在 TP1 之后才能触发"""
+        """TP1+TP2 同 tick：先触发 TP1 并立即返回，TP2 在下一次评估触发（防止平仓数量错误）"""
         trade = _make_trade(direction='SHORT', entry_price=100.0, tp1=95.0, tp2=90.0)
         # 直接到 TP2 价格但 TP1 未触发
         result = evaluate_trade(trade, current_price=89.0)
-        # 应先触发 TP1
+        # 应先触发 TP1，然后立即返回（不继续检查 TP2）
         assert trade.tp1_triggered is True
-        # 但因为 tp1 在本次触发，tp2 需要下一次调用
-        # 实际代码：tp1 先检测，然后 tp2 检测时 tp1_triggered=True
-        # 所以在同一次调用中如果 price 同时满足 tp1 和 tp2，tp1 先触发然后 tp2 也会触发
-        assert result.closed is True
+        assert result.closed is False  # TP1 不关闭交易
+        assert result.pending_exchange_action == 'tp1_partial'
+
+        # 第二次评估：此时 tp1_triggered=True，remaining_shares 已正确为 50%
+        result2 = evaluate_trade(trade, current_price=89.0)
+        assert result2.closed is True
+        assert trade.status == 'closed'
+        assert result2.pending_exchange_action == 'full_close'
 
 
 class TestTrailingStop:
