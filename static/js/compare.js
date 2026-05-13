@@ -9,6 +9,7 @@ const CompareChart = {
     data: null,
     tooltip: null,
     hoverIndex: -1,
+    accountId: null,
     padding: { top: 30, right: 70, bottom: 35, left: 55 },
 
     init(canvasId, tooltipId) {
@@ -30,9 +31,15 @@ const CompareChart = {
         setInterval(() => this.fetchData(), 60000);
     },
 
+    setAccount(accountId) {
+        this.accountId = accountId || null;
+        this.fetchData();
+    },
+
     async fetchData() {
         try {
-            const resp = await fetch('/api/pnl/compare');
+            const qs = this.accountId ? ('?account_id=' + encodeURIComponent(this.accountId)) : '';
+            const resp = await fetch('/api/pnl/compare' + qs);
             if (!resp.ok) return;
             this.data = await resp.json();
             this.updateSummary();
