@@ -3,24 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}Shadow Trading Dashboard{% endblock %}</title>
+<title>{% block title %}影子交易系统{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
 {% block head_extra %}{% endblock %}
 </head>
 <body>
 <div class="container">
-    <!-- Header Bar -->
+    <!-- 顶部栏 -->
     <div class="header-bar">
         <div class="header-left">
-            <h1>{% block page_icon %}{% endblock %}{% block page_title %}Shadow Trading{% endblock %}</h1>
+            <h1>{% block page_icon %}{% endblock %}{% block page_title %}影子交易{% endblock %}</h1>
         </div>
         <div class="header-right">
             {% block header_controls %}{% endblock %}
-            <button class="icon-btn" id="notification-toggle" title="Notifications">
+            <button class="icon-btn" id="notification-toggle" title="事件通知">
                 <i data-lucide="bell"></i>
                 <span class="badge-dot" id="notification-badge" style="display:none;"></span>
             </button>
-            <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+            <button class="icon-btn" id="theme-toggle" title="切换主题">
                 <i data-lucide="moon" id="theme-icon-dark"></i>
                 <i data-lucide="sun" id="theme-icon-light" style="display:none;"></i>
             </button>
@@ -28,40 +28,40 @@
     </div>
     <div class="subtitle">{% block subtitle %}{% endblock %}</div>
 
-    <!-- Desktop Navigation -->
+    <!-- 桌面导航 -->
     <nav class="nav">
-        <a href="/"><i data-lucide="layout-dashboard"></i> Dashboard</a>
-        <a href="/weekly-report"><i data-lucide="file-bar-chart"></i> Weekly</a>
-        <a href="/batch-backtest"><i data-lucide="flask-conical"></i> Batch Test</a>
-        <a href="/backtest"><i data-lucide="line-chart"></i> Backtest</a>
-        <a href="/signal-scores"><i data-lucide="target"></i> Signals</a>
+        <a href="/"><i data-lucide="layout-dashboard"></i> 仪表盘</a>
+        <a href="/weekly-report"><i data-lucide="file-bar-chart"></i> 周报</a>
+        <a href="/batch-backtest"><i data-lucide="flask-conical"></i> 批量回测</a>
+        <a href="/backtest"><i data-lucide="line-chart"></i> 单币回测</a>
+        <a href="/signal-scores"><i data-lucide="target"></i> 信号评分</a>
     </nav>
 
-    <!-- Page Content -->
+    <!-- 页面内容 -->
     {% block content %}{% endblock %}
 </div>
 
-<!-- Notification Panel (Slide-out) -->
+<!-- 通知面板（侧滑） -->
 <div class="notification-overlay" id="notification-overlay"></div>
 <div class="notification-panel" id="notification-panel">
     <div class="notification-panel-header">
-        <h3>Event Log</h3>
+        <h3>事件日志</h3>
         <button class="notification-panel-close" id="notification-close">
             <i data-lucide="x"></i>
         </button>
     </div>
     <div class="notification-panel-body" id="notification-body">
-        <div class="empty-state">Loading...</div>
+        <div class="empty-state">加载中...</div>
     </div>
 </div>
 
-<!-- Mobile Bottom Tab Bar -->
+<!-- 移动端底部导航 -->
 <nav class="mobile-tab-bar">
-    <a href="/"><i data-lucide="layout-dashboard"></i>Dashboard</a>
-    <a href="/weekly-report"><i data-lucide="file-bar-chart"></i>Weekly</a>
-    <a href="/batch-backtest"><i data-lucide="flask-conical"></i>Batch</a>
-    <a href="/backtest"><i data-lucide="line-chart"></i>Backtest</a>
-    <a href="/signal-scores"><i data-lucide="target"></i>Signals</a>
+    <a href="/"><i data-lucide="layout-dashboard"></i>仪表盘</a>
+    <a href="/weekly-report"><i data-lucide="file-bar-chart"></i>周报</a>
+    <a href="/batch-backtest"><i data-lucide="flask-conical"></i>回测</a>
+    <a href="/backtest"><i data-lucide="line-chart"></i>单币</a>
+    <a href="/signal-scores"><i data-lucide="target"></i>评分</a>
 </nav>
 
 <!-- Lucide Icons -->

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}Shadow Trading Dashboard{% endblock %}
+{% block title %}影子交易系统{% endblock %}
 {% block page_icon %}<span class="live-dot"></span>{% endblock %}
-{% block page_title %}Shadow Trading{% endblock %}
-{% block subtitle %}<span id="timestamp">Connecting...</span>{% endblock %}
+{% block page_title %}影子交易{% endblock %}
+{% block subtitle %}<span id="timestamp">连接中...</span>{% endblock %}
 
 {% block header_controls %}
 <span id="connection-status" style="font-size:0.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:4px;">
@@ -16,110 +16,110 @@
 {% endblock %}
 
 {% block content %}
-<!-- Multi-Account Overview (Global View) -->
+<!-- 多账户总览（全局视图） -->
 <div class="card" style="margin-bottom:16px;" id="accounts-overview-card">
     <div class="section-title">
-        <i data-lucide="users"></i> Accounts Overview
-        <span class="sync-status" id="sync-status"><span class="sync-dot"></span> Live</span>
+        <i data-lucide="users"></i> 账户总览
+        <span class="sync-status" id="sync-status"><span class="sync-dot"></span> 实时</span>
     </div>
     <div class="account-overview" id="accounts-overview">
-        <!-- Populated by JS -->
+        <!-- JS 动态填充 -->
     </div>
 </div>
 
-<!-- Metric Cards -->
+<!-- 核心指标 -->
 <div class="grid grid-4">
     <div class="card metric-card">
         <div class="metric-icon green"><i data-lucide="trending-up"></i></div>
-        <div class="metric-label">Today P&L</div>
+        <div class="metric-label">今日盈亏</div>
         <div class="metric-value" id="today-pnl">--</div>
-        <div class="metric-sub">All strategies</div>
+        <div class="metric-sub">全部策略</div>
         <div id="today-trend"></div>
     </div>
     <div class="card metric-card">
         <div class="metric-icon blue"><i data-lucide="bar-chart-3"></i></div>
-        <div class="metric-label">Total P&L</div>
+        <div class="metric-label">累计盈亏</div>
         <div class="metric-value" id="total-pnl">--</div>
-        <div class="metric-sub"><span id="total-trades">0</span> trades <span id="roi-label"></span></div>
+        <div class="metric-sub"><span id="total-trades">0</span> 笔交易 <span id="roi-label"></span></div>
     </div>
     <div class="card metric-card">
         <div class="metric-icon purple"><i data-lucide="wallet"></i></div>
-        <div class="metric-label">Balance</div>
+        <div class="metric-label">账户余额</div>
         <div class="metric-value" id="balance">--</div>
         <div class="metric-sub" id="leverage-info">--</div>
     </div>
     <div class="card metric-card">
         <div class="metric-icon green"><i data-lucide="percent"></i></div>
-        <div class="metric-label">Win Rate</div>
+        <div class="metric-label">胜率</div>
         <div class="metric-value" id="win-rate">--</div>
-        <div class="metric-sub">Profitable / Total</div>
+        <div class="metric-sub">盈利笔数 / 总笔数</div>
     </div>
 </div>
 
-<!-- Position Usage -->
+<!-- 仓位使用 -->
 <div class="card" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="pie-chart"></i> Position Usage</div>
+    <div class="section-title"><i data-lucide="pie-chart"></i> 仓位占用</div>
     <div class="pool-bar" id="pool-bar"></div>
     <div class="grid grid-4" id="pool-details" style="margin-top:10px;"></div>
 </div>
 
-<!-- Mode Filter -->
+<!-- 交易模式筛选 -->
 <div class="card" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="filter"></i> Trade Mode</div>
+    <div class="section-title"><i data-lucide="filter"></i> 交易模式</div>
     <div class="filter-tabs" id="mode-filter">
-        <button class="filter-tab active" data-mode="all">All</button>
-        <button class="filter-tab" data-mode="shadow">Shadow</button>
-        <button class="filter-tab" data-mode="live">Live</button>
+        <button class="filter-tab active" data-mode="all">全部</button>
+        <button class="filter-tab" data-mode="shadow">影子</button>
+        <button class="filter-tab" data-mode="live">实盘</button>
     </div>
     <div id="mode-summary" style="margin-top:10px;font-size:0.75rem;color:var(--text-muted);"></div>
 </div>
 
-<!-- Short Positions -->
+<!-- 做空持仓 -->
 <div class="card" id="short-positions-table" data-direction="SHORT" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="arrow-down-circle"></i> Short Positions <span class="card-sub" id="short-pnl-info"></span></div>
+    <div class="section-title"><i data-lucide="arrow-down-circle"></i> 做空持仓 <span class="card-sub" id="short-pnl-info"></span></div>
     <div class="table-wrapper">
         <table>
             <thead><tr>
-                <th>Symbol</th><th>Entry</th><th>Current</th>
-                <th class="sortable" data-sort="pnl_pct">P&L %</th>
-                <th class="sortable" data-sort="pnl_u">P&L U</th>
-                <th class="sortable" data-sort="hold_time">Hold</th>
-                <th>Status</th>
+                <th>币种</th><th>入场价</th><th>现价</th>
+                <th class="sortable" data-sort="pnl_pct">盈亏%</th>
+                <th class="sortable" data-sort="pnl_u">盈亏U</th>
+                <th class="sortable" data-sort="hold_time">持仓</th>
+                <th>状态</th>
             </tr></thead>
             <tbody id="short-trades"></tbody>
         </table>
     </div>
-    <div class="card-sub" id="short-empty" style="padding:16px;text-align:center;display:none;">No open short positions</div>
+    <div class="card-sub" id="short-empty" style="padding:16px;text-align:center;display:none;">暂无做空持仓</div>
 </div>
 
 <div class="grid grid-2">
-    <!-- Risk Control -->
+    <!-- 风控 -->
     <div class="card">
-        <div class="section-title"><i data-lucide="shield"></i> Risk Control <span class="sparkline-container"><canvas id="risk-sparkline" width="100" height="24"></canvas></span></div>
+        <div class="section-title"><i data-lucide="shield"></i> 风险控制 <span class="sparkline-container"><canvas id="risk-sparkline" width="100" height="24"></canvas></span></div>
         <div id="risk-content"></div>
     </div>
-    <!-- Candidates -->
+    <!-- 候选池 -->
     <div class="card">
-        <div class="section-title"><i data-lucide="scan"></i> Candidates</div>
+        <div class="section-title"><i data-lucide="scan"></i> 候选池</div>
         <div id="funnel-container"></div>
         <div class="table-wrapper">
             <table>
-                <thead><tr><th>Symbol</th><th>RSI(1D)</th><th>24h%</th><th>OI</th><th>Score</th><th>Status</th></tr></thead>
+                <thead><tr><th>币种</th><th>RSI(日)</th><th>24h涨幅</th><th>OI</th><th>评分</th><th>状态</th></tr></thead>
                 <tbody id="candidates"></tbody>
             </table>
         </div>
-        <div class="card-sub" id="cand-empty" style="padding:16px;text-align:center;display:none;">No candidates</div>
+        <div class="card-sub" id="cand-empty" style="padding:16px;text-align:center;display:none;">暂无候选</div>
     </div>
 </div>
 
-<!-- P&L Chart -->
+<!-- 盈亏曲线 -->
 <div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="activity"></i> P&L History</div>
+    <div class="section-title"><i data-lucide="activity"></i> 盈亏走势</div>
     <div class="chart-controls">
-        <button class="chart-range-btn" data-range="7d">7D</button>
-        <button class="chart-range-btn" data-range="30d">30D</button>
-        <button class="chart-range-btn active" data-range="all">All</button>
-        <span style="margin-left:auto;font-size:0.68rem;color:var(--text-muted);">Cumulative &bull; Daily</span>
+        <button class="chart-range-btn" data-range="7d">近7天</button>
+        <button class="chart-range-btn" data-range="30d">近30天</button>
+        <button class="chart-range-btn active" data-range="all">全部</button>
+        <span style="margin-left:auto;font-size:0.68rem;color:var(--text-muted);">累计 &bull; 每日</span>
     </div>
     <div style="height:240px;position:relative;">
         <canvas id="pnl-chart"></canvas>
@@ -127,26 +127,26 @@
     </div>
 </div>
 
-<!-- Shadow vs Live Comparison -->
+<!-- 影子 vs 实盘对比 -->
 <div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="git-compare"></i> Shadow vs Live</div>
+    <div class="section-title"><i data-lucide="git-compare"></i> 影子 vs 实盘</div>
     <div id="compare-summary" style="margin-bottom:10px;font-size:0.78rem;"></div>
     <div style="height:240px;position:relative;">
         <canvas id="compare-chart"></canvas>
         <div class="chart-tooltip" id="compare-tooltip"></div>
     </div>
     <div style="margin-top:8px;font-size:0.68rem;color:var(--text-muted);display:flex;gap:16px;">
-        <span style="color:var(--yellow);">&#9679; Shadow</span>
-        <span style="color:var(--green);">&#9679; Live</span>
+        <span style="color:var(--yellow);">&#9679; 影子</span>
+        <span style="color:var(--green);">&#9679; 实盘</span>
     </div>
 </div>
 
-<!-- Closed Trades -->
+<!-- 已平仓交易 -->
 <div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="check-circle"></i> Recent Closes</div>
+    <div class="section-title"><i data-lucide="check-circle"></i> 近期平仓</div>
     <div class="table-wrapper">
         <table>
-            <thead><tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Close</th><th>P&L</th><th>Reason</th><th>Time</th></tr></thead>
+            <thead><tr><th>币种</th><th>方向</th><th>入场价</th><th>平仓价</th><th>盈亏</th><th>原因</th><th>时间</th></tr></thead>
             <tbody id="closed-trades"></tbody>
         </table>
     </div>
@@ -160,12 +160,12 @@
 <script src="{{ url_for('static', filename='js/funnel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/compare.js') }}"></script>
 <script>
-// SocketIO connection
+// SocketIO 连接
 const socket = io();
 let lastDashboardData = null;
 let currentMode = 'all';
 
-// ── Mode Filter ──
+// ── 模式筛选 ──
 function initModeFilter() {
     document.querySelectorAll('#mode-filter .filter-tab').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -188,15 +188,15 @@ function updateModeSummary(data) {
     const liveCount = allTrades.filter(t => (t.exchange || 'shadow') !== 'shadow').length;
     const el = document.getElementById('mode-summary');
     if (!el) return;
-    if (currentMode === 'all') el.innerHTML = `Showing all | Shadow: ${shadowCount} | Live: ${liveCount}`;
-    else if (currentMode === 'shadow') el.innerHTML = `Shadow only (${shadowCount} trades)`;
-    else el.innerHTML = `Live only (${liveCount} trades)`;
+    if (currentMode === 'all') el.innerHTML = `显示全部 | 影子: ${shadowCount} 笔 | 实盘: ${liveCount} 笔`;
+    else if (currentMode === 'shadow') el.innerHTML = `仅影子交易（${shadowCount} 笔）`;
+    else el.innerHTML = `仅实盘交易（${liveCount} 笔）`;
 }
 
 function updateDashboard(data) {
     lastDashboardData = data;
     const ts = data.timestamp ? data.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : '--';
-    document.getElementById('timestamp').textContent = `Updated: ${ts}`;
+    document.getElementById('timestamp').textContent = `已更新: ${ts}`;
 
     const a = data.account;
     const todayTotal = a.today_pnl + (data.funding?.today_pnl || 0);
@@ -212,35 +212,35 @@ function updateDashboard(data) {
 
     document.getElementById('balance').innerHTML = `${a.balance}U`;
     document.getElementById('balance').className = 'metric-value ' + (a.balance >= a.initial_balance ? 'green' : 'red');
-    document.getElementById('leverage-info').textContent = `${a.leverage}x | Compound: ${data.pool?.compound_stake || '--'}U`;
+    document.getElementById('leverage-info').textContent = `${a.leverage}x | 复利: ${data.pool?.compound_stake || '--'}U`;
 
     document.getElementById('win-rate').textContent = a.win_rate + '%';
     document.getElementById('win-rate').className = 'metric-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
 
-    // Pool
+    // 仓位占用
     const pool = data.pool || {};
     const usedPct = pool.used_pct || 0;
     const availPct = Math.max(0, 100 - usedPct);
     const poolBarColor = usedPct > 80 ? 'var(--red)' : usedPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('pool-bar').innerHTML = `
-        <div class="pool-segment" style="width:${usedPct}%;background:${poolBarColor};">${usedPct.toFixed(0)}% used</div>
-        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-elevated);color:var(--text-muted);">${availPct.toFixed(0)}% free</div>
+        <div class="pool-segment" style="width:${usedPct}%;background:${poolBarColor};">${usedPct.toFixed(0)}% 已用</div>
+        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-elevated);color:var(--text-muted);">${availPct.toFixed(0)}% 可用</div>
     `;
     document.getElementById('pool-details').innerHTML = `
-        <div><span class="card-sub">Max Position</span><div style="font-weight:600;">${pool.max_position||0}U</div></div>
-        <div><span class="card-sub">Short Used</span><div style="font-weight:600;">${pool.short_used||0}U</div></div>
-        <div><span class="card-sub">Available</span><div style="font-weight:600;">${pool.available||0}U</div></div>
-        <div><span class="card-sub">Per Trade</span><div style="font-weight:600;">${pool.compound_stake||'--'}U</div></div>
+        <div><span class="card-sub">最大仓位</span><div style="font-weight:600;">${pool.max_position||0}U</div></div>
+        <div><span class="card-sub">做空占用</span><div style="font-weight:600;">${pool.short_used||0}U</div></div>
+        <div><span class="card-sub">剩余可用</span><div style="font-weight:600;">${pool.available||0}U</div></div>
+        <div><span class="card-sub">单笔保证金</span><div style="font-weight:600;">${pool.compound_stake||'--'}U</div></div>
     `;
 
-    // Short positions (filtered)
+    // 做空持仓（按模式筛选）
     const st = data.short_trades || {};
     const filteredOpen = filterTradesByMode(st.open || [], currentMode);
-    document.getElementById('short-pnl-info').innerHTML = `Today ${App.fmtPnl(st.today_pnl||0)} | Total ${App.fmtPnl(st.total_pnl||0)}`;
+    document.getElementById('short-pnl-info').innerHTML = `今日 ${App.fmtPnl(st.today_pnl||0)} | 累计 ${App.fmtPnl(st.total_pnl||0)}`;
     PositionTable.render(filteredOpen, 'short-trades', 'short-empty', 'SHORT', data.config);
     updateModeSummary(data);
 
-    // Risk
+    // 风控
     const risk = data.risk || {};
     const cfg = data.config || {};
     const dailyLoss = risk.daily_loss || 0;
@@ -249,23 +249,23 @@ function updateDashboard(data) {
     const trades_opened = risk.daily_trades_opened || 0;
     const maxTrades = cfg.max_daily_trades || 2;
     const paused = risk.paused_until ? true : false;
-    let statusBadge = '<span class="badge badge-ok">Normal</span>';
-    if (paused) statusBadge = '<span class="badge badge-stop">Paused</span>';
-    else if (dailyLoss >= dailyMax) statusBadge = '<span class="badge badge-stop">Stopped</span>';
-    else if (dailyLoss >= dailyMax * 0.7) statusBadge = '<span class="badge badge-warn">Warning</span>';
+    let statusBadge = '<span class="badge badge-ok">正常</span>';
+    if (paused) statusBadge = '<span class="badge badge-stop">已暂停</span>';
+    else if (dailyLoss >= dailyMax) statusBadge = '<span class="badge badge-stop">已停止</span>';
+    else if (dailyLoss >= dailyMax * 0.7) statusBadge = '<span class="badge badge-warn">预警</span>';
     const barColor = dailyPct > 80 ? 'var(--red)' : dailyPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('risk-content').innerHTML = `
         <div style="margin-bottom:14px;">${statusBadge}</div>
-        <div style="margin-bottom:10px;font-size:0.8rem;">Daily Loss: ${dailyLoss.toFixed(1)} / ${dailyMax}U
+        <div style="margin-bottom:10px;font-size:0.8rem;">日亏损: ${dailyLoss.toFixed(1)} / ${dailyMax}U
             <div class="risk-bar"><div class="risk-bar-fill" style="width:${dailyPct}%;background:${barColor}"></div></div></div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">Trades: ${trades_opened} / ${maxTrades}</div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">Consecutive losses: ${risk.consecutive_losses || 0} / 3</div>
-        ${paused ? '<div class="red" style="font-size:0.78rem;">Paused until: ' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}
-        ${data.risk_last_pause ? '<div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">Last pause: ' + App.formatTime(data.risk_last_pause) + '</div>' : ''}`;
+        <div style="margin-bottom:8px;font-size:0.8rem;">今日开仓: ${trades_opened} / ${maxTrades} 笔</div>
+        <div style="margin-bottom:8px;font-size:0.8rem;">连续亏损: ${risk.consecutive_losses || 0} / 3 次</div>
+        ${paused ? '<div class="red" style="font-size:0.78rem;">暂停至: ' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}
+        ${data.risk_last_pause ? '<div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">上次暂停: ' + App.formatTime(data.risk_last_pause) + '</div>' : ''}`;
 
     if (data.risk_history && data.risk_history.length > 0) drawSparkline('risk-sparkline', data.risk_history, 100, 24);
 
-    // Candidates
+    // 候选池
     const candTbody = document.getElementById('candidates');
     const candEmpty = document.getElementById('cand-empty');
     if (!data.candidates || data.candidates.length === 0) {
@@ -273,23 +273,23 @@ function updateDashboard(data) {
     } else {
         candEmpty.style.display = 'none';
         candTbody.innerHTML = data.candidates.slice(0, 12).map(c => {
-            const badge = c.triggered ? '<span class="badge badge-closed">Triggered</span>' : '<span class="badge badge-open">Waiting</span>';
+            const badge = c.triggered ? '<span class="badge badge-closed">已触发</span>' : '<span class="badge badge-open">等待中</span>';
             return `<tr><td><b>${c.symbol}</b></td><td>${c.rsi_1d}</td><td>${App.fmtPct(c.pct24h)}</td>
                 <td>${(c.oi_change||0).toFixed(0)}%</td><td>${c.yao_score}/3</td><td>${badge}</td></tr>`;
         }).join('');
     }
     CandidateFunnel.render(data.candidates);
 
-    // Closed trades (filtered)
+    // 已平仓交易（按模式筛选）
     const closedTbody = document.getElementById('closed-trades');
     const allClosed = filterTradesByMode(st.closed || [], currentMode)
         .sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
     closedTbody.innerHTML = allClosed.map(t => {
         const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
         const modeTag = (t.exchange || 'shadow') === 'shadow'
-            ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.6rem;">Shadow</span>'
-            : '<span class="badge badge-ok" style="font-size:0.6rem;">Live</span>';
-        return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction||'SHORT'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
+            ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.6rem;">影子</span>'
+            : '<span class="badge badge-ok" style="font-size:0.6rem;">实盘</span>';
+        return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction === 'SHORT' ? '做空' : '做多'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
             <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
             <td>${t.close_reason || '--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
     }).join('');
@@ -306,12 +306,12 @@ socket.on('update', function(data) {
     BinanceWS.updateSymbols([...symbols]);
 });
 socket.on('connect', () => {
-    document.getElementById('timestamp').textContent = 'Connected, waiting...';
+    document.getElementById('timestamp').textContent = '已连接，等待数据...';
     document.getElementById('connection-status').innerHTML = '<i data-lucide="wifi" style="width:14px;height:14px;color:var(--green);"></i>';
     lucide.createIcons();
 });
 socket.on('disconnect', () => {
-    document.getElementById('timestamp').textContent = 'Disconnected, reconnecting...';
+    document.getElementById('timestamp').textContent = '已断开，正在重连...';
     document.getElementById('connection-status').innerHTML = '<i data-lucide="wifi-off" style="width:14px;height:14px;color:var(--red);"></i>';
     lucide.createIcons();
 });
@@ -330,13 +330,13 @@ document.addEventListener('DOMContentLoaded', () => {
             PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
         }
     });
-    // Fetch multi-account overview
+    // 获取多账户总览
     fetchAccountsOverview();
     setInterval(fetchAccountsOverview, 15000);
     lucide.createIcons();
 });
 
-// ── Multi-Account Overview ──
+// ── 多账户总览 ──
 async function fetchAccountsOverview() {
     try {
         const resp = await fetch('/api/accounts/overview');
@@ -344,7 +344,7 @@ async function fetchAccountsOverview() {
         const data = await resp.json();
         renderAccountsOverview(data);
     } catch (e) {
-        console.warn('[Accounts] fetch failed:', e);
+        console.warn('[账户总览] 获取失败:', e);
     }
 }
 
@@ -355,7 +355,7 @@ function renderAccountsOverview(data) {
         if (card) card.style.display = 'none';
         return;
     }
-    // Only show if >1 account
+    // 仅在多账户时显示
     if (data.accounts.length <= 1) {
         const card = document.getElementById('accounts-overview-card');
         if (card) card.style.display = 'none';
@@ -367,7 +367,7 @@ function renderAccountsOverview(data) {
     const colorClasses = ['acc-0', 'acc-1', 'acc-2'];
     container.innerHTML = data.accounts.map((acc, idx) => {
         const statusClass = acc.is_live ? 'live' : 'shadow';
-        const statusText = acc.is_live ? 'LIVE' : 'SHADOW';
+        const statusText = acc.is_live ? '实盘' : '影子';
         const pnlClass = acc.total_pnl >= 0 ? 'green' : 'red';
         const todayClass = acc.today_pnl >= 0 ? 'green' : 'red';
         const activeClass = acc.is_active ? ' active' : '';
@@ -387,15 +387,15 @@ function renderAccountsOverview(data) {
             </div>
             <div class="account-card-metrics">
                 <div class="account-metric">
-                    <div class="account-metric-label">Open</div>
+                    <div class="account-metric-label">持仓</div>
                     <div class="account-metric-value">${acc.open_count}</div>
                 </div>
                 <div class="account-metric">
-                    <div class="account-metric-label">Today</div>
+                    <div class="account-metric-label">今日</div>
                     <div class="account-metric-value ${todayClass}">${acc.today_pnl >= 0 ? '+' : ''}${acc.today_pnl.toFixed(2)}U</div>
                 </div>
                 <div class="account-metric">
-                    <div class="account-metric-label">Total</div>
+                    <div class="account-metric-label">累计</div>
                     <div class="account-metric-value ${pnlClass}">${acc.total_pnl >= 0 ? '+' : ''}${acc.total_pnl.toFixed(2)}U</div>
                 </div>
             </div>
