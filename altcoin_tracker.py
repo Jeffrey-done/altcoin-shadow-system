@@ -332,6 +332,38 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  价格获取（多源 fallback）
+# ══════════════════════════════════════════════════════════════════
+
+def _fetch_price_multi_source(binance_exchange, symbol: str) -> Optional[float]:
+    """
+    多源获取最新价：优先 Binance，失败回退 OKX。
+    两个都失败返回 None — 上层决定如何处理（此时应跳过本轮而非用 entry_price）。
+    """
+    # 尝试 Binance
+    try:
+        price = binance_exchange.fetch_ticker(symbol)['last']
+        if price and price > 0:
+            return float(price)
+    except Exception as e:
+        logger.debug(f"Binance fetch_ticker 失败 ({symbol}): {e}")
+
+    # Fallback 到 OKX
+    try:
+        from exchange_manager import get_okx
+        okx = get_okx()
+        if okx is not None:
+            price = okx.fetch_ticker(symbol)['last']
+            if price and price > 0:
+                logger.info(f"价格 fallback 到 OKX: {symbol} @ {price}")
+                return float(price)
+    except Exception as e:
+        logger.debug(f"OKX fetch_ticker 失败 ({symbol}): {e}")
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════
 #  实盘平仓辅助（tracker 和 realtime_monitor 共用）
 # ══════════════════════════════════════════════════════════════════
 
@@ -402,26 +434,49 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
         logger.error(
             f"❌ [{trade.exchange}] 平仓失败（{max_retries}次重试后）{trade.symbol}: {error_msg}"
         )
+        # 标记 trade 需要在下轮 tracker/monitor 重试平仓（避免悬仓无人管）
+        try:
+            with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+                for t in trades_raw:
+                    if t.get('id') == trade.id:
+                        t['close_retry_pending'] = True
+                        t['close_retry_action'] = action
+                        t['close_retry_amount'] = close_amount
+                        t['close_retry_last_error'] = error_msg
+                        save(trades_raw)
+                        break
+        except Exception as _e:
+            logger.debug(f"标记 close_retry_pending 失败（非致命）: {_e}")
         send_tg(
-            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败（已重试{max_retries}次）</b>\n\n"
+            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败（已重试{max_retries}次，已排队下轮重试）</b>\n\n"
             f"币种：{trade.symbol}\n"
             f"动作：{action}\n"
             f"原因：{error_msg}\n\n"
-            f"⚠️ JSON 已标记为平仓，但交易所可能仍有持仓，请立即手动检查！"
+            f"⚠️ 系统会在下一轮 tracker/monitor 继续尝试平仓；\n"
+            f"如果持续失败请立即手动到交易所平仓！"
         )
         return
 
-    # 成功：把交易所订单 ID 回填到 trade（需要再抢一次锁写回）
+    # 成功：把交易所订单 ID 回填到 trade（后台线程，避免阻塞 WebSocket 消息处理线程）
     # 这里用 best-effort 模式：失败不重试（订单已成交，ID 只是审计信息）
-    try:
-        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
-            for t in trades_raw:
-                if t.get('id') == trade.id:
-                    t['close_order_id'] = result.get('order_id', '')
-                    save(trades_raw)
-                    break
-    except Exception as e:
-        logger.debug(f"回填 close_order_id 失败（非致命）: {e}")
+    def _backfill_order_id():
+        try:
+            with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+                for t in trades_raw:
+                    if t.get('id') == trade.id:
+                        t['close_order_id'] = result.get('order_id', '')
+                        # 成功平仓后清除所有 retry 标记
+                        t.pop('close_retry_pending', None)
+                        t.pop('close_retry_action', None)
+                        t.pop('close_retry_amount', None)
+                        t.pop('close_retry_last_error', None)
+                        save(trades_raw)
+                        break
+        except Exception as e:
+            logger.debug(f"回填 close_order_id 失败（非致命）: {e}")
+
+    import threading as _threading
+    _threading.Thread(target=_backfill_order_id, daemon=True).start()
 
     logger.info(
         f"✅ [{trade.exchange}] 实盘平仓成功: {trade.symbol} | "
@@ -465,6 +520,24 @@ def run(check_only: bool = False):
     pending_risk_updates = []   # [(pnl_usd, stake_remaining), ...]
     pending_alerts = []         # [alert_msg, ...]
     pending_exchange_closes = []  # [(trade_ref, action, amount), ...] 出锁后下真单
+    pending_retry_closes = []    # [(trade_ref, action, amount), ...] 上轮失败的重试
+
+    # 先处理上一轮标记了 close_retry_pending 的死状态 trade（不抢 trades 锁，仅读）
+    trades_snapshot_for_retry = load_json(TRADES_FILE, [])
+    for t in trades_snapshot_for_retry:
+        if not t.get('close_retry_pending'):
+            continue
+        if t.get('exchange') == 'shadow':
+            continue  # 影子交易无需真实平仓
+        try:
+            trade_obj = Trade.from_dict(t)
+            pending_retry_closes.append((
+                trade_obj,
+                t.get('close_retry_action', 'full_close'),
+                float(t.get('close_retry_amount', 0) or 0),
+            ))
+        except Exception as _e:
+            logger.debug(f"跳过损坏的 retry trade: {_e}")
 
     with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
         trades = [Trade.from_dict(t) for t in trades_raw]
@@ -502,16 +575,13 @@ def run(check_only: bool = False):
                 logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop {old_val} → {entry}")
 
         for trade in open_trades:
-            try:
-                current = binance.fetch_ticker(trade.symbol)['last']
-            except Exception as e:
-                logger.warning(f"获取价格失败 ({trade.symbol}): {e}")
-                # 不使用 entry_price 代替（会导致止损失效），跳过本轮评估
-                # realtime_monitor WebSocket 作为备份覆盖
+            current = _fetch_price_multi_source(binance, trade.symbol)
+            if current is None:
+                logger.warning(f"获取价格失败（Binance+OKX 都不可用）: {trade.symbol}")
                 send_tg(
                     f"⚠️ <b>价格获取失败</b>\n\n"
                     f"币种：{trade.symbol}\n"
-                    f"原因：{e}\n"
+                    f"Binance 和 OKX 两个数据源都不可用\n"
                     f"本轮跳过该仓位评估，等待下一轮或 WebSocket 覆盖"
                 )
                 continue
@@ -578,8 +648,24 @@ def run(check_only: bool = False):
         if any_updated:
             save([t.to_dict() for t in trades])
             logger.info("交易数据已更新并保存")
+            # 立即刷新 realtime_monitor 的内存快照：
+            # TP1 触发后 trail_stop_price 已变成保本止损，
+            # 必须立刻反映到内存里，否则 realtime_monitor 的 30s 快照窗口内
+            # 保本止损价格反弹不会触发
+            try:
+                from realtime_monitor import _refresh_snapshot_from_trades
+                _refresh_snapshot_from_trades(trades)
+            except Exception as _e:
+                logger.debug(f"刷新 realtime_monitor 快照失败（非致命）: {_e}")
 
     # ══ 出锁后才执行副作用 ══
+    # 0) 先重试上一轮失败的悬仓（不在本轮 evaluate 里，所以单独处理）
+    for trade, action, close_amount in pending_retry_closes:
+        if close_amount <= 0:
+            continue
+        logger.info(f"🔁 重试上轮失败的平仓: {trade.symbol} 动作={action} 数量={close_amount:.4f}")
+        _perform_exchange_close(trade, action, close_amount)
+
     # 1) 实盘平仓（发真实订单）
     #    顺序很重要：save 已经落盘，此时发单失败也不会让 JSON 和交易所状态不一致
     #    （JSON 已经标记 closed，交易所还挂着 → 会在 TG 推送里告警，让用户手动处理）

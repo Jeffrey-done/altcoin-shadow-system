@@ -98,6 +98,19 @@ def _check_slippage(symbol: str, exchange_name: str,
     return None
 
 
+def _amount_to_precision(exchange, symbol: str, amount: float) -> float:
+    """
+    用 ccxt 的 amount_to_precision 裁剪下单数量到交易所 stepSize。
+    裁剪后为 0 的返回 0（上层应拒单）。失败时返回原值（fallback）。
+    """
+    try:
+        precise = float(exchange.amount_to_precision(symbol, amount))
+        return precise if precise > 0 else 0.0
+    except Exception as e:
+        logger.debug(f"amount_to_precision 失败 ({symbol}, {amount}): {e}")
+        return amount
+
+
 def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
                        client_order_id: Optional[str] = None,
                        account_id: Optional[str] = None) -> dict:
@@ -135,6 +148,12 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
         ref_price = ticker['last']
         notional = stake * leverage
         amount = notional / ref_price
+
+        # 裁剪到交易所数量精度（stepSize），避免 -4005 LOT_SIZE 报错
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
 
         params = {'positionSide': 'SHORT'}
         if client_order_id:
@@ -193,6 +212,12 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
         ref_price = ticker['last']
         notional = stake * leverage
         amount = notional / ref_price
+
+        # 裁剪到交易所数量精度
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
 
         params = {'positionSide': 'LONG'}
         if client_order_id:
@@ -257,6 +282,12 @@ def execute_close_position(symbol: str, direction: str, amount: float,
         params = {'positionSide': position_side, 'reduceOnly': True}
         if client_order_id:
             params['newClientOrderId'] = client_order_id
+
+        # 裁剪到交易所数量精度
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": "平仓数量裁剪后为 0（精度不足）"}
 
         order = exchange.create_order(
             symbol=symbol, type='market', side=side,
@@ -371,6 +402,12 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
         notional = stake * leverage
         amount = notional / ref_price
 
+        # 裁剪到交易所数量精度（OKX 也有 lotSize）
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
+
         params = {'tdMode': 'cross', 'posSide': 'short'}
         if client_order_id:
             # OKX 用 clOrdId；ccxt 已支持透传
@@ -422,6 +459,12 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
         ref_price = ticker['last']
         notional = stake * leverage
         amount = notional / ref_price
+
+        # 裁剪到交易所数量精度
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
 
         params = {'tdMode': 'cross', 'posSide': 'long'}
         if client_order_id:
@@ -477,6 +520,12 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float,
         params = {'tdMode': 'cross', 'posSide': pos_side, 'reduceOnly': True}
         if client_order_id:
             params['clOrdId'] = client_order_id
+
+        # 裁剪到交易所数量精度
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "order_id": "", "price": 0, "amount": 0,
+                    "error": "平仓数量裁剪后为 0（精度不足）"}
 
         order = exchange.create_order(
             symbol=symbol, type='market', side=side,

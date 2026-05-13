@@ -128,13 +128,17 @@ class Trade:
                      exchange: str = 'shadow',
                      live_order_id: Optional[str] = None) -> Trade:
         """工厂方法：创建做空交易（带杠杆 + 硬止损）"""
+        import secrets as _secrets
         from common import get_current_account_id
         notional = stake * leverage
         hard_stop = round(price * (1 + config.HARD_STOP_LOSS_PCT / 100), 6)
-        # ID 加交易所后缀，避免 both 模式下两所同币同秒 ID 冲突
+        # ID 加交易所后缀 + 毫秒时间戳 + 3字节随机 token，
+        # 确保多账户并行开仓时同币同秒不会冲突
         ex_tag = exchange[:2].upper() if exchange != 'shadow' else 'SH'
+        ts_ms = int(time.time() * 1000)
+        rand = _secrets.token_hex(3)
         return cls(
-            id=f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{int(time.time())}",
+            id=f"SCAN-SHORT-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{ts_ms}-{rand}",
             symbol=symbol,
             direction='SHORT',
             entry_price=price,

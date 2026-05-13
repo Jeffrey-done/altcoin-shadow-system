@@ -377,13 +377,15 @@ def cleanup_old_trades():
                 keep.append(t)
                 continue
 
-            closed_at = t.get('closed_at', '')
-            if not closed_at:
+            # 优先用 closed_at 判断归档；若没有就 fallback 到 opened_at
+            # （兼容历史数据漂移，避免无限累积）
+            ts_str = t.get('closed_at') or t.get('opened_at', '')
+            if not ts_str:
                 keep.append(t)
                 continue
 
             try:
-                closed_dt = parse_iso(closed_at)
+                closed_dt = parse_iso(ts_str)
                 age_days = (now - closed_dt).days
                 if age_days > config.TRADES_ARCHIVE_DAYS:
                     archive_new.append(t)

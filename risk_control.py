@@ -288,50 +288,66 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
 
     返回: (allowed: bool, reason: str)
     """
-    state = load_risk_state(account_id)
+    # 所有读-判-写操作统一在锁内执行，避免并发 can_open_trade 重复清理 paused_until
+    # 或 total_open_stake 双写漂移
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data, account_id)
+        dirty = False
 
-    # 1. 检查暂停状态
-    if state.paused_until:
-        pause_end = parse_iso(state.paused_until)
-        if utcnow() < pause_end:
-            remaining = (pause_end - utcnow()).total_seconds() / 3600
-            reason = f"风控暂停中（连亏{state.consecutive_losses}次），剩余{remaining:.1f}小时"
+        # 1. 检查暂停状态
+        if state.paused_until:
+            pause_end = parse_iso(state.paused_until)
+            if utcnow() < pause_end:
+                remaining = (pause_end - utcnow()).total_seconds() / 3600
+                reason = f"风控暂停中（连亏{state.consecutive_losses}次），剩余{remaining:.1f}小时"
+                logger.warning(f"🚫 {reason}")
+                return False, reason
+            # 暂停已过期，在锁内重置
+            state.paused_until = None
+            state.consecutive_losses = 0
+            dirty = True
+
+        # 2. 检查单日最大亏损
+        if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
+            reason = f"单日亏损已达上限（{state.daily_loss:.1f}U >= {config.RISK_MAX_DAILY_LOSS}U）"
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
             logger.warning(f"🚫 {reason}")
             return False, reason
 
-        # 暂停已过期，重置
-        state.paused_until = None
-        state.consecutive_losses = 0
-        save_risk_state(state, account_id)
+        # 3. 检查单日最大开仓次数
+        if state.daily_trades_opened >= config.RISK_MAX_DAILY_TRADES:
+            reason = f"单日开仓次数已达上限（{state.daily_trades_opened} >= {config.RISK_MAX_DAILY_TRADES}）"
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
+            logger.warning(f"🚫 {reason}")
+            return False, reason
 
-    # 2. 检查单日最大亏损
-    if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
-        reason = f"单日亏损已达上限（{state.daily_loss:.1f}U >= {config.RISK_MAX_DAILY_LOSS}U）"
-        logger.warning(f"🚫 {reason}")
-        return False, reason
+        # 4. 检查最大持仓占比（锁内同步持仓总额）
+        actual_stake = _calc_actual_open_stake(account_id)
+        if abs(state.total_open_stake - actual_stake) > 0.01:
+            logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake:.0f}U")
+            state.total_open_stake = actual_stake
+            dirty = True
 
-    # 3. 检查单日最大开仓次数
-    if state.daily_trades_opened >= config.RISK_MAX_DAILY_TRADES:
-        reason = f"单日开仓次数已达上限（{state.daily_trades_opened} >= {config.RISK_MAX_DAILY_TRADES}）"
-        logger.warning(f"🚫 {reason}")
-        return False, reason
+        dynamic_bal = get_dynamic_balance(account_id=_resolve_account_id(account_id))
+        max_position = dynamic_bal * config.RISK_MAX_POSITION_PCT
+        if state.total_open_stake + stake > max_position:
+            reason = (
+                f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
+                f"> 上限{max_position:.0f}U）"
+            )
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
+            logger.warning(f"🚫 {reason}")
+            return False, reason
 
-    # 4. 检查最大持仓占比
-    actual_stake = _calc_actual_open_stake(account_id)
-    if state.total_open_stake != actual_stake:
-        logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake:.0f}U")
-        state.total_open_stake = actual_stake
-        save_risk_state(state, account_id)
-
-    dynamic_bal = get_dynamic_balance(account_id=_resolve_account_id(account_id))
-    max_position = dynamic_bal * config.RISK_MAX_POSITION_PCT
-    if state.total_open_stake + stake > max_position:
-        reason = (
-            f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
-            f"> 上限{max_position:.0f}U）"
-        )
-        logger.warning(f"🚫 {reason}")
-        return False, reason
+        if dirty:
+            data = _save_state_in_lock(data, state, account_id)
+            save(data)
 
     return True, "OK"
 
@@ -360,8 +376,17 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
 
-        # 更新持仓总额
-        state.total_open_stake = max(0, state.total_open_stake - stake)
+        # 更新持仓总额 — 若出现负值说明风控状态已漂移，告警并自动从交易文件反算修正
+        new_stake = state.total_open_stake - stake
+        if new_stake < -0.01:
+            logger.warning(
+                f"⚠️ total_open_stake 出现负值漂移 [{_resolve_account_id(account_id)}]: "
+                f"{state.total_open_stake:.2f} - {stake:.2f} = {new_stake:.2f}，"
+                f"从交易文件反算修正"
+            )
+            state.total_open_stake = _calc_actual_open_stake(account_id)
+        else:
+            state.total_open_stake = max(0.0, new_stake)
 
         if pnl < 0:
             # 记录亏损

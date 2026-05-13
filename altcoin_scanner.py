@@ -524,17 +524,19 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
             half = max(1.0, round(stake / 2, 2))
             live_routes = [('binance', half), ('okx', half)]
         elif mode == 'auto':
-            # 按品种覆盖决定
+            # 按品种覆盖决定：
+            #   - OKX 有合约时优先用 OKX（它体量小、费率更极端，易被做空触发）
+            #   - OKX 没合约时回退到 binance
+            #   - 两家都没有时用 PRIMARY_EXCHANGE_FALLBACK
             try:
                 has_okx = okx_has_swap(symbol)
             except Exception:
                 has_okx = False
-            # Binance 默认全覆盖（系统主数据源就是 Binance）
             if has_okx:
+                live_routes = [('okx', stake)]
+            else:
                 fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
                 live_routes = [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
-            else:
-                live_routes = [('binance', stake)]
         else:
             live_routes = [('binance', stake)]
 
@@ -660,11 +662,25 @@ def check_candidates():
         else:  # grade B
             actual_stake = round(base_stake * 0.5)
 
-        # ── 风控检查（全局预检，任一账户允许即继续；精确检查在并行循环内）──
-        # 这里用默认账户做快速预筛，防止所有账户都满额时浪费 API 调用
-        allowed, risk_reason = can_open_trade(actual_stake)
-        if not allowed:
-            logger.warning(f"  🚫 风控拒绝 {c.symbol}: {risk_reason}")
+        # ── 风控检查（全局预检）──
+        # 为了避免"活跃账户正在暂停"时把整个信号丢掉，改为
+        # "只要任一已配置账户允许即继续"。精确检查仍在并行循环内做。
+        try:
+            from admin_secrets import get_all_trading_accounts as _get_trading_accts
+            _trading_accts = _get_trading_accts() or [{'id': ''}]
+        except Exception:
+            _trading_accts = [{'id': ''}]
+        any_allowed = False
+        first_reason = ""
+        for _acc in _trading_accts:
+            _ok, _rsn = can_open_trade(actual_stake, account_id=_acc.get('id') or None)
+            if _ok:
+                any_allowed = True
+                break
+            if not first_reason:
+                first_reason = _rsn
+        if not any_allowed:
+            logger.warning(f"  🚫 所有账户都拒绝 {c.symbol}: {first_reason}")
             continue
 
         # ── 触发开仓 ──
@@ -702,25 +718,25 @@ def check_candidates():
         if not all_accounts:
             all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}}]
 
-        # ── 锁内二次校验准备 ──
-        # 去重粒度：仅 symbol。只要任何账户/交易所已有该币持仓，
-        # 其他账户也不再开（避免同一信号跨账户重复暴露）。
-        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+        # ── 锁内第一阶段：去重检查 + 每账户风控检查，构建执行任务 ──
+        # 只在锁内做这些（快速内存操作），把耗时的网络下单移到锁外，
+        # 避免阻塞 realtime_monitor / tracker 的止损平仓。
+        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw_check, save_check):
             already_open_symbols = {
                 t.get('symbol')
-                for t in trades_raw if t.get('status') == 'open'
+                for t in trades_raw_check if t.get('status') == 'open'
             }
 
-            opened_trades = []     # [(trade, entry_price, route_exchange, route_stake)]
-            opened_any = False
+            # 如果锁内发现该币已有任意账户持仓 → 直接跳过
+            if c.symbol in already_open_symbols:
+                logger.warning(f"  ⏩ 跳过 {c.symbol}：锁内发现已有持仓（全局去重）")
+                c.triggered = False
+                continue
 
-            # 构建所有需要执行的任务：(account_id, route_exchange, route_stake)
-            # 每个账户独立检查风控额度
+            # 构建执行任务：每个账户 × 每个路由（每账户独立风控）
             execution_tasks = []
             for account in all_accounts:
                 acc_id = account['id']
-
-                # ── 每账户独立风控检查 ──
                 acc_allowed, acc_risk_reason = can_open_trade(
                     actual_stake, account_id=acc_id if acc_id else None
                 )
@@ -729,48 +745,45 @@ def check_candidates():
                         f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
                     )
                     continue
-
                 for route_exchange, route_stake in routes:
-                    # 同币已有任何持仓（跨账户/跨交易所）→ 跳过
-                    if c.symbol in already_open_symbols:
-                        logger.warning(
-                            f"  ⏩ 跳过 {c.symbol}@{route_exchange}@{acc_id}：锁内发现已有持仓（全局去重）"
-                        )
-                        continue
                     execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
+            # 出锁 — 此后不阻塞其他模块
 
-            if not execution_tasks:
-                c.triggered = False
-                continue
+        if not execution_tasks:
+            c.triggered = False
+            continue
 
-            # ── 并行执行所有账户的下单（毫秒级同步）──
-            from live_executor import execute_open, make_client_order_id
+        # ── 锁外第二阶段：并行执行下单（网络 I/O，耗时 200ms~5s）──
+        from live_executor import execute_open, make_client_order_id
 
-            def _execute_one(task_args):
-                """单个账户单个路由的下单任务"""
-                acc_id, acc_name, r_exchange, r_stake = task_args
-                coid = make_client_order_id('sho', c.symbol, r_exchange)
+        def _execute_one(task_args):
+            """单个账户单个路由的下单任务"""
+            acc_id, acc_name, r_exchange, r_stake = task_args
+            coid = make_client_order_id('sho', c.symbol, r_exchange)
 
-                if r_exchange == 'shadow':
-                    return (acc_id, acc_name, r_exchange, r_stake,
-                            {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""})
+            if r_exchange == 'shadow':
+                return (acc_id, acc_name, r_exchange, r_stake,
+                        {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""})
 
-                result = execute_open(
-                    c.symbol, 'SHORT', r_stake,
-                    exchange_name=r_exchange,
-                    leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
-                    client_order_id=coid,
-                    account_id=acc_id if acc_id else None,
-                )
-                return (acc_id, acc_name, r_exchange, r_stake, result)
+            result = execute_open(
+                c.symbol, 'SHORT', r_stake,
+                exchange_name=r_exchange,
+                leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
+                client_order_id=coid,
+                account_id=acc_id if acc_id else None,
+            )
+            return (acc_id, acc_name, r_exchange, r_stake, result)
 
-            # 使用 ThreadPoolExecutor 实现毫秒级并行
-            # max_workers = 账户数 × 路由数，确保所有下单同时发出
-            with ThreadPoolExecutor(max_workers=max(len(execution_tasks), 4)) as executor:
-                futures = [executor.submit(_execute_one, task) for task in execution_tasks]
-                results = [f.result() for f in as_completed(futures)]
+        # 毫秒级并行下单（锁已释放，不会阻塞其他模块）
+        with ThreadPoolExecutor(max_workers=max(len(execution_tasks), 4)) as executor:
+            futures = [executor.submit(_execute_one, task) for task in execution_tasks]
+            results = [f.result() for f in as_completed(futures)]
 
-            # 处理执行结果
+        # ── 锁内第三阶段：把成功的下单结果写入 TRADES_FILE ──
+        opened_trades = []     # [(trade, entry_price, route_exchange, route_stake)]
+
+        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+            opened_any = False
             for acc_id, acc_name, route_exchange, route_stake, live_result in results:
                 if not live_result["success"]:
                     logger.error(
@@ -784,7 +797,6 @@ def check_candidates():
                     )
                     continue
 
-                # 成交均价优先，否则回退到 ticker 价格（影子模式总是走这条）
                 entry_price = live_result["price"] if live_result["price"] > 0 else price
 
                 trade = Trade.create_short(
@@ -794,14 +806,12 @@ def check_candidates():
                     exchange=route_exchange,
                     live_order_id=live_result.get("order_id") or None,
                 )
-                # 覆盖 trade 的 account_id（create_short 默认用 active_account）
                 trade.account_id = acc_id
                 opened_trades.append((trade, entry_price, route_exchange, route_stake))
                 trades_raw.append(trade.to_dict())
                 opened_any = True
 
             if not opened_any:
-                # 所有路由都失败/重复 → 跳过这个信号
                 c.triggered = False
                 continue
 
