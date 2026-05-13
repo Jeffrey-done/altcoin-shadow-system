@@ -17,7 +17,7 @@ from common import (
     RISK_FILE, TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     utcnow_iso, today_str, parse_iso, utcnow,
-    get_dynamic_balance,
+    get_dynamic_balance, LockedJsonFile,
 )
 
 logger = setup_logger("risk_control")
@@ -81,6 +81,28 @@ def _calc_actual_open_stake() -> float:
     return total
 
 
+def _state_from_data(data: dict) -> 'RiskState':
+    """
+    从原始 dict 构建 RiskState，处理日期翻转逻辑。
+    供 LockedJsonFile 上下文中使用（已在锁内，不需要再次加锁读取）。
+    """
+    if not data:
+        state = RiskState()
+        state.total_open_stake = _calc_actual_open_stake()
+        return state
+
+    state = RiskState.from_dict(data)
+
+    # 新的一天：重置当日计数（但连亏次数和暂停时间保留）
+    if state.date != today_str():
+        state.date = today_str()
+        state.daily_loss = 0.0
+        state.daily_trades_opened = 0
+        state.total_open_stake = _calc_actual_open_stake()
+
+    return state
+
+
 def _calc_today_realized_loss() -> float:
     """
     从交易文件计算"今日"已实现亏损（仅取 pnl<0 的绝对值之和）。
@@ -121,26 +143,30 @@ def reconcile_risk_state(notify: bool = False) -> dict:
       notify: True 时如果发现漂移会推送 TG 告警
     返回: 修正前后的 diff（空 dict 表示无漂移）
     """
-    state = load_risk_state()
     expected_loss = _calc_today_realized_loss()
     expected_trades = _calc_today_trades_opened()
     expected_stake = _calc_actual_open_stake()
 
     diff = {}
-    if abs(state.daily_loss - expected_loss) > 0.01:
-        diff['daily_loss'] = (state.daily_loss, expected_loss)
-        state.daily_loss = expected_loss
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data)
 
-    if state.daily_trades_opened != expected_trades:
-        diff['daily_trades_opened'] = (state.daily_trades_opened, expected_trades)
-        state.daily_trades_opened = expected_trades
+        if abs(state.daily_loss - expected_loss) > 0.01:
+            diff['daily_loss'] = (state.daily_loss, expected_loss)
+            state.daily_loss = expected_loss
 
-    if abs(state.total_open_stake - expected_stake) > 0.01:
-        diff['total_open_stake'] = (state.total_open_stake, expected_stake)
-        state.total_open_stake = expected_stake
+        if state.daily_trades_opened != expected_trades:
+            diff['daily_trades_opened'] = (state.daily_trades_opened, expected_trades)
+            state.daily_trades_opened = expected_trades
+
+        if abs(state.total_open_stake - expected_stake) > 0.01:
+            diff['total_open_stake'] = (state.total_open_stake, expected_stake)
+            state.total_open_stake = expected_stake
+
+        if diff:
+            save(state.to_dict())
 
     if diff:
-        save_risk_state(state)
         msg_lines = ["🔧 风控状态对账修正"]
         for k, (old, new) in diff.items():
             msg_lines.append(f"  {k}: {old} → {new}")
@@ -222,75 +248,78 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short')
 
 
 def record_trade_opened(stake: float = config.DEFAULT_STAKE, strategy: str = 'short') -> None:
-    """记录开仓事件"""
-    state = load_risk_state()
-    state.daily_trades_opened += 1
-    state.total_open_stake += stake
-    save_risk_state(state)
+    """记录开仓事件（全程加锁，防止并发写入丢失）"""
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data)
+        state.daily_trades_opened += 1
+        state.total_open_stake += stake
+        save(state.to_dict())
     logger.info(f"📝 记录开仓：今日第{state.daily_trades_opened}单，持仓{state.total_open_stake:.0f}U")
 
 
 def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE) -> None:
     """
-    记录平仓事件，更新亏损累计和连亏计数。
+    记录平仓事件，更新亏损累计和连亏计数（全程加锁，防止并发写入丢失）。
     pnl < 0 表示亏损。
     """
-    state = load_risk_state()
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data)
 
-    # 更新持仓总额
-    state.total_open_stake = max(0, state.total_open_stake - stake)
+        # 更新持仓总额
+        state.total_open_stake = max(0, state.total_open_stake - stake)
 
-    if pnl < 0:
-        # 记录亏损
-        state.daily_loss += abs(pnl)
-        state.consecutive_losses += 1
-        logger.info(
-            f"📉 记录亏损：{pnl:.2f}U | 今日累计亏损{state.daily_loss:.1f}U | "
-            f"连亏{state.consecutive_losses}次"
-        )
-
-        # 连亏暂停
-        if state.consecutive_losses >= config.RISK_CONSECUTIVE_LOSS_PAUSE:
-            from datetime import timedelta
-            pause_end = utcnow() + timedelta(hours=config.RISK_PAUSE_HOURS)
-            state.paused_until = pause_end.isoformat()
-            logger.warning(
-                f"🚨 连亏{state.consecutive_losses}次，暂停开仓{config.RISK_PAUSE_HOURS}小时"
-            )
-            send_tg(
-                f"🚨 <b>风控警告：连亏暂停</b>\n\n"
-                f"连续亏损 {state.consecutive_losses} 次\n"
-                f"今日累计亏损：{state.daily_loss:.1f}U\n"
-                f"暂停开仓至：{state.paused_until[:16]} UTC\n\n"
-                f"冷静等待，不要追单 ⏸️"
+        if pnl < 0:
+            # 记录亏损
+            state.daily_loss += abs(pnl)
+            state.consecutive_losses += 1
+            logger.info(
+                f"📉 记录亏损：{pnl:.2f}U | 今日累计亏损{state.daily_loss:.1f}U | "
+                f"连亏{state.consecutive_losses}次"
             )
 
-        # 单日亏损告警
-        if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
-            send_tg(
-                f"🛑 <b>风控警告：今日停止交易</b>\n\n"
-                f"今日累计亏损：{state.daily_loss:.1f}U\n"
-                f"已达上限 {config.RISK_MAX_DAILY_LOSS}U\n"
-                f"今日不再开新仓，明天重新来过 💤"
-            )
-    else:
-        # 盈利：重置连亏计数
-        state.consecutive_losses = 0
-        logger.info(f"📈 记录盈利：+{pnl:.2f}U | 连亏重置为0")
+            # 连亏暂停
+            if state.consecutive_losses >= config.RISK_CONSECUTIVE_LOSS_PAUSE:
+                from datetime import timedelta
+                pause_end = utcnow() + timedelta(hours=config.RISK_PAUSE_HOURS)
+                state.paused_until = pause_end.isoformat()
+                logger.warning(
+                    f"🚨 连亏{state.consecutive_losses}次，暂停开仓{config.RISK_PAUSE_HOURS}小时"
+                )
+                send_tg(
+                    f"🚨 <b>风控警告：连亏暂停</b>\n\n"
+                    f"连续亏损 {state.consecutive_losses} 次\n"
+                    f"今日累计亏损：{state.daily_loss:.1f}U\n"
+                    f"暂停开仓至：{state.paused_until[:16]} UTC\n\n"
+                    f"冷静等待，不要追单 ⏸️"
+                )
 
-    save_risk_state(state)
+            # 单日亏损告警
+            if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
+                send_tg(
+                    f"🛑 <b>风控警告：今日停止交易</b>\n\n"
+                    f"今日累计亏损：{state.daily_loss:.1f}U\n"
+                    f"已达上限 {config.RISK_MAX_DAILY_LOSS}U\n"
+                    f"今日不再开新仓，明天重新来过 💤"
+                )
+        else:
+            # 盈利：重置连亏计数
+            state.consecutive_losses = 0
+            logger.info(f"📈 记录盈利：+{pnl:.2f}U | 连亏重置为0")
+
+        save(state.to_dict())
 
 
 def refresh_open_stake() -> None:
-    """从交易文件重新计算当前持仓总额（用于启动时同步或手动修正）"""
-    state = load_risk_state()
+    """从交易文件重新计算当前持仓总额（用于启动时同步或手动修正，全程加锁）"""
     actual = _calc_actual_open_stake()
-    if state.total_open_stake != actual:
-        logger.info(f"🔄 持仓修正：{state.total_open_stake:.0f}U → {actual:.0f}U")
-        state.total_open_stake = actual
-        save_risk_state(state)
-    else:
-        logger.info(f"🔄 持仓同步：{actual:.0f}U（无偏差）")
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data)
+        if state.total_open_stake != actual:
+            logger.info(f"🔄 持仓修正：{state.total_open_stake:.0f}U → {actual:.0f}U")
+            state.total_open_stake = actual
+            save(state.to_dict())
+        else:
+            logger.info(f"🔄 持仓同步：{actual:.0f}U（无偏差）")
 
 
 def is_in_cooldown(symbol: str) -> tuple:

@@ -298,46 +298,50 @@ def cleanup_old_trades():
     """
     归档超过 TRADES_ARCHIVE_DAYS 的已平仓交易。
     将旧记录移到 archive 文件，主交易文件只保留近期数据。
+    使用 LockedJsonFile 确保与其他写入者的原子性。
     """
     import config
-    trades = load_json(TRADES_FILE, [])
-    if not trades:
-        return 0
-    
     now = utcnow()
-    keep = []
-    archive_new = []
-    
-    for t in trades:
-        if t.get('status') != 'closed':
-            keep.append(t)
-            continue
-        
-        closed_at = t.get('closed_at', '')
-        if not closed_at:
-            keep.append(t)
-            continue
-        
-        try:
-            closed_dt = parse_iso(closed_at)
-            age_days = (now - closed_dt).days
-            if age_days > config.TRADES_ARCHIVE_DAYS:
-                archive_new.append(t)
-            else:
+    archived_count = 0
+
+    with LockedJsonFile(TRADES_FILE, default=[]) as (trades, save_trades):
+        if not trades:
+            return 0
+
+        keep = []
+        archive_new = []
+
+        for t in trades:
+            if t.get('status') != 'closed':
                 keep.append(t)
-        except Exception:
-            keep.append(t)
-    
-    if not archive_new:
-        return 0
-    
-    # 追加到归档文件
-    existing_archive = load_json(TRADES_ARCHIVE_FILE, [])
-    existing_archive.extend(archive_new)
-    atomic_write_json(TRADES_ARCHIVE_FILE, existing_archive)
-    
-    # 更新主交易文件
-    atomic_write_json(TRADES_FILE, keep)
-    
-    logging.info(f"归档了 {len(archive_new)} 笔过期交易（>{config.TRADES_ARCHIVE_DAYS}天）")
-    return len(archive_new)
+                continue
+
+            closed_at = t.get('closed_at', '')
+            if not closed_at:
+                keep.append(t)
+                continue
+
+            try:
+                closed_dt = parse_iso(closed_at)
+                age_days = (now - closed_dt).days
+                if age_days > config.TRADES_ARCHIVE_DAYS:
+                    archive_new.append(t)
+                else:
+                    keep.append(t)
+            except Exception:
+                keep.append(t)
+
+        if not archive_new:
+            return 0
+
+        # 追加到归档文件（归档文件也加锁）
+        with LockedJsonFile(TRADES_ARCHIVE_FILE, default=[]) as (existing_archive, save_archive):
+            existing_archive.extend(archive_new)
+            save_archive(existing_archive)
+
+        # 更新主交易文件
+        save_trades(keep)
+        archived_count = len(archive_new)
+
+    logging.info(f"归档了 {archived_count} 笔过期交易（>{config.TRADES_ARCHIVE_DAYS}天）")
+    return archived_count
