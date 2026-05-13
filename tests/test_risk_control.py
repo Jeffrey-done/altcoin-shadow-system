@@ -4,14 +4,12 @@
 """
 
 import pytest
-import json
 from datetime import datetime, timezone, timedelta
 
-import config
 import common
 import risk_control
 from risk_control import (
-    can_open_trade, record_trade_closed, record_trade_opened,
+    can_open_trade, record_trade_closed,
     load_risk_state, save_risk_state, RiskState,
 )
 

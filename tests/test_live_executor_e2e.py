@@ -50,12 +50,11 @@ live_executor E2E 集成测试(mock-based)
   Precision of client_order_id propagation through router layers.
 """
 
-from unittest.mock import MagicMock, patch  # noqa: F401 -- patch kept for extensibility
+from unittest.mock import MagicMock
 
-import pytest  # noqa: F401 -- pytest fixtures discovered by collector
+import pytest
 
 import config
-import live_executor  # noqa: F401 -- imported for side-effect (module init), also helps IDE/linters
 from live_executor import (
     execute_open_short, execute_open_long,
     execute_close_position, execute_close,

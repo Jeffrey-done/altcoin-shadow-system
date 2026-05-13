@@ -3,8 +3,6 @@
 测试 backtest 模块的 RSI 序列、信号检测、交易模拟、统计计算
 """
 
-import pytest
-
 from backtest import (
     calc_rsi_series, detect_entry_signals, simulate_trade,
     calculate_stats, BacktestParams, BacktestTrade,

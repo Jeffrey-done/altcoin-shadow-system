@@ -3,12 +3,10 @@
 测试 altcoin_tracker.evaluate_trade() 各类止盈止损场景
 """
 
-import pytest
 from datetime import datetime, timezone, timedelta
 
 from models import Trade
 from altcoin_tracker import evaluate_trade
-import config
 import common
 
 
@@ -140,7 +138,7 @@ class TestTrailingStop:
             tp1=90.0, tp2=85.0, hard_stop=110.0,
         )
         # 价格跌到 96 -> pnl_pct = 4% > TRAIL_STOP_ACTIVATE_PCT=3
-        result = evaluate_trade(trade, current_price=96.0)
+        evaluate_trade(trade, current_price=96.0)
         assert trade.best_pnl_pct == 4.0
         assert trade.trail_stop_price is not None
 

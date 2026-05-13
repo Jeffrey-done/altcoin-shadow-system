@@ -10,19 +10,17 @@ Walk-Forward Analysis 测试
   - 含真实 edge 的数据应该产生正 OOS PnL
 """
 
-import math
 import random
 from unittest.mock import patch
 
-import pytest
-
 from walk_forward import (
-    walk_forward_analysis, WFAResult, WindowResult,
+    walk_forward_analysis,
     default_param_grid, _enumerate_grid,
     _simple_sharpe, _max_drawdown_pct, _pnls_to_equity_curve,
     _pick_best_params, _run_window,
 )
 from backtest import BacktestParams
+import pytest
 
 
 # ══════════════════════════════════════════════════════════════════
