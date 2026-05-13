@@ -703,16 +703,24 @@ function saveConfig() {
 // ── Credentials ──
 function saveCredentials(exchange) {
   var doSave = async function() {
+    // HTML ID 前缀：binance → bn, okx → okx
+    var prefix = exchange === 'binance' ? 'bn' : exchange;
     var body = {};
-    body.api_key = document.getElementById(exchange + '-api_key').value;
-    body.secret = document.getElementById(exchange + '-secret').value;
+    body.api_key = document.getElementById(prefix + '-api_key').value;
+    body.secret = document.getElementById(prefix + '-secret').value;
     if (exchange === 'okx') body.passphrase = document.getElementById('okx-passphrase').value;
+    // 检查是否有输入内容
+    var hasInput = body.api_key || body.secret || (exchange === 'okx' && body.passphrase);
+    if (!hasInput) {
+      alertBox('请至少填写一个凭证字段', 'warning');
+      return;
+    }
     try {
       var r = await api('POST', 'api/credentials/' + exchange, body);
       if (r.needTotp) { openTotpModal(doSave); return; }
       alertBox(exchange.toUpperCase() + ' 凭证已保存', 'ok');
-      document.getElementById(exchange + '-api_key').value = '';
-      document.getElementById(exchange + '-secret').value = '';
+      document.getElementById(prefix + '-api_key').value = '';
+      document.getElementById(prefix + '-secret').value = '';
       if (exchange === 'okx') document.getElementById('okx-passphrase').value = '';
       loadState();
     } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }

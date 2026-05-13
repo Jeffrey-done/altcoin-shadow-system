@@ -165,6 +165,9 @@ def _require_login(f):
 def _require_fresh_totp(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # 如果 TOTP 未启用，直接放行（不强制弹窗）
+        if not admin_secrets.is_totp_enabled():
+            return f(*args, **kwargs)
         auth = session.get('admin_auth', {})
         last_totp = auth.get('last_totp_at', 0)
         if time.time() - last_totp > FRESH_TOTP_WINDOW:
