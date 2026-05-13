@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """
-运行时配置覆盖层 — 跨进程同步 config 变更 v1.0
-
-为什么需要这个：
-  `config.py` 里的参数是 Python 模块属性，直接改只影响当前进程。
-  scheduler / realtime_monitor / dashboard 是三个独立进程，想从 admin panel
-  改一个参数（比如 LIVE_MODE）并让三个进程都生效，必须借助文件。
+运行时配置覆盖层 — 跨进程同步 config 变更 v2.0（多账户版）
 
 工作方式：
   1. admin_panel 写 runtime_config.json（白名单字段，带时间戳）
-  2. 所有进程在关键时刻调 apply_overrides()：
-     - scheduler: 每轮 main_loop 开头
-     - realtime_monitor: 每次 refresh_snapshot 前
-     - dashboard: 每次 /api/data 请求前（已经够频繁）
-     - admin_panel 自己写完后立刻 apply 一次
+  2. 所有进程在关键时刻调 apply_overrides()
   3. apply_overrides 读文件 → 按白名单写回 config 模块属性
 
-安全约束：
-  - 只接受 ALLOWED 字典里白名单字段；其他键一律忽略
-  - 所有值都做类型和范围校验；越界拒绝（不是 clip）
-  - 文件权限 0600，和 admin_secrets.json 并列
-  - 任何失败都走 fail-closed：出错时保持 config 原值（最保守）
+v2 多账户结构：
+{
+  "_global": { "LIVE_MODE": false, "OKX_LIVE_MODE": false, ... },
+  "acc_abc123": { "ACCOUNT_BALANCE": 100, "DEFAULT_STAKE": 50, ... },
+  "acc_def456": { "ACCOUNT_BALANCE": 500, ... }
+}
+
+全局字段(GLOBAL_FIELDS): 只存一份，所有账户共享
+  LIVE_MODE, OKX_LIVE_MODE, PRIMARY_EXCHANGE, PRIMARY_EXCHANGE_FALLBACK
+
+账户字段(ACCOUNT_FIELDS): 每个账户独立的风控/仓位参数
+  ACCOUNT_BALANCE, DEFAULT_STAKE, LEVERAGE, ...
 """
 
 import json
@@ -37,13 +35,6 @@ logger = logging.getLogger("runtime_config")
 
 # ══════════════════════════════════════════════════════════════════
 #  允许从 admin panel 修改的字段白名单
-# ══════════════════════════════════════════════════════════════════
-#
-# 格式: 'CONFIG_KEY': (type, validator_fn_or_None, human_label)
-# validator 返回 (ok: bool, err_msg: str)；None 表示只做类型检查
-#
-# ⚠️  只暴露那些「误调一下不会立刻炸账户」的字段。
-#     仓位/杠杆/止损类参数调大都可能直接加大亏损，所以每个都设了严格上限。
 # ══════════════════════════════════════════════════════════════════
 
 def _pct_validator(lo: float, hi: float):
@@ -82,18 +73,15 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
                                    _enum_validator(['binance', 'okx']),
                                    'auto 模式下的默认选择'),
 
-    # ── 系统资金池（最重要的参数：控制系统"看到"的总本金）──
-    # 不管交易所账户里有多少钱，系统只用这个额度计算仓位和风控
+    # ── 系统资金池 ──
     'ACCOUNT_BALANCE': (int, _int_validator(10, 10000), '系统可用资金池 (U)'),
 
-    # ── 仓位与杠杆（硬上限避免误操作）──
-    # stake 上限 500U：就算你误把它设 9999 也只是上限失效，不会一次性爆账户
+    # ── 仓位与杠杆 ──
     'DEFAULT_STAKE': (int, _int_validator(5, 500), '单笔保证金 (U)'),
     'LEVERAGE': (int, _int_validator(1, 20), 'Binance 杠杆倍数'),
     'OKX_DEFAULT_LEVERAGE': (int, _int_validator(1, 20), 'OKX 杠杆倍数'),
 
-    # ── 止盈止损档位（相对入场价的乘数）──
-    # TP1 在 (0.80, 1.00)：做空 TP1 必须小于入场价
+    # ── 止盈止损档位 ──
     'TP1_MULTIPLIER': (float, _pct_validator(0.80, 1.0), 'TP1 价格乘数'),
     'TP2_MULTIPLIER': (float, _pct_validator(0.70, 1.0), 'TP2 价格乘数'),
     'TP1_CLOSE_RATIO': (float, _pct_validator(0.1, 0.9), 'TP1 平仓比例'),
@@ -110,10 +98,14 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
     'SLIPPAGE_ALERT_PCT': (float, _pct_validator(0.1, 5.0), '滑点告警阈值 (%)'),
 }
 
+# ── 全局字段 vs 账户字段 ──
+GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK'}
+ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
+
 
 def validate_change(key: str, value: Any) -> Tuple[bool, str]:
     """
-    单个字段的类型+范围校验。admin_panel 提交前必须调这个。
+    单个字段的类型+范围校验。
 
     返回 (ok, err_msg)。ok=True 时 err_msg 为空。
     """
@@ -122,7 +114,6 @@ def validate_change(key: str, value: Any) -> Tuple[bool, str]:
 
     expected_type, validator, label = ALLOWED[key]
 
-    # bool 必须严格匹配（Python 里 True 是 int 的子类，必须用 is instance 前先判）
     if expected_type is bool:
         if not isinstance(value, bool):
             return False, f"{label} 必须是 true/false 布尔值"
@@ -148,38 +139,148 @@ def validate_change(key: str, value: Any) -> Tuple[bool, str]:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  读写 runtime_config.json
+#  读写 runtime_config.json（v2 多账户格式）
 # ══════════════════════════════════════════════════════════════════
 
-def load_overrides() -> dict:
-    """读当前文件内容；不存在 / 损坏 → 返回 {}"""
+def _load_raw_config() -> dict:
+    """读取原始文件内容，处理 v1→v2 迁移"""
     if not os.path.exists(RUNTIME_CONFIG_FILE):
-        return {}
+        return {'_global': {}}
     try:
         with open(RUNTIME_CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return {}
-        return data
+            return {'_global': {}}
     except (json.JSONDecodeError, IOError, OSError) as e:
         logger.warning(f"读取 runtime_config.json 失败: {e}")
-        return {}
+        return {'_global': {}}
+
+    # 检测是否是 v1 格式（没有 _global 键，直接是平的 key-value）
+    if '_global' not in data:
+        # v1 迁移：把全局字段放 _global，其余放活跃账户下
+        logger.info("runtime_config: 检测到 v1 格式，自动迁移到 v2")
+        v2 = {'_global': {}}
+        # 获取活跃账户 ID
+        try:
+            import admin_secrets
+            active_id = admin_secrets.get_active_account_id()
+        except Exception:
+            active_id = ''
+
+        for key, value in data.items():
+            if key.startswith('_'):
+                continue
+            if key in GLOBAL_FIELDS:
+                v2['_global'][key] = value
+            elif key in ACCOUNT_FIELDS and active_id:
+                v2.setdefault(active_id, {})[key] = value
+
+        _save_raw_config(v2)
+        return v2
+
+    return data
+
+
+def _save_raw_config(data: dict) -> None:
+    """原子写入配置文件"""
+    tmp = RUNTIME_CONFIG_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
+    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(tmp, RUNTIME_CONFIG_FILE)
+
+
+def load_overrides() -> dict:
+    """
+    读当前活跃账户的合并配置（_global + 活跃账户的覆盖）。
+    兼容旧代码：返回平的 key→value dict。
+    """
+    data = _load_raw_config()
+    merged = {}
+
+    # 全局字段
+    global_data = data.get('_global', {})
+    for key in GLOBAL_FIELDS:
+        if key in global_data:
+            merged[key] = global_data[key]
+
+    # 活跃账户字段
+    try:
+        import admin_secrets
+        active_id = admin_secrets.get_active_account_id()
+    except Exception:
+        active_id = ''
+
+    if active_id:
+        account_data = data.get(active_id, {})
+        for key in ACCOUNT_FIELDS:
+            if key in account_data:
+                merged[key] = account_data[key]
+
+    return merged
 
 
 def save_overrides(overrides: dict) -> None:
     """
-    原子写入 + 0600 权限。
-    注意：这个只应该被 admin_panel 调用；业务进程只读。
+    保存配置覆盖（兼容旧接口）。
+    自动拆分全局字段和账户字段。
     """
-    # 只保留白名单字段
-    filtered = {k: v for k, v in overrides.items() if k in ALLOWED}
+    data = _load_raw_config()
 
-    tmp = RUNTIME_CONFIG_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(filtered, f, indent=2, ensure_ascii=False, sort_keys=True)
-    # 0600
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp, RUNTIME_CONFIG_FILE)
+    try:
+        import admin_secrets
+        active_id = admin_secrets.get_active_account_id()
+    except Exception:
+        active_id = ''
+
+    # 拆分并保存
+    for key, value in overrides.items():
+        if key not in ALLOWED:
+            continue
+        if key in GLOBAL_FIELDS:
+            data.setdefault('_global', {})[key] = value
+        elif active_id:
+            data.setdefault(active_id, {})[key] = value
+
+    _save_raw_config(data)
+
+
+def load_account_overrides(account_id: str) -> dict:
+    """读取指定账户的配置覆盖"""
+    data = _load_raw_config()
+    return data.get(account_id, {})
+
+
+def save_account_overrides(account_id: str, overrides: dict) -> None:
+    """保存指定账户的配置覆盖"""
+    data = _load_raw_config()
+    filtered = {}
+    for key, value in overrides.items():
+        if key in ACCOUNT_FIELDS:
+            ok, _ = validate_change(key, value)
+            if ok:
+                filtered[key] = value
+    data[account_id] = filtered
+    _save_raw_config(data)
+
+
+def load_global_overrides() -> dict:
+    """读取全局配置"""
+    data = _load_raw_config()
+    return data.get('_global', {})
+
+
+def save_global_overrides(overrides: dict) -> None:
+    """保存全局配置"""
+    data = _load_raw_config()
+    global_data = data.setdefault('_global', {})
+    for key, value in overrides.items():
+        if key in GLOBAL_FIELDS:
+            ok, _ = validate_change(key, value)
+            if ok:
+                global_data[key] = value
+    data['_global'] = global_data
+    _save_raw_config(data)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -194,20 +295,11 @@ def apply_overrides(force: bool = False) -> dict:
     """
     读 runtime_config.json 并把白名单字段写到 config 模块属性。
 
-    幂等 + 懒加载：
-      - 通过文件 mtime 判断是否有变化，没变化直接 return 上次结果
-      - 业务进程可以在每个循环开头调，成本接近 0
-
-    参数:
-      force: 跳过 mtime 缓存，强制重新读文件（admin_panel 写完后用）
-
-    返回：本次实际写入 config 的字段 dict（没变化时为 {}）
+    使用活跃账户的配置合并全局配置。
     """
     global _last_applied_mtime, _last_applied
 
     if not os.path.exists(RUNTIME_CONFIG_FILE):
-        # 文件被删了 → 不主动回滚（config 里还是最后一次 apply 的值）
-        # 如果确实需要回滚，重启进程即可
         return {}
 
     try:
@@ -247,7 +339,6 @@ def apply_overrides(force: bool = False) -> dict:
 def get_current_values() -> dict:
     """
     admin_panel 查询当前生效值（读 config 模块而不是文件）。
-    返回的 key 顺序与 ALLOWED 一致，方便前端稳定渲染。
     """
     import config as _config
     out = {}

@@ -1,282 +1,472 @@
 {% extends "admin/_base.html" %}
-{% block title %}Admin Panel{% endblock %}
-{% block content %}
-<div class="header">
-  <h1>⚙️ 实盘配置面板</h1>
-  <div>
-    <span id="session-info" class="muted" style="margin-right: 16px;"></span>
-    <form method="post" action="logout" style="display:inline;">
+{% block title %}Admin Panel - Multi Account{% endblock %}
+{% block body %}
+<style>
+:root {
+  --bg-primary: #0f1923;
+  --bg-card: rgba(255,255,255,0.03);
+  --bg-card-hover: rgba(255,255,255,0.05);
+  --bg-input: rgba(15,25,35,0.8);
+  --border: rgba(255,255,255,0.06);
+  --border-focus: #3b82f6;
+  --text: #e2e8f0;
+  --text-dim: #64748b;
+  --text-muted: #475569;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --success: #10b981;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --purple: #8b5cf6;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg-primary); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Segoe UI", system-ui, sans-serif; margin: 0; min-height: 100vh; }
+
+/* Nav Bar */
+.nav-bar { position: sticky; top: 0; z-index: 100; background: rgba(15,25,35,0.95); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+.nav-brand { font-size: 16px; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+.nav-right { display: flex; align-items: center; gap: 16px; }
+.nav-session { font-size: 12px; color: var(--text-dim); }
+
+/* Container */
+.main-container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+/* Cards */
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; transition: all 0.2s ease; }
+.card:hover { background: var(--bg-card-hover); }
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+
+/* Account Switcher */
+.account-bar { background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.05)); border: 1px solid rgba(59,130,246,0.2); border-radius: var(--radius); padding: 20px 24px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.account-info { display: flex; align-items: center; gap: 12px; }
+.account-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--purple)); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; }
+.account-name { font-size: 18px; font-weight: 600; }
+.account-id { font-size: 11px; color: var(--text-dim); font-family: monospace; }
+.account-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 24px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 4px; overflow-x: auto; }
+.tab { padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-dim); transition: all 0.2s; white-space: nowrap; border: none; background: none; }
+.tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+.tab.active { color: white; background: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Forms */
+.form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.form-row label { flex: 0 0 220px; font-size: 13px; color: var(--text-dim); }
+.form-row input, .form-row select { flex: 1; min-width: 150px; }
+.form-row .hint { flex: 0 0 100%; font-size: 11px; color: var(--text-muted); margin-top: -8px; padding-left: 232px; }
+input[type=text], input[type=password], input[type=number], select {
+  background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+  padding: 10px 14px; border-radius: 8px; font: inherit; font-size: 14px; width: 100%;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus, select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; font-family: inherit; }
+.btn-primary { background: linear-gradient(135deg, var(--accent), #1d4ed8); color: white; }
+.btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.btn-success { background: linear-gradient(135deg, var(--success), #059669); color: white; }
+.btn-success:hover { filter: brightness(1.1); }
+.btn-danger { background: linear-gradient(135deg, var(--danger), #dc2626); color: white; }
+.btn-danger:hover { filter: brightness(1.1); }
+.btn-warning { background: linear-gradient(135deg, var(--warning), #d97706); color: #000; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+.btn-ghost:hover { border-color: var(--text-dim); color: var(--text); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+/* Alerts */
+.alert { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease; }
+.alert-success { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: var(--success); }
+.alert-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
+.alert-warning { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); color: var(--warning); }
+
+/* Status dots */
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-green { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.dot-red { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.dot-yellow { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.dot-gray { background: var(--text-muted); }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #1a2332; border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 90%; max-width: 440px; box-shadow: var(--shadow); animation: modalIn 0.2s ease; }
+.modal h3 { margin-bottom: 16px; font-size: 18px; }
+
+/* Warn banner */
+.warn-banner { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); color: var(--warning); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.badge-success { background: rgba(16,185,129,0.15); color: var(--success); }
+.badge-danger { background: rgba(239,68,68,0.15); color: var(--danger); }
+.badge-warning { background: rgba(245,158,11,0.15); color: var(--warning); }
+
+/* Animations */
+@keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .form-row { flex-direction: column; align-items: flex-start; }
+  .form-row label { flex: none; }
+  .form-row .hint { padding-left: 0; }
+  .account-bar { flex-direction: column; align-items: flex-start; }
+  .tabs { flex-wrap: nowrap; }
+}
+</style>
+
+<!-- NAV BAR -->
+<nav class="nav-bar">
+  <div class="nav-brand">
+    <span>&#9881;</span> Shadow System Admin
+  </div>
+  <div class="nav-right">
+    <span class="nav-session" id="session-info"></span>
+    <form method="post" action="logout" style="display:inline;margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="btn-secondary">退出</button>
+      <button class="btn btn-ghost btn-sm" type="submit">退出</button>
     </form>
   </div>
-</div>
+</nav>
 
-<div id="alert-box"></div>
+<div class="main-container">
+  <!-- ALERT BOX -->
+  <div id="alert-box"></div>
 
-<!-- ═══ 实盘开关 ═══ -->
-<div class="card">
-  <h2>🔀 实盘开关 & 路由</h2>
-  <div class="warn-banner">
-    ⚠️ <b>LIVE_MODE / OKX_LIVE_MODE 一旦开启，下一个信号会真实下单。</b>
-    修改后立即跨所有进程生效（scheduler / realtime_monitor / dashboard 每 30 秒内同步）。
-  </div>
-
-  <div class="row">
-    <label>Binance 实盘 (LIVE_MODE)</label>
-    <div><input type="checkbox" id="cfg-LIVE_MODE"></div>
-    <div class="muted" style="flex:1;">需要已配置 Binance API 凭证</div>
-  </div>
-
-  <div class="row">
-    <label>OKX 实盘 (OKX_LIVE_MODE)</label>
-    <div><input type="checkbox" id="cfg-OKX_LIVE_MODE"></div>
-    <div class="muted" style="flex:1;">需要已配置 OKX API 凭证</div>
-  </div>
-
-  <div class="row">
-    <label>路由模式 (PRIMARY_EXCHANGE)</label>
-    <select id="cfg-PRIMARY_EXCHANGE">
-      <option value="binance">binance — 只在币安下单</option>
-      <option value="okx">okx — 只在 OKX 下单</option>
-      <option value="both">both — 两所同时开仓，保证金 50/50</option>
-      <option value="auto">auto — 按币种覆盖自动选</option>
-    </select>
+  <!-- ACCOUNT BAR -->
+  <div class="account-bar">
+    <div class="account-info">
+      <div class="account-avatar" id="account-avatar">?</div>
+      <div>
+        <div class="account-name" id="active-account-name">加载中...</div>
+        <div class="account-id" id="active-account-id"></div>
+      </div>
+    </div>
+    <div class="account-actions">
+      <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:6px 12px;font-size:12px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:8px;cursor:pointer;"></select>
+      <button class="btn btn-primary btn-sm" onclick="openAccountModal()">+ 新建账户</button>
+      <button class="btn btn-ghost btn-sm" onclick="openRenameModal()">重命名</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()">删除</button>
+    </div>
   </div>
 
-  <div class="row">
-    <label>auto 模式 fallback</label>
-    <select id="cfg-PRIMARY_EXCHANGE_FALLBACK">
-      <option value="binance">binance</option>
-      <option value="okx">okx</option>
-    </select>
-    <div class="muted" style="flex:1;">仅 auto 模式且两所都有合约时生效</div>
-  </div>
-</div>
-
-<!-- ═══ API 凭证 ═══ -->
-<div class="card">
-  <h2>🔑 交易所 API 凭证</h2>
-  <div class="warn-banner">
-    保存后立即加密存入 <code>admin_secrets.json</code>（权限 0600）。
-    当前凭证只显示前 6 位 + 后 4 位（脱敏），输入框留空则不改。
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('live')">实盘控制</button>
+    <button class="tab" onclick="switchTab('creds')">凭证管理</button>
+    <button class="tab" onclick="switchTab('position')">仓位风控</button>
+    <button class="tab" onclick="switchTab('preflight')">自检</button>
+    <button class="tab" onclick="switchTab('audit')">审计日志</button>
   </div>
 
-  <h3>Binance</h3>
-  <div id="bn-status" class="muted" style="margin-bottom: 8px;"></div>
-  <div class="row">
-    <label>API Key</label>
-    <input type="password" id="bn-api_key" placeholder="留空表示不改">
-  </div>
-  <div class="row">
-    <label>API Secret</label>
-    <input type="password" id="bn-secret" placeholder="留空表示不改">
-  </div>
-  <div>
-    <button onclick="saveCredentials('binance')">保存 Binance 凭证</button>
-    <button class="btn-danger" onclick="clearCredentials('binance')"
-            style="margin-left: 8px;">清除凭证（会关闭 LIVE_MODE）</button>
+
+  <!-- TAB: 实盘控制 -->
+  <div class="tab-content active" id="tab-live">
+    <div class="card">
+      <div class="card-title">&#128256; 实盘开关 &amp; 路由</div>
+      <div class="warn-banner">
+        <b>LIVE_MODE / OKX_LIVE_MODE 一旦开启，下一个信号会真实下单。</b>
+        修改后立即跨所有进程生效。
+      </div>
+      <div class="form-row">
+        <label>Binance 实盘 (LIVE_MODE)</label>
+        <input type="checkbox" id="cfg-LIVE_MODE">
+        <span class="badge" id="badge-live-bn">OFF</span>
+      </div>
+      <div class="form-row">
+        <label>OKX 实盘 (OKX_LIVE_MODE)</label>
+        <input type="checkbox" id="cfg-OKX_LIVE_MODE">
+        <span class="badge" id="badge-live-okx">OFF</span>
+      </div>
+      <div class="form-row">
+        <label>路由模式 (PRIMARY_EXCHANGE)</label>
+        <select id="cfg-PRIMARY_EXCHANGE">
+          <option value="binance">binance - 只在币安下单</option>
+          <option value="okx">okx - 只在 OKX 下单</option>
+          <option value="both">both - 两所同时开仓</option>
+          <option value="auto">auto - 按币种自动选</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>auto 模式 fallback</label>
+        <select id="cfg-PRIMARY_EXCHANGE_FALLBACK">
+          <option value="binance">binance</option>
+          <option value="okx">okx</option>
+        </select>
+      </div>
+    </div>
   </div>
 
-  <h3 style="margin-top: 24px;">OKX</h3>
-  <div id="okx-status" class="muted" style="margin-bottom: 8px;"></div>
-  <div class="row">
-    <label>API Key</label>
-    <input type="password" id="okx-api_key" placeholder="留空表示不改">
-  </div>
-  <div class="row">
-    <label>API Secret</label>
-    <input type="password" id="okx-secret" placeholder="留空表示不改">
-  </div>
-  <div class="row">
-    <label>Passphrase</label>
-    <input type="password" id="okx-passphrase" placeholder="留空表示不改">
-  </div>
-  <div>
-    <button onclick="saveCredentials('okx')">保存 OKX 凭证</button>
-    <button class="btn-danger" onclick="clearCredentials('okx')"
-            style="margin-left: 8px;">清除凭证（会关闭 OKX_LIVE_MODE）</button>
-  </div>
-</div>
+  <!-- TAB: 凭证管理 -->
+  <div class="tab-content" id="tab-creds">
+    <div class="card">
+      <div class="card-title">&#128273; 交易所 API 凭证</div>
+      <div class="warn-banner">
+        保存后立即加密存入当前活跃账户的配置。凭证只显示前6位+后4位（脱敏），输入框留空则不改。
+      </div>
 
-<!-- ═══ 实盘自检 ═══ -->
-<div class="card">
-  <h2>🩺 实盘自检（Preflight Check）</h2>
-  <div class="muted" style="margin-bottom: 12px;">
-    不会下任何真实订单。检查 API 凭证、余额、持仓模式（对冲/双向）、杠杆接口是否正常。<br>
-    <b>建议：开启 LIVE_MODE 前必须先跑一次自检，全部通过再打开。</b>
+      <h4 style="margin:16px 0 8px;color:var(--warning);font-size:14px;">Binance</h4>
+      <div id="bn-status" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input type="password" id="bn-api_key" placeholder="留空表示不改">
+      </div>
+      <div class="form-row">
+        <label>API Secret</label>
+        <input type="password" id="bn-secret" placeholder="留空表示不改">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:24px;">
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')">保存 Binance 凭证</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')">清除凭证</button>
+      </div>
+
+      <h4 style="margin:16px 0 8px;color:var(--warning);font-size:14px;">OKX</h4>
+      <div id="okx-status" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input type="password" id="okx-api_key" placeholder="留空表示不改">
+      </div>
+      <div class="form-row">
+        <label>API Secret</label>
+        <input type="password" id="okx-secret" placeholder="留空表示不改">
+      </div>
+      <div class="form-row">
+        <label>Passphrase</label>
+        <input type="password" id="okx-passphrase" placeholder="留空表示不改">
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')">保存 OKX 凭证</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')">清除凭证</button>
+      </div>
+    </div>
   </div>
 
-  <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
-    <button onclick="runPreflightCheck()" id="btn-preflight" style="padding: 10px 20px;">
-      ▶ 运行实盘自检
-    </button>
-    <span id="preflight-status" class="muted"></span>
+  <!-- TAB: 仓位风控 -->
+  <div class="tab-content" id="tab-position">
+    <div class="card">
+      <div class="card-title">&#128176; 仓位 &amp; 杠杆</div>
+      <div class="warn-banner">
+        系统可用资金池：不管交易所实际余额多少，系统只用下面设定的额度来计算仓位和风控上限。
+      </div>
+      <div class="form-row">
+        <label>系统可用资金池 (ACCOUNT_BALANCE, U)</label>
+        <input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1">
+      </div>
+      <div class="form-row">
+        <label>单笔保证金 (DEFAULT_STAKE, U)</label>
+        <input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1">
+      </div>
+      <div class="form-row">
+        <label>Binance 杠杆 (LEVERAGE)</label>
+        <input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1">
+      </div>
+      <div class="form-row">
+        <label>OKX 杠杆 (OKX_DEFAULT_LEVERAGE)</label>
+        <input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">&#127919; 止盈止损</div>
+      <div class="form-row">
+        <label>TP1 乘数 (0.80~1.00)</label>
+        <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01">
+      </div>
+      <div class="form-row">
+        <label>TP2 乘数 (0.70~1.00)</label>
+        <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01">
+      </div>
+      <div class="form-row">
+        <label>TP1 平仓比例 (0.1~0.9)</label>
+        <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1">
+      </div>
+      <div class="form-row">
+        <label>硬止损 (HARD_STOP_LOSS_PCT, %)</label>
+        <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5">
+      </div>
+      <div class="form-row">
+        <label>滑点告警阈值 (%)</label>
+        <input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">&#128737; 风控</div>
+      <div class="form-row">
+        <label>单日最大亏损 (U)</label>
+        <input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1">
+      </div>
+      <div class="form-row">
+        <label>单日最大开仓次数</label>
+        <input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1">
+      </div>
+      <div class="form-row">
+        <label>连亏暂停次数</label>
+        <input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1">
+      </div>
+      <div class="form-row">
+        <label>最大持仓占比 (0.1~1.0)</label>
+        <input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1">
+      </div>
+      <div class="form-row">
+        <label>止损后冷却期 (h)</label>
+        <input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1">
+      </div>
+    </div>
+
+    <div style="margin:20px 0;">
+      <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 32px;font-size:14px;">
+        &#128190; 保存所有配置
+      </button>
+    </div>
   </div>
 
-  <div id="preflight-results" style="display: none;">
-    <!-- 路由摘要 -->
-    <div id="preflight-routing" style="margin-bottom: 14px; padding: 10px; border-radius: 6px;
-         background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #333);"></div>
-    <!-- 各交易所检查结果 -->
-    <div id="preflight-exchanges"></div>
+  <!-- TAB: 自检 -->
+  <div class="tab-content" id="tab-preflight">
+    <div class="card">
+      <div class="card-title">&#129657; 实盘自检（Preflight Check）</div>
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
+        不会下任何真实订单。检查 API 凭证、余额、持仓模式、杠杆接口是否正常。<br>
+        <b>建议：开启 LIVE_MODE 前必须先跑一次自检。</b>
+      </p>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;">
+        <button class="btn btn-primary" onclick="runPreflightCheck()" id="btn-preflight">
+          &#9654; 运行实盘自检
+        </button>
+        <span id="preflight-status" style="font-size:13px;color:var(--text-dim);"></span>
+      </div>
+      <div id="preflight-results" style="display:none;">
+        <div id="preflight-routing" style="margin-bottom:14px;padding:14px;border-radius:8px;background:rgba(0,0,0,0.2);border:1px solid var(--border);"></div>
+        <div id="preflight-exchanges"></div>
+      </div>
+    </div>
   </div>
-</div>
 
-<!-- ═══ 仓位与杠杆 ═══ -->
-<div class="card">
-  <h2>💰 仓位 & 杠杆</h2>
-  <div class="warn-banner">
-    ⚠️ <b>系统可用资金池</b>：不管交易所账户里实际有多少钱，系统只用下面设定的额度来计算仓位和风控上限。<br>
-    例如账户有 1000U 但设置 100U，则系统满仓最多用 100U × 50% = 50U 持仓。
-  </div>
-  <div class="row">
-    <label>系统可用资金池 (ACCOUNT_BALANCE, U)</label>
-    <input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1">
-    <div class="muted" style="flex:1;">系统"看到"的总本金，风控上限 = 此值 × 最大持仓占比</div>
-  </div>
-  <div class="row">
-    <label>单笔保证金 (DEFAULT_STAKE, U)</label>
-    <input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1">
-  </div>
-  <div class="row">
-    <label>Binance 杠杆 (LEVERAGE)</label>
-    <input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1">
-  </div>
-  <div class="row">
-    <label>OKX 杠杆 (OKX_DEFAULT_LEVERAGE)</label>
-    <input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1">
-  </div>
-</div>
-
-<!-- ═══ 止盈止损 ═══ -->
-<div class="card">
-  <h2>🎯 止盈止损</h2>
-  <div class="row">
-    <label>TP1 乘数 (0.80~1.00)</label>
-    <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01">
-    <div class="muted" style="flex:1;">例如 0.95 = 价格跌 5% 触发 TP1</div>
-  </div>
-  <div class="row">
-    <label>TP2 乘数 (0.70~1.00)</label>
-    <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01">
-  </div>
-  <div class="row">
-    <label>TP1 平仓比例 (0.1~0.9)</label>
-    <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1">
-  </div>
-  <div class="row">
-    <label>硬止损 (HARD_STOP_LOSS_PCT, %)</label>
-    <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5">
-  </div>
-  <div class="row">
-    <label>滑点告警阈值 (SLIPPAGE_ALERT_PCT, %)</label>
-    <input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1">
-  </div>
-</div>
-
-<!-- ═══ 风控 ═══ -->
-<div class="card">
-  <h2>🛡️ 风控</h2>
-  <div class="row">
-    <label>单日最大亏损 (U)</label>
-    <input type="number" id="cfg-RISK_MAX_DAILY_LOSS" min="5" max="500" step="1">
-  </div>
-  <div class="row">
-    <label>单日最大开仓次数</label>
-    <input type="number" id="cfg-RISK_MAX_DAILY_TRADES" min="1" max="20" step="1">
-  </div>
-  <div class="row">
-    <label>连亏暂停次数</label>
-    <input type="number" id="cfg-RISK_CONSECUTIVE_LOSS_PAUSE" min="2" max="10" step="1">
-  </div>
-  <div class="row">
-    <label>最大持仓占比 (0.1~1.0)</label>
-    <input type="number" id="cfg-RISK_MAX_POSITION_PCT" min="0.1" max="1.0" step="0.1">
-  </div>
-  <div class="row">
-    <label>止损后冷却期 (h)</label>
-    <input type="number" id="cfg-COOLDOWN_HOURS" min="1" max="168" step="1">
-  </div>
-</div>
-
-<div style="margin: 24px 0;">
-  <button onclick="saveConfig()" style="padding: 12px 28px; font-size: 15px;">
-    💾 保存所有配置
-  </button>
-</div>
-
-<!-- ═══ 审计日志 ═══ -->
-<div class="card">
-  <h2>📋 审计日志</h2>
-  <div id="audit-list" class="muted">加载中...</div>
-</div>
-
-<!-- ═══ TOTP 弹窗 ═══ -->
-<div id="totp-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7);
-     z-index:1000; align-items:center; justify-content:center;">
-  <div class="card" style="width: 360px;">
-    <h3 style="margin-top:0;">需要 TOTP 验证</h3>
-    <p class="muted">写操作需要新鲜的 6 位动态码，请输入 Google Authenticator 当前数字：</p>
-    <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6"
-           inputmode="numeric" autocomplete="off" autofocus>
-    <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end;">
-      <button class="btn-secondary" onclick="closeTotpModal()">取消</button>
-      <button onclick="submitTotp()">验证</button>
+  <!-- TAB: 审计日志 -->
+  <div class="tab-content" id="tab-audit">
+    <div class="card">
+      <div class="card-title">&#128203; 审计日志</div>
+      <div id="audit-list" style="font-size:12px;color:var(--text-dim);max-height:500px;overflow-y:auto;">加载中...</div>
     </div>
   </div>
 </div>
 
+<!-- TOTP Modal -->
+<div class="modal-overlay" id="totp-modal">
+  <div class="modal">
+    <h3>&#128274; TOTP 验证</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">写操作需要 6 位动态码验证：</p>
+    <input type="text" id="totp-code" pattern="[0-9]{6}" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="000000" style="text-align:center;font-size:24px;letter-spacing:8px;padding:14px;">
+    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeTotpModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitTotp()">验证</button>
+    </div>
+  </div>
+</div>
+
+<!-- Account Create Modal -->
+<div class="modal-overlay" id="account-modal">
+  <div class="modal">
+    <h3>&#10133; 新建交易账户</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">每个账户拥有独立的交易所凭证和风控参数。</p>
+    <input type="text" id="new-account-name" placeholder="账户名称（如：测试账户）" maxlength="50">
+    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeAccountModal()">取消</button>
+      <button class="btn btn-primary" onclick="createAccount()">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rename Modal -->
+<div class="modal-overlay" id="rename-modal">
+  <div class="modal">
+    <h3>&#9998; 重命名账户</h3>
+    <input type="text" id="rename-account-name" placeholder="新名称" maxlength="50">
+    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-ghost" onclick="closeRenameModal()">取消</button>
+      <button class="btn btn-primary" onclick="renameAccount()">保存</button>
+    </div>
+  </div>
+</div>
+
+
 <script>
 const CSRF_TOKEN = "{{ csrf_token }}";
-
-let pendingAction = null;  // TOTP 通过后要执行的函数
+let pendingAction = null;
+let currentAccounts = [];
+let currentActiveId = '';
 
 // ── API helpers ──
 async function api(method, path, body) {
   const headers = {'X-Admin-CSRF': CSRF_TOKEN};
   if (body) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
-    method,
-    headers,
+    method, headers,
     body: body ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
   });
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch(function() { return {}; });
   if (!res.ok) {
-    if (data.error === 'totp_required') {
-      return {needTotp: true};
-    }
-    throw new Error(data.error || data.message || `HTTP ${res.status}`);
+    if (data.error === 'totp_required') return {needTotp: true};
+    throw new Error(data.error || data.message || 'HTTP ' + res.status);
   }
   return data;
 }
 
 function alertBox(msg, level) {
-  const el = document.getElementById('alert-box');
-  const cls = level === 'error' ? 'error' : 'ok';
-  el.innerHTML = `<div class="${cls}">${msg}</div>`;
-  setTimeout(() => { el.innerHTML = ''; }, 5000);
+  var el = document.getElementById('alert-box');
+  var cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success');
+  el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>';
+  setTimeout(function() { el.innerHTML = ''; }, 5000);
 }
 
-// ── TOTP 弹窗 ──
+// ── Tab switching ──
+function switchTab(name) {
+  var tabs = document.querySelectorAll('.tab');
+  var contents = document.querySelectorAll('.tab-content');
+  tabs.forEach(function(t) { t.classList.remove('active'); });
+  contents.forEach(function(c) { c.classList.remove('active'); });
+  document.getElementById('tab-' + name).classList.add('active');
+  // Find the tab button
+  tabs.forEach(function(t) {
+    if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf("'" + name + "'") !== -1) {
+      t.classList.add('active');
+    }
+  });
+  if (name === 'audit') loadAudit();
+}
+
+// ── TOTP Modal ──
 function openTotpModal(action) {
   pendingAction = action;
-  document.getElementById('totp-modal').style.display = 'flex';
-  setTimeout(() => document.getElementById('totp-code').focus(), 50);
+  document.getElementById('totp-modal').classList.add('show');
+  setTimeout(function() { document.getElementById('totp-code').focus(); }, 50);
 }
 function closeTotpModal() {
   pendingAction = null;
-  document.getElementById('totp-modal').style.display = 'none';
+  document.getElementById('totp-modal').classList.remove('show');
   document.getElementById('totp-code').value = '';
 }
 async function submitTotp() {
-  const code = document.getElementById('totp-code').value.trim();
+  var code = document.getElementById('totp-code').value.trim();
   try {
     await api('POST', 'api/verify-totp', {totp: code});
     closeTotpModal();
     if (pendingAction) {
-      const fn = pendingAction;
+      var fn = pendingAction;
       pendingAction = null;
       await fn();
     }
@@ -285,251 +475,294 @@ async function submitTotp() {
   }
 }
 
-// ── 实盘自检 ──
-let lastPreflightResult = null;
+// ── Account Management ──
+function openAccountModal() {
+  document.getElementById('account-modal').classList.add('show');
+  setTimeout(function() { document.getElementById('new-account-name').focus(); }, 50);
+}
+function closeAccountModal() {
+  document.getElementById('account-modal').classList.remove('show');
+  document.getElementById('new-account-name').value = '';
+}
+function openRenameModal() {
+  document.getElementById('rename-modal').classList.add('show');
+  var current = currentAccounts.find(function(a) { return a.id === currentActiveId; });
+  document.getElementById('rename-account-name').value = current ? current.name : '';
+  setTimeout(function() { document.getElementById('rename-account-name').focus(); }, 50);
+}
+function closeRenameModal() {
+  document.getElementById('rename-modal').classList.remove('show');
+}
 
-async function runPreflightCheck(exchanges) {
-  const btn = document.getElementById('btn-preflight');
-  const statusEl = document.getElementById('preflight-status');
-  const resultsEl = document.getElementById('preflight-results');
+async function createAccount() {
+  var name = document.getElementById('new-account-name').value.trim();
+  if (!name) { alertBox('请输入账户名称', 'error'); return; }
+  var doCreate = async function() {
+    try {
+      var r = await api('POST', 'api/accounts', {name: name});
+      if (r.needTotp) { openTotpModal(doCreate); return; }
+      closeAccountModal();
+      alertBox('账户已创建: ' + name, 'ok');
+      loadState();
+    } catch (e) { alertBox('创建失败: ' + e.message, 'error'); }
+  };
+  await doCreate();
+}
 
-  btn.disabled = true;
-  btn.textContent = '⏳ 检查中...';
-  statusEl.textContent = '正在连接交易所 API，可能需要几秒...';
-  resultsEl.style.display = 'none';
+async function deleteCurrentAccount() {
+  if (!currentActiveId) return;
+  if (!confirm('确定删除当前账户？此操作不可恢复。')) return;
+  var doDelete = async function() {
+    try {
+      var r = await api('DELETE', 'api/accounts/' + currentActiveId);
+      if (r.needTotp) { openTotpModal(doDelete); return; }
+      alertBox('账户已删除', 'ok');
+      loadState();
+    } catch (e) { alertBox('删除失败: ' + e.message, 'error'); }
+  };
+  await doDelete();
+}
 
+async function renameAccount() {
+  var name = document.getElementById('rename-account-name').value.trim();
+  if (!name) { alertBox('名称不能为空', 'error'); return; }
   try {
-    const body = exchanges ? {exchanges} : {};
-    const r = await api('POST', 'api/preflight-check', body);
-
-    lastPreflightResult = r;
-    resultsEl.style.display = 'block';
-
-    // 路由摘要
-    const routing = r.routing || {};
-    document.getElementById('preflight-routing').innerHTML = `
-      <div style="font-weight:600; margin-bottom:6px;">📡 路由配置</div>
-      <div style="font-family:monospace; font-size:13px; line-height:1.8;">
-        LIVE_MODE = ${routing.LIVE_MODE ? '✅ True' : '❌ False'}<br>
-        OKX_LIVE_MODE = ${routing.OKX_LIVE_MODE ? '✅ True' : '❌ False'}<br>
-        PRIMARY_EXCHANGE = ${routing.PRIMARY_EXCHANGE || 'N/A'}<br>
-        DEFAULT_STAKE = ${routing.DEFAULT_STAKE || 'N/A'}U<br>
-        LEVERAGE = ${routing.LEVERAGE || 'N/A'}x / OKX = ${routing.OKX_DEFAULT_LEVERAGE || 'N/A'}x
-      </div>
-      <div style="margin-top:8px; padding:6px 10px; border-radius:4px;
-           background:${r.ok ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)'};
-           color:${r.ok ? '#4caf50' : '#f44336'};">
-        → ${routing.behavior || '未知'}
-      </div>
-    `;
-
-    // 各交易所结果
-    const exchEl = document.getElementById('preflight-exchanges');
-    if (r.error && !Object.keys(r.results || {}).length) {
-      exchEl.innerHTML = `<div style="color:#f44336; padding:8px;">⚠ ${r.error}</div>`;
-    } else {
-      let html = '';
-      for (const [name, result] of Object.entries(r.results || {})) {
-        const icon = result.pass ? '✅' : '❌';
-        html += `<div style="margin-top:12px;">
-          <div style="font-weight:600; font-size:14px;">${icon} ${name.toUpperCase()}</div>
-          <div style="margin-top:6px;">`;
-        for (const check of (result.checks || [])) {
-          let statusIcon = '✓', statusColor = '#4caf50';
-          if (check.status === 'fail') { statusIcon = '✗'; statusColor = '#f44336'; }
-          else if (check.status === 'warn') { statusIcon = '!'; statusColor = '#ff9800'; }
-          html += `<div style="padding:4px 0; font-size:13px; font-family:monospace;">
-            <span style="color:${statusColor}; font-weight:bold;">${statusIcon}</span>
-            <span style="color:var(--text-dim, #999);">${check.name}</span>：${check.msg}
-          </div>`;
-        }
-        html += '</div></div>';
-      }
-      exchEl.innerHTML = html;
-    }
-
-    // 顶部状态
-    if (r.ok) {
-      statusEl.innerHTML = '<span style="color:#4caf50;">✓ 全部通过，可以安全开启实盘</span>';
-    } else {
-      statusEl.innerHTML = '<span style="color:#f44336;">✗ 存在问题，请修复后再开启 LIVE_MODE</span>';
-    }
-
-  } catch (e) {
-    statusEl.innerHTML = `<span style="color:#f44336;">请求失败: ${e.message}</span>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '▶ 运行实盘自检';
-  }
+    await api('PATCH', 'api/accounts/' + currentActiveId, {name: name});
+    closeRenameModal();
+    alertBox('已重命名', 'ok');
+    loadState();
+  } catch (e) { alertBox('重命名失败: ' + e.message, 'error'); }
 }
 
-// ── LIVE_MODE 开关保护 ──
-function setupLiveModeGuard() {
-  const bnCheck = document.getElementById('cfg-LIVE_MODE');
-  const okxCheck = document.getElementById('cfg-OKX_LIVE_MODE');
-
-  if (bnCheck) {
-    bnCheck.addEventListener('change', (e) => {
-      if (e.target.checked) {
-        _promptPreflightBeforeLive('binance', e.target);
-      }
-    });
-  }
-  if (okxCheck) {
-    okxCheck.addEventListener('change', (e) => {
-      if (e.target.checked) {
-        _promptPreflightBeforeLive('okx', e.target);
-      }
-    });
-  }
+async function switchAccount(accId) {
+  if (accId === currentActiveId) return;
+  try {
+    await api('POST', 'api/accounts/' + accId + '/activate');
+    alertBox('已切换账户', 'ok');
+    loadState();
+  } catch (e) { alertBox('切换失败: ' + e.message, 'error'); }
 }
 
-function _promptPreflightBeforeLive(exchange, checkbox) {
-  // 如果上一次自检已经全通过，不再阻拦
-  if (lastPreflightResult && lastPreflightResult.ok) return;
 
-  const msg = `⚠️ 建议先运行「实盘自检」确认 ${exchange.toUpperCase()} 的 API、持仓模式等正常后再打开。\n\n点击「确定」立即运行自检；点击「取消」继续打开（风险自负）。`;
-  if (confirm(msg)) {
-    checkbox.checked = false;  // 先关掉，等自检通过后手动打开
-    runPreflightCheck([exchange]);
-    // 滚动到自检卡片
-    document.getElementById('btn-preflight').scrollIntoView({behavior: 'smooth', block: 'center'});
-  }
-}
-
-// ── 加载状态 ──
+// ── Load State ──
 async function loadState() {
   try {
-    const s = await api('GET', 'api/state');
+    var s = await api('GET', 'api/state');
 
-    // 填充配置
-    for (const [k, v] of Object.entries(s.config)) {
-      const el = document.getElementById('cfg-' + k);
+    // Fill config fields
+    for (var k in s.config) {
+      var el = document.getElementById('cfg-' + k);
       if (!el) continue;
-      if (el.type === 'checkbox') el.checked = !!v;
-      else el.value = v;
+      if (el.type === 'checkbox') el.checked = !!s.config[k];
+      else el.value = s.config[k];
     }
 
-    // 凭证状态
-    const bn = s.exchanges.binance;
-    document.getElementById('bn-status').textContent = bn.has_credentials
-      ? `✓ 已配置 | key=${bn.masked.api_key || '(empty)'} | secret=${bn.masked.secret || '(empty)'}`
-      : '⚠ 未配置';
-    const okx = s.exchanges.okx;
-    document.getElementById('okx-status').textContent = okx.has_credentials
-      ? `✓ 已配置 | key=${okx.masked.api_key || '(empty)'} | passphrase=${okx.masked.passphrase || '(empty)'}`
-      : '⚠ 未配置';
+    // Live badges
+    var bnBadge = document.getElementById('badge-live-bn');
+    var okxBadge = document.getElementById('badge-live-okx');
+    if (s.config.LIVE_MODE) {
+      bnBadge.textContent = 'LIVE';
+      bnBadge.className = 'badge badge-danger';
+    } else {
+      bnBadge.textContent = 'OFF';
+      bnBadge.className = 'badge badge-success';
+    }
+    if (s.config.OKX_LIVE_MODE) {
+      okxBadge.textContent = 'LIVE';
+      okxBadge.className = 'badge badge-danger';
+    } else {
+      okxBadge.textContent = 'OFF';
+      okxBadge.className = 'badge badge-success';
+    }
 
-    // session 信息
-    const sess = s.session;
-    const mins = Math.floor(sess.idle_remaining_sec / 60);
-    const totpStatus = sess.totp_enabled
-      ? (sess.fresh_totp ? '🟢 TOTP 已验证' : '🟡 TOTP 需要刷新')
-      : '⚪ 2FA 未启用';
-    document.getElementById('session-info').textContent
-      = `剩余 ${mins} 分钟 · ${totpStatus}`;
+    // Credentials
+    var bn = s.exchanges.binance;
+    document.getElementById('bn-status').innerHTML = bn.has_credentials
+      ? '<span class="dot dot-green"></span> 已配置 | key=' + (bn.masked.api_key || '(empty)')
+      : '<span class="dot dot-red"></span> 未配置';
+    var okx = s.exchanges.okx;
+    document.getElementById('okx-status').innerHTML = okx.has_credentials
+      ? '<span class="dot dot-green"></span> 已配置 | key=' + (okx.masked.api_key || '(empty)')
+      : '<span class="dot dot-red"></span> 未配置';
+
+    // Session info
+    var sess = s.session;
+    var mins = Math.floor(sess.idle_remaining_sec / 60);
+    var totpSt = sess.totp_enabled
+      ? (sess.fresh_totp ? '<span class="dot dot-green"></span> TOTP' : '<span class="dot dot-yellow"></span> TOTP')
+      : '<span class="dot dot-gray"></span> 2FA';
+    document.getElementById('session-info').innerHTML = mins + ' min ' + totpSt;
+
+    // Accounts
+    currentAccounts = s.accounts || [];
+    currentActiveId = s.active_account || '';
+    updateAccountUI();
+
   } catch (e) {
     alertBox('加载状态失败: ' + e.message, 'error');
   }
 }
 
-// ── 保存配置 ──
+function updateAccountUI() {
+  var active = currentAccounts.find(function(a) { return a.id === currentActiveId; });
+  if (active) {
+    document.getElementById('active-account-name').textContent = active.name;
+    document.getElementById('active-account-id').textContent = currentActiveId;
+    document.getElementById('account-avatar').textContent = active.name.charAt(0);
+  }
+
+  // Switcher dropdown
+  var sel = document.getElementById('account-switcher');
+  sel.innerHTML = '';
+  currentAccounts.forEach(function(acc) {
+    var opt = document.createElement('option');
+    opt.value = acc.id;
+    opt.textContent = acc.name + (acc.id === currentActiveId ? ' (active)' : '');
+    opt.selected = acc.id === currentActiveId;
+    sel.appendChild(opt);
+  });
+}
+
+// ── Save Config ──
 function saveConfig() {
-  const doSave = async () => {
-    const changes = {};
-    const keys = [
+  var doSave = async function() {
+    var changes = {};
+    var keys = [
       'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK',
       'ACCOUNT_BALANCE', 'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
       'TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'TP1_CLOSE_RATIO',
       'HARD_STOP_LOSS_PCT', 'SLIPPAGE_ALERT_PCT',
       'RISK_MAX_DAILY_LOSS', 'RISK_MAX_DAILY_TRADES',
-      'RISK_CONSECUTIVE_LOSS_PAUSE', 'RISK_MAX_POSITION_PCT', 'COOLDOWN_HOURS',
+      'RISK_CONSECUTIVE_LOSS_PAUSE', 'RISK_MAX_POSITION_PCT', 'COOLDOWN_HOURS'
     ];
-    for (const key of keys) {
-      const el = document.getElementById('cfg-' + key);
-      if (!el) continue;
+    keys.forEach(function(key) {
+      var el = document.getElementById('cfg-' + key);
+      if (!el) return;
       if (el.type === 'checkbox') changes[key] = el.checked;
       else if (el.type === 'number') changes[key] = parseFloat(el.value);
       else changes[key] = el.value;
-    }
+    });
     try {
-      const r = await api('POST', 'api/config', {changes});
+      var r = await api('POST', 'api/config', {changes: changes});
       if (r.needTotp) { openTotpModal(doSave); return; }
-      alertBox(`✓ 已保存 ${Object.keys(r.applied || {}).length} 项变更，立即生效`, 'ok');
+      var count = Object.keys(r.applied || {}).length;
+      alertBox('已保存 ' + count + ' 项变更，立即生效', 'ok');
       loadState();
       loadAudit();
-    } catch (e) {
-      alertBox('保存失败: ' + e.message, 'error');
-    }
+    } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
   };
   doSave();
 }
 
-// ── 保存凭证 ──
+// ── Credentials ──
 function saveCredentials(exchange) {
-  const doSave = async () => {
-    const body = {};
+  var doSave = async function() {
+    var body = {};
     body.api_key = document.getElementById(exchange + '-api_key').value;
     body.secret = document.getElementById(exchange + '-secret').value;
-    if (exchange === 'okx') {
-      body.passphrase = document.getElementById('okx-passphrase').value;
-    }
+    if (exchange === 'okx') body.passphrase = document.getElementById('okx-passphrase').value;
     try {
-      const r = await api('POST', 'api/credentials/' + exchange, body);
+      var r = await api('POST', 'api/credentials/' + exchange, body);
       if (r.needTotp) { openTotpModal(doSave); return; }
-      alertBox(`✓ ${exchange.toUpperCase()} 凭证已保存`, 'ok');
-      // 清空输入框
+      alertBox(exchange.toUpperCase() + ' 凭证已保存', 'ok');
       document.getElementById(exchange + '-api_key').value = '';
       document.getElementById(exchange + '-secret').value = '';
       if (exchange === 'okx') document.getElementById('okx-passphrase').value = '';
       loadState();
-      loadAudit();
-    } catch (e) {
-      alertBox('保存失败: ' + e.message, 'error');
-    }
+    } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
   };
   doSave();
 }
 
-// ── 清除凭证 ──
 function clearCredentials(exchange) {
-  const doClear = async () => {
-    if (!confirm(`确定清除 ${exchange.toUpperCase()} 凭证？这会同时关闭该交易所的实盘开关。`)) return;
+  var doClear = async function() {
+    if (!confirm('确定清除 ' + exchange.toUpperCase() + ' 凭证？会同时关闭实盘开关。')) return;
     try {
-      const r = await api('DELETE', 'api/credentials/' + exchange);
+      var r = await api('DELETE', 'api/credentials/' + exchange);
       if (r.needTotp) { openTotpModal(doClear); return; }
-      alertBox(`✓ ${exchange.toUpperCase()} 凭证已清除`, 'ok');
+      alertBox(exchange.toUpperCase() + ' 凭证已清除', 'ok');
       loadState();
-      loadAudit();
-    } catch (e) {
-      alertBox('操作失败: ' + e.message, 'error');
-    }
+    } catch (e) { alertBox('操作失败: ' + e.message, 'error'); }
   };
   doClear();
 }
 
-// ── 审计 ──
+// ── Preflight Check ──
+async function runPreflightCheck() {
+  var btn = document.getElementById('btn-preflight');
+  var statusEl = document.getElementById('preflight-status');
+  var resultsEl = document.getElementById('preflight-results');
+  btn.disabled = true;
+  btn.textContent = '检查中...';
+  statusEl.textContent = '正在连接交易所 API...';
+  resultsEl.style.display = 'none';
+
+  try {
+    var r = await api('POST', 'api/preflight-check', {});
+    resultsEl.style.display = 'block';
+
+    var routing = r.routing || {};
+    document.getElementById('preflight-routing').innerHTML =
+      '<div style="font-weight:600;margin-bottom:8px;">路由配置</div>' +
+      '<div style="font-family:monospace;font-size:12px;line-height:2;">' +
+      'LIVE_MODE = ' + (routing.LIVE_MODE ? '<span class="badge badge-danger">True</span>' : '<span class="badge badge-success">False</span>') + '<br>' +
+      'OKX_LIVE_MODE = ' + (routing.OKX_LIVE_MODE ? '<span class="badge badge-danger">True</span>' : '<span class="badge badge-success">False</span>') + '<br>' +
+      'PRIMARY_EXCHANGE = ' + (routing.PRIMARY_EXCHANGE || 'N/A') + '<br>' +
+      'DEFAULT_STAKE = ' + (routing.DEFAULT_STAKE || 'N/A') + 'U | LEVERAGE = ' + (routing.LEVERAGE || 'N/A') + 'x' +
+      '</div>' +
+      '<div style="margin-top:8px;padding:8px 12px;border-radius:6px;background:' + (r.ok ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)') + ';color:' + (r.ok ? 'var(--success)' : 'var(--danger)') + ';font-size:13px;">' +
+      (routing.behavior || '') + '</div>';
+
+    var exchEl = document.getElementById('preflight-exchanges');
+    if (r.error && !Object.keys(r.results || {}).length) {
+      exchEl.innerHTML = '<div style="color:var(--danger);padding:8px;">' + r.error + '</div>';
+    } else {
+      var html = '';
+      for (var name in (r.results || {})) {
+        var result = r.results[name];
+        var icon = result.pass ? '&#9989;' : '&#10060;';
+        html += '<div style="margin-top:12px;"><div style="font-weight:600;font-size:14px;">' + icon + ' ' + name.toUpperCase() + '</div><div style="margin-top:6px;">';
+        (result.checks || []).forEach(function(check) {
+          var si = '&#10003;', sc = 'var(--success)';
+          if (check.status === 'fail') { si = '&#10007;'; sc = 'var(--danger)'; }
+          else if (check.status === 'warn') { si = '!'; sc = 'var(--warning)'; }
+          html += '<div style="padding:3px 0;font-size:12px;font-family:monospace;"><span style="color:' + sc + ';font-weight:bold;">' + si + '</span> <span style="color:var(--text-dim);">' + check.name + '</span>: ' + check.msg + '</div>';
+        });
+        html += '</div></div>';
+      }
+      exchEl.innerHTML = html;
+    }
+
+    if (r.ok) statusEl.innerHTML = '<span style="color:var(--success);">&#10003; 全部通过</span>';
+    else statusEl.innerHTML = '<span style="color:var(--danger);">&#10007; 存在问题</span>';
+  } catch (e) {
+    statusEl.innerHTML = '<span style="color:var(--danger);">请求失败: ' + e.message + '</span>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '\u25B6 运行实盘自检';
+  }
+}
+
+// ── Audit ──
 async function loadAudit() {
   try {
-    const r = await api('GET', 'api/audit');
-    const el = document.getElementById('audit-list');
+    var r = await api('GET', 'api/audit');
+    var el = document.getElementById('audit-list');
     if (!r.events || !r.events.length) {
-      el.innerHTML = '<div class="muted">暂无审计记录</div>';
+      el.innerHTML = '<div style="color:var(--text-dim);">暂无审计记录</div>';
       return;
     }
-    const rows = r.events.slice(0, 50).map(e => {
-      const ts = (e.ts || '').replace('T', ' ').slice(0, 19);
-      const ip = e.ip || '';
-      const extra = Object.entries(e)
-        .filter(([k]) => !['ts', 'event', 'ip'].includes(k))
-        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
-        .join(' ');
-      return `<div style="font-family:monospace;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);">
-        <span class="muted">${ts}</span>
-        <span style="color:var(--accent);">${e.event}</span>
-        <span class="muted">${ip}</span>
-        ${extra ? `<span style="color:var(--text-dim);">${extra}</span>` : ''}
-      </div>`;
+    var rows = r.events.slice(0, 80).map(function(e) {
+      var ts = (e.ts || '').replace('T', ' ').slice(0, 19);
+      var ip = e.ip || '';
+      var extra = Object.keys(e).filter(function(k) { return !['ts','event','ip'].includes(k); })
+        .map(function(k) { return k + '=' + (typeof e[k] === 'object' ? JSON.stringify(e[k]) : e[k]); }).join(' ');
+      return '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-family:monospace;font-size:11px;">' +
+        '<span style="color:var(--text-muted);">' + ts + '</span> ' +
+        '<span style="color:var(--accent);">' + e.event + '</span> ' +
+        '<span style="color:var(--text-muted);">' + ip + '</span> ' +
+        (extra ? '<span style="color:var(--text-dim);font-size:10px;">' + extra + '</span>' : '') +
+        '</div>';
     }).join('');
     el.innerHTML = rows;
   } catch (e) {
@@ -537,15 +770,28 @@ async function loadAudit() {
   }
 }
 
-// TOTP 码自动提交（输满 6 位）
-document.addEventListener('DOMContentLoaded', () => {
+// ── Init ──
+document.addEventListener('DOMContentLoaded', function() {
   loadState();
   loadAudit();
-  setupLiveModeGuard();
-  setInterval(loadState, 30000);   // 30s 刷新 session 剩余时间
+  setInterval(loadState, 30000);
 
-  document.getElementById('totp-code').addEventListener('input', (e) => {
+  // Account switcher
+  document.getElementById('account-switcher').addEventListener('change', function(e) {
+    switchAccount(e.target.value);
+  });
+
+  // TOTP auto-submit on 6 digits
+  document.getElementById('totp-code').addEventListener('input', function(e) {
     if (e.target.value.replace(/\D/g, '').length === 6) submitTotp();
+  });
+
+  // Enter key for modals
+  document.getElementById('new-account-name').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') createAccount();
+  });
+  document.getElementById('rename-account-name').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') renameAccount();
   });
 });
 </script>

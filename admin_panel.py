@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 """
-管理员配置面板 v1.0 — 高安全实盘接入面板
+管理员配置面板 v2.0 — 多账户高安全实盘接入面板
 
 安全多层防御（按请求流经顺序）：
-  L1  IP 白名单（可选）: ADMIN_ALLOWED_IPS 设置后，非白名单 IP 一律 404
-  L2  Secret URL 前缀:  整个面板挂在 /<ADMIN_URL_SECRET>/；secret 未配置
-                         时 blueprint 根本不 register，任何路径都 404
-  L3  IP 限速 + 失败锁定: 每 IP 5 次登录失败 → 锁定 30 分钟，锁定期内返回 404
-                         （不返回 401，攻击者无法区分"路径存在"和"不存在"）
-  L4  密码 (PBKDF2-SHA256, 600k iter) + TOTP (Google Authenticator)
-  L5  Session: 30 分钟空闲过期 / 4 小时绝对过期；写操作要求 5 分钟内有新鲜 TOTP
-  L6  CSRF: 所有 POST 必须带 X-Admin-CSRF 头，与 session token 常量时间比较
-  L7  审计日志: 所有写操作 → admin_audit.log + TG 推送告警
+  L1  IP 白名单（可选）
+  L2  Secret URL 前缀
+  L3  IP 限速 + 失败锁定
+  L4  密码 (PBKDF2-SHA256, 600k iter) + TOTP
+  L5  Session: 30 分钟空闲过期 / 4 小时绝对过期
+  L6  CSRF: 所有 POST 必须带 X-Admin-CSRF 头
+  L7  审计日志
   L8  响应头: noindex, no-cache, X-Frame-Options=DENY, CSP 严格
-
-⚠️ 部署前检查表：
-  □ .env 里 ADMIN_URL_SECRET 是 32+ 字节随机串（secrets.token_urlsafe(32)）
-  □ 反向代理 (nginx/caddy) 强制 HTTPS；dashboard 本身不要暴露到 0.0.0.0
-  □ 如在公网，设置 ADMIN_ALLOWED_IPS 限制源 IP
-  □ 服务器 filesystem 权限：admin_secrets.json / runtime_config.json / admin_audit.log 都是 0600
 """
 
 import json
@@ -43,15 +35,14 @@ logger = logging.getLogger("admin_panel")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIT_LOG = os.path.join(SCRIPT_DIR, 'admin_audit.log')
-# 登录失败限速文件；单独存一份，避免放内存里多进程不共享
 RATE_LIMIT_FILE = os.path.join(SCRIPT_DIR, '.admin_ratelimit.json')
 
-# ── 安全参数 ──────────────────────────────────────────────────────
-SESSION_IDLE_TIMEOUT = 30 * 60          # 30 min 空闲过期
-SESSION_ABSOLUTE_TIMEOUT = 4 * 3600     # 4 hour 绝对过期
-FRESH_TOTP_WINDOW = 5 * 60              # 写操作要求 5 分钟内有新鲜 TOTP
-RATE_LIMIT_MAX_FAILURES = 5             # 5 次失败
-RATE_LIMIT_LOCKOUT_SEC = 30 * 60        # 锁 30 分钟
+# ── 安全参数 ──
+SESSION_IDLE_TIMEOUT = 30 * 60
+SESSION_ABSOLUTE_TIMEOUT = 4 * 3600
+FRESH_TOTP_WINDOW = 5 * 60
+RATE_LIMIT_MAX_FAILURES = 5
+RATE_LIMIT_LOCKOUT_SEC = 30 * 60
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -77,10 +68,6 @@ def _save_ratelimit(data: dict) -> None:
 
 
 def _client_ip() -> str:
-    """
-    获取客户端 IP。考虑反向代理；仅信任 X-Forwarded-For 的第一个值。
-    如果你的部署里 dashboard 直接对外，remote_addr 就够了。
-    """
     xff = request.headers.get('X-Forwarded-For', '')
     if xff:
         return xff.split(',')[0].strip()
@@ -96,7 +83,6 @@ def _is_ip_locked(ip: str) -> bool:
         return False
     locked_until = entry.get('locked_until', 0)
     if time.time() >= locked_until:
-        # 过期解锁
         _clear_ip_failures(ip)
         return False
     return True
@@ -135,7 +121,6 @@ def _clear_ip_failures(ip: str) -> None:
 # ══════════════════════════════════════════════════════════════════
 
 def _audit(event: str, **kwargs) -> None:
-    """追加到 admin_audit.log；格式 JSON Lines，0600 权限。"""
     rec = {
         'ts': datetime.now(timezone.utc).isoformat(),
         'event': event,
@@ -145,7 +130,6 @@ def _audit(event: str, **kwargs) -> None:
     try:
         with open(AUDIT_LOG, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-        # 每次写完保证权限
         try:
             os.chmod(AUDIT_LOG, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
@@ -159,14 +143,11 @@ def _audit(event: str, **kwargs) -> None:
 # ══════════════════════════════════════════════════════════════════
 
 def _require_login(f):
-    """登录态检查 + session 过期控制"""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth = session.get('admin_auth')
         if not auth:
-            # 未登录 → 扔到 login 页；保持 200 以免泄露路径存在
             return redirect(url_for('admin.login'))
-
         now = time.time()
         if now - auth.get('created_at', 0) > SESSION_ABSOLUTE_TIMEOUT:
             session.clear()
@@ -174,8 +155,6 @@ def _require_login(f):
         if now - auth.get('last_seen', 0) > SESSION_IDLE_TIMEOUT:
             session.clear()
             return redirect(url_for('admin.login'))
-
-        # 续期
         auth['last_seen'] = now
         session['admin_auth'] = auth
         g.admin_auth = auth
@@ -184,7 +163,6 @@ def _require_login(f):
 
 
 def _require_fresh_totp(f):
-    """写操作：5 分钟内必须有新鲜的 TOTP 验证"""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth = session.get('admin_auth', {})
@@ -199,7 +177,6 @@ def _require_fresh_totp(f):
 
 
 def _require_csrf(f):
-    """CSRF token 检查"""
     @wraps(f)
     def decorated(*args, **kwargs):
         sent = request.headers.get('X-Admin-CSRF', '')
@@ -212,7 +189,6 @@ def _require_csrf(f):
 
 
 def _no_cache_response(resp):
-    """给所有响应加反缓存/反嵌入头"""
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
@@ -220,7 +196,6 @@ def _no_cache_response(resp):
     resp.headers['X-Frame-Options'] = 'DENY'
     resp.headers['X-Content-Type-Options'] = 'nosniff'
     resp.headers['Referrer-Policy'] = 'no-referrer'
-    # CSP：只允许同源脚本/样式，禁止外链资源
     resp.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
@@ -234,16 +209,12 @@ def _no_cache_response(resp):
     return resp
 
 
+
 # ══════════════════════════════════════════════════════════════════
 #  Blueprint 工厂
 # ══════════════════════════════════════════════════════════════════
 
 def create_blueprint(url_secret: str) -> Blueprint:
-    """
-    创建 admin blueprint，挂在 /<url_secret>/ 下。
-    dashboard.py 会在 ADMIN_URL_SECRET 存在时调用；不存在时整个面板不加载。
-    """
-    # url_prefix 必须以 / 开头，不以 / 结尾
     prefix = '/' + url_secret.strip('/')
     bp = Blueprint('admin', __name__,
                    url_prefix=prefix,
@@ -252,20 +223,13 @@ def create_blueprint(url_secret: str) -> Blueprint:
     # ── 全局前置守卫 ──
     @bp.before_request
     def _before():
-        # IP 白名单
         allowed_ips = os.environ.get('ADMIN_ALLOWED_IPS', '').strip()
         if allowed_ips:
             allowed = [ip.strip() for ip in allowed_ips.split(',') if ip.strip()]
             if _client_ip() not in allowed:
-                # 不在白名单 → 假装路径不存在
                 abort(404)
-
-        # IP 锁定
         if _is_ip_locked(_client_ip()):
-            # 锁定期返回 404，让攻击者无法通过响应判断路径存在
             abort(404)
-
-        # 确保每个 session 有 CSRF token
         if 'csrf_token' not in session:
             session['csrf_token'] = secrets.token_urlsafe(32)
 
@@ -279,7 +243,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
 
     @bp.route('/', methods=['GET'])
     def root():
-        # 根路径：已登录去面板，否则看是否要初始化，都不是就去登录
         if session.get('admin_auth'):
             return redirect(url_for('admin.panel'))
         if not admin_secrets.is_initialized():
@@ -297,7 +260,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
 
     @bp.route('/login', methods=['POST'])
     def login_submit():
-        # 显式校验 CSRF（不能用装饰器，因为登录前没用 _require_login）
         sent_csrf = request.form.get('csrf_token', '')
         if not secrets.compare_digest(sent_csrf, session.get('csrf_token', '')):
             _audit('login.csrf_fail')
@@ -309,24 +271,19 @@ def create_blueprint(url_secret: str) -> Blueprint:
         password = request.form.get('password', '')
         totp_code = request.form.get('totp', '').strip()
 
-        # 密码 + TOTP 都必须校验通过
         pw_ok = admin_secrets.verify_password(password)
-        totp_ok = True  # 若未启用 2FA 则跳过
+        totp_ok = True
         if admin_secrets.is_totp_enabled():
             totp_ok = admin_secrets.verify_totp(totp_code)
 
         if not (pw_ok and totp_ok):
             _record_failure(_client_ip())
-            _audit('login.fail',
-                   pw_ok=pw_ok,
-                   totp_ok=totp_ok,
+            _audit('login.fail', pw_ok=pw_ok, totp_ok=totp_ok,
                    totp_enabled=admin_secrets.is_totp_enabled())
-            # 返回通用错误，不透露是密码错还是 TOTP 错
             return render_template('admin/login.html',
                                    error="凭证错误",
                                    csrf_token=session['csrf_token']), 401
 
-        # 登录成功
         _clear_ip_failures(_client_ip())
         now = time.time()
         session['admin_auth'] = {
@@ -334,7 +291,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
             'last_seen': now,
             'last_totp_at': now if totp_ok and admin_secrets.is_totp_enabled() else 0,
         }
-        # 登录成功后换一个 CSRF，防止 session fixation
         session['csrf_token'] = secrets.token_urlsafe(32)
         _audit('login.success', totp_enabled=admin_secrets.is_totp_enabled())
         try:
@@ -355,29 +311,22 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return redirect(url_for('admin.login'))
 
     # ══════════════════════════════════════════════════════════════════
-    #  页面：首次初始化（设置密码 + 绑定 TOTP）
+    #  页面：首次初始化
     # ══════════════════════════════════════════════════════════════════
 
     @bp.route('/setup', methods=['GET'])
     def setup():
         if admin_secrets.is_initialized():
-            # 已初始化，禁止重复 setup
             return redirect(url_for('admin.login'))
-
-        # 生成一个候选 TOTP secret（等用户提交才真正保存）
         if 'setup_totp_secret' not in session:
             session['setup_totp_secret'] = admin_secrets.generate_totp_secret()
 
         secret = session['setup_totp_secret']
-        otpauth_url = admin_secrets.set_totp_secret(secret, issuer="altcoin-shadow-admin")
-        # 注：上面 set_totp_secret 会写磁盘但 enabled=False，所以此时还不能登录
-        # 但我们需要 otpauth_url，所以直接构造一个不写盘的版本：
         from urllib.parse import quote
         otpauth_url = (
             f"otpauth://totp/{quote('altcoin-shadow-admin')}:{quote('admin')}"
             f"?secret={secret}&issuer={quote('altcoin-shadow-admin')}&digits=6&period=30"
         )
-
         return render_template('admin/setup.html',
                                csrf_token=session['csrf_token'],
                                totp_secret=secret,
@@ -402,30 +351,24 @@ def create_blueprint(url_secret: str) -> Blueprint:
                                    csrf_token=session['csrf_token'],
                                    totp_secret=admin_secrets.generate_totp_secret(),
                                    otpauth_url=''), 400
-
         if pw != pw2:
             return render_template('admin/setup.html',
                                    error="两次密码不一致",
                                    csrf_token=session['csrf_token'],
                                    totp_secret=setup_secret,
                                    otpauth_url=''), 400
-
         if len(pw) < 12:
             return render_template('admin/setup.html',
                                    error="密码至少 12 个字符",
                                    csrf_token=session['csrf_token'],
                                    totp_secret=setup_secret,
                                    otpauth_url=''), 400
-
-        # 验证 TOTP 码（证明用户确实扫了二维码）
         if not admin_secrets.verify_totp(totp_code, secret_b32=setup_secret):
             return render_template('admin/setup.html',
                                    error="TOTP 码错误，请确认 Authenticator 时间同步后重试",
                                    csrf_token=session['csrf_token'],
                                    totp_secret=setup_secret,
                                    otpauth_url=''), 400
-
-        # 通过 → 持久化
         try:
             admin_secrets.set_password(pw)
         except ValueError as e:
@@ -436,6 +379,8 @@ def create_blueprint(url_secret: str) -> Blueprint:
                                    otpauth_url=''), 400
         admin_secrets.set_totp_secret(setup_secret)
         admin_secrets.enable_totp()
+        # 创建默认账户
+        admin_secrets.create_account('主账户')
 
         session.pop('setup_totp_secret', None)
         _audit('setup.complete')
@@ -444,7 +389,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
             send_tg(
                 f"🔐 <b>Admin Panel 初始化完成</b>\n\n"
                 f"IP: <code>{_client_ip()}</code>\n"
-                f"管理员密码和 TOTP 已绑定；下次访问需要密码 + 6 位动态码"
+                f"管理员密码和 TOTP 已绑定"
             )
         except Exception:
             pass
@@ -461,30 +406,94 @@ def create_blueprint(url_secret: str) -> Blueprint:
                                csrf_token=session['csrf_token'])
 
     # ══════════════════════════════════════════════════════════════════
+    #  API：多账户管理
+    # ══════════════════════════════════════════════════════════════════
+
+    @bp.route('/api/accounts', methods=['GET'])
+    @_require_login
+    def api_list_accounts():
+        accounts = admin_secrets.list_accounts()
+        active_id = admin_secrets.get_active_account_id()
+        return jsonify({'accounts': accounts, 'active_account': active_id})
+
+    @bp.route('/api/accounts', methods=['POST'])
+    @_require_login
+    @_require_csrf
+    @_require_fresh_totp
+    def api_create_account():
+        data = request.get_json(silent=True) or {}
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': '账户名称不能为空'}), 400
+        try:
+            account_id = admin_secrets.create_account(name)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        _audit('account.create', account_id=account_id, name=name)
+        return jsonify({'ok': True, 'account_id': account_id})
+
+    @bp.route('/api/accounts/<account_id>', methods=['DELETE'])
+    @_require_login
+    @_require_csrf
+    @_require_fresh_totp
+    def api_delete_account(account_id):
+        try:
+            admin_secrets.delete_account(account_id)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        _audit('account.delete', account_id=account_id)
+        return jsonify({'ok': True})
+
+    @bp.route('/api/accounts/<account_id>/activate', methods=['POST'])
+    @_require_login
+    @_require_csrf
+    def api_activate_account(account_id):
+        try:
+            admin_secrets.set_active_account(account_id)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        # 重新应用该账户配置
+        runtime_config.apply_overrides(force=True)
+        _audit('account.activate', account_id=account_id)
+        return jsonify({'ok': True})
+
+    @bp.route('/api/accounts/<account_id>', methods=['PATCH'])
+    @_require_login
+    @_require_csrf
+    def api_rename_account(account_id):
+        data = request.get_json(silent=True) or {}
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': '名称不能为空'}), 400
+        try:
+            admin_secrets.rename_account(account_id, name)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        _audit('account.rename', account_id=account_id, new_name=name)
+        return jsonify({'ok': True})
+
+    # ══════════════════════════════════════════════════════════════════
     #  API：状态 + 配置读取
     # ══════════════════════════════════════════════════════════════════
 
     @bp.route('/api/state', methods=['GET'])
     @_require_login
     def api_state():
-        """返回当前所有状态：配置、凭证(脱敏)、路由预览、session 剩余"""
         auth = session.get('admin_auth', {})
         now = time.time()
 
-        # 凭证脱敏
         bn_masked = admin_secrets.mask_credentials('binance')
         okx_masked = admin_secrets.mask_credentials('okx')
 
-        # 实际配置当前值
         current = runtime_config.get_current_values()
 
-        # 字段元信息（给前端生成表单用）
         fields_meta = {}
         for key, (t, _v, label) in runtime_config.ALLOWED.items():
-            fields_meta[key] = {
-                'type': t.__name__,
-                'label': label,
-            }
+            fields_meta[key] = {'type': t.__name__, 'label': label}
+
+        # 账户信息
+        accounts = admin_secrets.list_accounts()
+        active_id = admin_secrets.get_active_account_id()
 
         data = {
             'config': current,
@@ -499,6 +508,8 @@ def create_blueprint(url_secret: str) -> Blueprint:
                     'masked': okx_masked,
                 },
             },
+            'accounts': accounts,
+            'active_account': active_id,
             'session': {
                 'idle_remaining_sec': max(0, SESSION_IDLE_TIMEOUT - int(now - auth.get('last_seen', now))),
                 'absolute_remaining_sec': max(0, SESSION_ABSOLUTE_TIMEOUT - int(now - auth.get('created_at', now))),
@@ -512,11 +523,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
     @_require_login
     @_require_csrf
     def api_verify_totp():
-        """
-        刷新 TOTP 新鲜度；写操作之前前端会调这个。
-        """
         if not admin_secrets.is_totp_enabled():
-            # 未启用 2FA 时永远返回成功（保持 API 签名一致）
             auth = session['admin_auth']
             auth['last_totp_at'] = time.time()
             session['admin_auth'] = auth
@@ -535,6 +542,8 @@ def create_blueprint(url_secret: str) -> Blueprint:
         _audit('totp.fresh_verified')
         return jsonify({'ok': True})
 
+
+
     # ══════════════════════════════════════════════════════════════════
     #  API：更新运行时配置
     # ══════════════════════════════════════════════════════════════════
@@ -544,16 +553,11 @@ def create_blueprint(url_secret: str) -> Blueprint:
     @_require_csrf
     @_require_fresh_totp
     def api_set_config():
-        """
-        更新运行时配置。只接受白名单字段，逐个校验。
-        所有变更 → 审计 + TG 推送。
-        """
         data = request.get_json(silent=True) or {}
         changes = data.get('changes') or {}
         if not isinstance(changes, dict):
             return jsonify({'error': 'changes must be object'}), 400
 
-        # 逐字段校验
         errors = {}
         cleaned = {}
         for key, value in changes.items():
@@ -566,7 +570,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if errors:
             return jsonify({'error': 'validation', 'details': errors}), 400
 
-        # 合并到当前 overrides 文件
         existing = runtime_config.load_overrides()
         merged = {**existing, **cleaned}
         runtime_config.save_overrides(merged)
@@ -608,20 +611,15 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if not kwargs:
             return jsonify({'error': '没有要更新的字段'}), 400
 
-        # Binance 不接受 passphrase
         if exchange == 'binance' and 'passphrase' in kwargs:
             del kwargs['passphrase']
-        # OKX 必须有 passphrase（若之前没存过）
-        existing = admin_secrets.get_exchange_credentials(exchange)
 
         try:
             admin_secrets.set_exchange_credentials(exchange, **kwargs)
         except Exception as e:
             return jsonify({'error': str(e)}), 400
 
-        _audit('credentials.update',
-               exchange=exchange,
-               fields=list(kwargs.keys()))
+        _audit('credentials.update', exchange=exchange, fields=list(kwargs.keys()))
         try:
             from common import send_tg
             send_tg(
@@ -642,7 +640,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if exchange not in ('binance', 'okx'):
             abort(404)
 
-        # 安全起见：清除凭证时，强制关掉对应的 LIVE_MODE
         existing = runtime_config.load_overrides()
         if exchange == 'binance':
             existing['LIVE_MODE'] = False
@@ -667,24 +664,18 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return jsonify({'ok': True})
 
     # ══════════════════════════════════════════════════════════════════
-    #  API：实盘自检（Preflight Check）
+    #  API：实盘自检
     # ══════════════════════════════════════════════════════════════════
 
     @bp.route('/api/preflight-check', methods=['POST'])
     @_require_login
     @_require_csrf
     def api_preflight_check():
-        """
-        运行实盘自检，返回结构化 JSON 结果。
-        不下任何真实订单，仅做只读查询 + 试设杠杆。
-        请求体可选: {"exchanges": ["binance", "okx"]} 不传则检查所有已配凭证的。
-        """
         import config as _cfg
 
         data = request.get_json(silent=True) or {}
         targets = data.get('exchanges') or []
         if not targets:
-            # 自动检测已配凭证的交易所
             bn_creds = admin_secrets.get_exchange_credentials('binance')
             okx_creds = admin_secrets.get_exchange_credentials('okx')
             if bn_creds.get('api_key'):
@@ -707,10 +698,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
             results['okx'] = _run_okx_check(_cfg)
 
         all_pass = all(r['pass'] for r in results.values())
-
-        _audit('preflight_check',
-               targets=targets,
-               all_pass=all_pass)
+        _audit('preflight_check', targets=targets, all_pass=all_pass)
 
         return jsonify({
             'ok': all_pass,
@@ -719,7 +707,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
         })
 
     def _build_routing_summary(_cfg) -> dict:
-        """构造路由摘要信息"""
         binance_on = _cfg.LIVE_MODE
         okx_on = _cfg.OKX_LIVE_MODE
         mode = getattr(_cfg, 'PRIMARY_EXCHANGE', 'binance').lower()
@@ -751,10 +738,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
         }
 
     def _run_binance_check(_cfg) -> dict:
-        """Binance 实盘自检，返回结构化结果"""
         checks = []
-
-        # 1. 凭证
         try:
             creds = admin_secrets.get_exchange_credentials('binance')
             api_key = creds.get('api_key', '')
@@ -771,7 +755,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
         checks.append({'name': 'API 凭证', 'status': 'pass',
                        'msg': f'已配置（key 前缀={api_key[:6]}...）'})
 
-        # 初始化 ccxt
         try:
             import ccxt
             exchange = ccxt.binance({
@@ -781,15 +764,12 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 'options': {'defaultType': 'future'},
             })
         except ImportError:
-            checks.append({'name': '依赖库', 'status': 'fail',
-                           'msg': 'ccxt 未安装'})
+            checks.append({'name': '依赖库', 'status': 'fail', 'msg': 'ccxt 未安装'})
             return {'pass': False, 'checks': checks}
         except Exception as e:
-            checks.append({'name': '连接初始化', 'status': 'fail',
-                           'msg': str(e)})
+            checks.append({'name': '连接初始化', 'status': 'fail', 'msg': str(e)})
             return {'pass': False, 'checks': checks}
 
-        # 2. 余额
         try:
             balance = exchange.fetch_balance({'type': 'future'})
             usdt = balance.get('USDT', {})
@@ -802,42 +782,33 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 checks.append({'name': '合约余额', 'status': 'pass',
                                'msg': f'总={total:.2f}U / 可用={free:.2f}U'})
         except Exception as e:
-            checks.append({'name': '合约余额', 'status': 'fail',
-                           'msg': f'查询失败: {e}'})
+            checks.append({'name': '合约余额', 'status': 'fail', 'msg': f'查询失败: {e}'})
             return {'pass': False, 'checks': checks}
 
-        # 3. 持仓模式
         try:
             result = exchange.fapiPrivateGetPositionSideDual()
             dual_side = bool(result.get('dualSidePosition', False))
             if dual_side:
-                checks.append({'name': '持仓模式', 'status': 'pass',
-                               'msg': 'Hedge Mode（对冲模式）✓'})
+                checks.append({'name': '持仓模式', 'status': 'pass', 'msg': 'Hedge Mode（对冲模式）✓'})
             else:
                 checks.append({'name': '持仓模式', 'status': 'fail',
                                'msg': '当前为单向模式！需切换为「对冲模式 / Hedge Mode」'})
                 return {'pass': False, 'checks': checks}
         except Exception as e:
-            checks.append({'name': '持仓模式', 'status': 'warn',
-                           'msg': f'查询失败（不一定致命）: {e}'})
+            checks.append({'name': '持仓模式', 'status': 'warn', 'msg': f'查询失败（不一定致命）: {e}'})
 
-        # 4. 杠杆接口
         try:
             exchange.set_leverage(_cfg.LEVERAGE, 'BTC/USDT')
             checks.append({'name': '杠杆接口', 'status': 'pass',
                            'msg': f'可用（BTC/USDT 杠杆={_cfg.LEVERAGE}x 已试设）'})
         except Exception as e:
-            checks.append({'name': '杠杆接口', 'status': 'warn',
-                           'msg': f'异常（可能是权限问题）: {e}'})
+            checks.append({'name': '杠杆接口', 'status': 'warn', 'msg': f'异常（可能是权限问题）: {e}'})
 
         all_pass = all(c['status'] != 'fail' for c in checks)
         return {'pass': all_pass, 'checks': checks}
 
     def _run_okx_check(_cfg) -> dict:
-        """OKX 实盘自检，返回结构化结果"""
         checks = []
-
-        # 1. 凭证
         try:
             creds = admin_secrets.get_exchange_credentials('okx')
             api_key = creds.get('api_key', '')
@@ -859,7 +830,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
         checks.append({'name': 'API 凭证', 'status': 'pass',
                        'msg': f'已配置（key 前缀={api_key[:6]}...）'})
 
-        # 初始化 ccxt
         try:
             import ccxt
             exchange = ccxt.okx({
@@ -869,15 +839,12 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 'enableRateLimit': True,
             })
         except ImportError:
-            checks.append({'name': '依赖库', 'status': 'fail',
-                           'msg': 'ccxt 未安装'})
+            checks.append({'name': '依赖库', 'status': 'fail', 'msg': 'ccxt 未安装'})
             return {'pass': False, 'checks': checks}
         except Exception as e:
-            checks.append({'name': '连接初始化', 'status': 'fail',
-                           'msg': str(e)})
+            checks.append({'name': '连接初始化', 'status': 'fail', 'msg': str(e)})
             return {'pass': False, 'checks': checks}
 
-        # 2. 余额
         try:
             balance = exchange.fetch_balance({'type': 'swap'})
             usdt = balance.get('USDT', {})
@@ -890,39 +857,31 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 checks.append({'name': '合约余额', 'status': 'pass',
                                'msg': f'总={total:.2f}U / 可用={free:.2f}U'})
         except Exception as e:
-            checks.append({'name': '合约余额', 'status': 'fail',
-                           'msg': f'查询失败: {e}'})
+            checks.append({'name': '合约余额', 'status': 'fail', 'msg': f'查询失败: {e}'})
             return {'pass': False, 'checks': checks}
 
-        # 3. 持仓模式
         try:
             result = exchange.privateGetAccountConfig()
             data_list = result.get('data', [{}])
             acct_data = data_list[0] if data_list else {}
             pos_mode = acct_data.get('posMode', '')
             if pos_mode == 'long_short_mode':
-                checks.append({'name': '持仓模式', 'status': 'pass',
-                               'msg': 'long_short_mode（双向持仓）✓'})
+                checks.append({'name': '持仓模式', 'status': 'pass', 'msg': 'long_short_mode（双向持仓）✓'})
             elif pos_mode == 'net_mode':
                 checks.append({'name': '持仓模式', 'status': 'fail',
-                               'msg': '当前为 net_mode（单向净持仓）！需切换为「双向持仓」'})
+                               'msg': '当前为 net_mode！需切换为「双向持仓」'})
                 return {'pass': False, 'checks': checks}
             else:
-                checks.append({'name': '持仓模式', 'status': 'warn',
-                               'msg': f'未知模式: {pos_mode}，请手动确认'})
+                checks.append({'name': '持仓模式', 'status': 'warn', 'msg': f'未知模式: {pos_mode}'})
         except Exception as e:
-            checks.append({'name': '持仓模式', 'status': 'warn',
-                           'msg': f'查询失败（不一定致命）: {e}'})
+            checks.append({'name': '持仓模式', 'status': 'warn', 'msg': f'查询失败: {e}'})
 
-        # 4. 杠杆接口
         try:
-            exchange.set_leverage(_cfg.OKX_DEFAULT_LEVERAGE, 'BTC/USDT',
-                                  params={'mgnMode': 'cross'})
+            exchange.set_leverage(_cfg.OKX_DEFAULT_LEVERAGE, 'BTC/USDT', params={'mgnMode': 'cross'})
             checks.append({'name': '杠杆接口', 'status': 'pass',
                            'msg': f'可用（BTC/USDT 杠杆={_cfg.OKX_DEFAULT_LEVERAGE}x 已试设）'})
         except Exception as e:
-            checks.append({'name': '杠杆接口', 'status': 'warn',
-                           'msg': f'异常（可能是权限或品种问题）: {e}'})
+            checks.append({'name': '杠杆接口', 'status': 'warn', 'msg': f'异常: {e}'})
 
         all_pass = all(c['status'] != 'fail' for c in checks)
         return {'pass': all_pass, 'checks': checks}
@@ -934,7 +893,6 @@ def create_blueprint(url_secret: str) -> Blueprint:
     @bp.route('/api/audit', methods=['GET'])
     @_require_login
     def api_audit():
-        """返回最近 200 条审计日志"""
         if not os.path.exists(AUDIT_LOG):
             return jsonify({'events': []})
         try:
