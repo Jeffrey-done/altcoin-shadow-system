@@ -536,6 +536,14 @@ def api_accounts_overview():
     except ImportError:
         return jsonify({'accounts': [], 'active_account': ''})
 
+    # 确保每次请求都读到最新的 runtime_config(Admin Panel 切换
+    # LIVE_MODE 后立即生效,不用重启进程)
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc()
+    except Exception:
+        pass
+
     all_accounts = list_accounts()
     active_id = get_active_account_id()
     all_trades = load_json(TRADES_FILE, [])
@@ -561,10 +569,20 @@ def api_accounts_overview():
         )
 
         # 判断账户是否为实盘模式
-        is_live = any(
-            t.get('exchange', 'shadow') != 'shadow'
-            for t in open_trades
-        )
+        # 规则(v5.3+):
+        #   1. 系统影子账户永远是"影子"
+        #   2. 若账户已有任何真实交易所交易(历史或持仓)→ 实盘
+        #      (即便现在 LIVE_MODE 关了,残留持仓仍需按实盘显示)
+        #   3. 否则按"下一笔信号会不会实盘"判断:
+        #      配了对应交易所凭证 + 对应 LIVE_MODE 开 + 交易开关 ON
+        if acc_id == SHADOW_ACCOUNT_ID:
+            is_live = False
+        elif any(t.get('exchange', 'shadow') != 'shadow' for t in acc_trades):
+            is_live = True
+        else:
+            bn_ready = acc.get('has_binance', False) and bool(getattr(config, 'LIVE_MODE', False))
+            okx_ready = acc.get('has_okx', False) and bool(getattr(config, 'OKX_LIVE_MODE', False))
+            is_live = acc.get('trading_enabled', True) and (bn_ready or okx_ready)
 
         accounts_data.append({
             'id': acc_id,
