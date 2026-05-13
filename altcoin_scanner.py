@@ -665,9 +665,19 @@ def check_candidates():
         # ── 风控检查（全局预检）──
         # 为了避免"活跃账户正在暂停"时把整个信号丢掉，改为
         # "只要任一已配置账户允许即继续"。精确检查仍在并行循环内做。
+        # v5.1: 影子账户也算入预检（它也要同步开单）
         try:
-            from admin_secrets import get_all_trading_accounts as _get_trading_accts
-            _trading_accts = _get_trading_accts() or [{'id': ''}]
+            from admin_secrets import (
+                get_all_trading_accounts as _get_trading_accts,
+                SHADOW_ACCOUNT_ID as _SHADOW_ID,
+                list_accounts as _list_all,
+            )
+            _trading_accts = _get_trading_accts() or []
+            # 把影子账户加到预检列表（如果存在）
+            if any(a.get('id') == _SHADOW_ID for a in _list_all()):
+                _trading_accts = [{'id': _SHADOW_ID}] + _trading_accts
+            if not _trading_accts:
+                _trading_accts = [{'id': ''}]
         except Exception:
             _trading_accts = [{'id': ''}]
         any_allowed = False
@@ -710,33 +720,61 @@ def check_candidates():
 
         # ── 多账户同步开仓 v5.0 ──
         # 获取所有配置了凭证的交易账户，为每个账户并行执行开仓
-        from admin_secrets import get_all_trading_accounts
+        from admin_secrets import get_all_trading_accounts, SHADOW_ACCOUNT_ID, list_accounts
         from common import get_all_trading_account_ids
-        all_accounts = get_all_trading_accounts()
+        trading_accounts = get_all_trading_accounts()
 
-        # 如果没有配置任何交易账户，使用影子模式（兼容旧单账户部署）
+        # v5.1: 影子账户（系统）也参与每次开仓，但强制走 ('shadow', stake) 路由：
+        # - 不真实下单、不占用交易所额度
+        # - 仍占用影子账户自己的风控额度（daily_trades / daily_loss / 连损）
+        # - 单独封装成 shadow_account 条目，与实盘账户并列处理
+        shadow_account = None
+        try:
+            for _acc in list_accounts():
+                if _acc.get('id') == SHADOW_ACCOUNT_ID:
+                    shadow_account = {
+                        'id': SHADOW_ACCOUNT_ID,
+                        'name': _acc.get('name', '影子账户'),
+                        'exchanges': {},
+                        'force_shadow_route': True,  # 只走 shadow 路由
+                    }
+                    break
+        except Exception as _e:
+            logger.debug(f"读取影子账户失败，跳过同步: {_e}")
+
+        # 合并：影子账户 + 所有配置了凭证的实盘账户
+        all_accounts = []
+        if shadow_account is not None:
+            all_accounts.append(shadow_account)
+        all_accounts.extend(trading_accounts)
+
+        # 如果没有配置任何交易账户（也没影子账户，理论上不会发生）
+        # 回退到"默认空账户"的纸上模式，兼容旧单账户部署
         if not all_accounts:
-            all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}}]
+            all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}, 'force_shadow_route': True}]
 
         # ── 锁内第一阶段：去重检查 + 每账户风控检查，构建执行任务 ──
         # 只在锁内做这些（快速内存操作），把耗时的网络下单移到锁外，
         # 避免阻塞 realtime_monitor / tracker 的止损平仓。
         with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw_check, save_check):
-            already_open_symbols = {
-                t.get('symbol')
+            # 按 (symbol, account_id) 维度去重，这样同一币种在"影子账户"和
+            # "实盘账户"上可以各自持一笔 —— 它们本就是独立账户。
+            already_open_per_account = {
+                (t.get('symbol'), t.get('account_id') or '')
                 for t in trades_raw_check if t.get('status') == 'open'
             }
-
-            # 如果锁内发现该币已有任意账户持仓 → 直接跳过
-            if c.symbol in already_open_symbols:
-                logger.warning(f"  ⏩ 跳过 {c.symbol}：锁内发现已有持仓（全局去重）")
-                c.triggered = False
-                continue
 
             # 构建执行任务：每个账户 × 每个路由（每账户独立风控）
             execution_tasks = []
             for account in all_accounts:
                 acc_id = account['id']
+                acc_key = (c.symbol, acc_id or '')
+                if acc_key in already_open_per_account:
+                    logger.info(
+                        f"  ⏩ 跳过账户 {account['name']}({acc_id})：已持有 {c.symbol}"
+                    )
+                    continue
+
                 acc_allowed, acc_risk_reason = can_open_trade(
                     actual_stake, account_id=acc_id if acc_id else None
                 )
@@ -745,7 +783,14 @@ def check_candidates():
                         f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
                     )
                     continue
-                for route_exchange, route_stake in routes:
+
+                # 影子账户强制走 shadow 路由；实盘账户按 _resolve_exchange_routes 的结果走
+                if account.get('force_shadow_route'):
+                    acc_routes = [('shadow', actual_stake)]
+                else:
+                    acc_routes = routes
+
+                for route_exchange, route_stake in acc_routes:
                     execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
             # 出锁 — 此后不阻塞其他模块
 
