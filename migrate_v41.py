@@ -188,7 +188,7 @@ def _print_report(file_label: str, stats: dict, dry_run: bool) -> None:
     if not stats['deltas']:
         return
 
-    print(f"\n  修正明细：")
+    print("\n  修正明细：")
     header = (f"    {'日期':<12} {'币种':<14} {'ID':<38} "
               f"{'旧pnl':>8} →{'新pnl':>8} "
               f"{'TP1锁定':>8} {'真实总额':>9} {'旧dash显示':>11}")
@@ -205,7 +205,7 @@ def _print_report(file_label: str, stats: dict, dry_run: bool) -> None:
 
     print(f"\n  旧 dashboard / tg_bot 的合计虚高："
           f"{total_inflation:+.2f} U（= 所有 tp1_locked 之和）")
-    print(f"  迁移后显示的合计盈亏会减少这个金额——这才是真实数字。")
+    print("  迁移后显示的合计盈亏会减少这个金额——这才是真实数字。")
 
 
 def main():

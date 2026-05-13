@@ -31,7 +31,7 @@ import ccxt
 
 import config
 from common import setup_logger
-from exchange_manager import get_binance, get_okx, to_okx_inst_id
+from exchange_manager import get_okx
 
 logger = setup_logger("live_executor")
 

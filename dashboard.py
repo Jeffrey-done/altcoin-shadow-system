@@ -81,7 +81,7 @@ _admin_url_secret = os.environ.get('ADMIN_URL_SECRET', '').strip()
 if _admin_url_secret:
     if len(_admin_url_secret) < 16:
         print(f"⚠️  ADMIN_URL_SECRET 长度仅 {len(_admin_url_secret)}，强烈建议 ≥32 字节随机串")
-        print(f"    生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        print("    生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
     try:
         from admin_panel import create_blueprint as _create_admin_bp
         app.register_blueprint(_create_admin_bp(_admin_url_secret))
@@ -89,7 +89,7 @@ if _admin_url_secret:
     except Exception as _e:
         print(f"⚠️  Admin Panel 加载失败: {_e}")
 else:
-    print(f"🔐 Admin Panel 未启用（ADMIN_URL_SECRET 未设置）")
+    print("🔐 Admin Panel 未启用（ADMIN_URL_SECRET 未设置）")
 
 BATCH_BACKTEST_RESULTS_FILE = os.path.join(SCRIPT_DIR, 'batch_backtest_results.json')
 
@@ -845,18 +845,18 @@ if __name__ == '__main__':
             port = int(sys.argv[idx + 1])
 
     print(f"🚀 Dashboard v4.1 启动: http://localhost:{port}")
-    print(f"   架构: Flask + Jinja2 Templates + Modular Static Files")
-    print(f"   页面: 主面板 | 周报 | 批量回测 | 单币回测 | 策略评分")
+    print("   架构: Flask + Jinja2 Templates + Modular Static Files")
+    print("   页面: 主面板 | 周报 | 批量回测 | 单币回测 | 策略评分")
     _token = os.environ.get('DASHBOARD_TOKEN', '')
     if _token:
         if len(_token) < 16:
             print(f"   ⚠️  DASHBOARD_TOKEN 长度仅 {len(_token)}，建议 ≥32 字节随机串")
-            print(f"       生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
-        print(f"   API认证: 已启用（X-Dashboard-Token，常量时间比较）")
+            print("       生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        print("   API认证: 已启用（X-Dashboard-Token，常量时间比较）")
     else:
-        print(f"   API认证: ⚠️  未设置 DASHBOARD_TOKEN（开放访问，仅限局域网）")
-    print(f"   实时推送间隔: 10秒")
-    print(f"   按 Ctrl+C 停止")
+        print("   API认证: ⚠️  未设置 DASHBOARD_TOKEN（开放访问，仅限局域网）")
+    print("   实时推送间隔: 10秒")
+    print("   按 Ctrl+C 停止")
 
     # 后台推送线程
     push_thread = threading.Thread(target=background_push, daemon=True)

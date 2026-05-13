@@ -15,8 +15,8 @@ import traceback
 import multiprocessing
 import os
 import sys
-from datetime import datetime, timezone, timedelta
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import Optional
 
 from common import setup_logger
 

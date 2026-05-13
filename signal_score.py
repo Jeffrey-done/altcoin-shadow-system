@@ -186,11 +186,11 @@ def calculate_signal_score(
     if rsi_score >= 18:
         reason_parts.append(f"RSI极强({rsi_1d})")
     if yao_dim_score >= 16:
-        reason_parts.append(f"妖币特征明显")
+        reason_parts.append("妖币特征明显")
     if trigger_score >= 20:
-        reason_parts.append(f"弃盘点触发")
+        reason_parts.append("弃盘点触发")
     if heat_score >= 15:
-        reason_parts.append(f"市场热度高")
+        reason_parts.append("市场热度高")
     if cross_validate_bonus > 0:
         reason_parts.append(f"OKX交叉验证(+{cross_validate_bonus})")
     if vol_divergence_bonus > 0:

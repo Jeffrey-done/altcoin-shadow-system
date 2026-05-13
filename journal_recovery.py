@@ -10,14 +10,12 @@ In-flight Journal 恢复器
   - 扫描过程完全无副作用（除了清理 journal 里已确认/已失败的条目）
 """
 
-import logging
 from typing import Optional
 
 from common import (
     TRADES_FILE, setup_logger, send_tg, load_json,
     journal_list_pending, journal_mark_confirmed,
     journal_mark_failed, journal_cleanup_failed,
-    LockedJsonFile,
 )
 
 logger = setup_logger("journal_recovery")

@@ -15,7 +15,7 @@
 """
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import config
 from common import (
@@ -427,8 +427,8 @@ def main():
     # 生成建议
     suggestions = generate_suggestions(stats)
 
-    # 生成 JSON 报告（始终生成）
-    report = generate_json_report(stats, suggestions, week_start, week_end)
+    # 生成 JSON 报告（始终生成；返回值丢弃，副作用是写 WEEKLY_REPORT_FILE）
+    generate_json_report(stats, suggestions, week_start, week_end)
 
     if args.json_only:
         logger.info("--json-only 模式，跳过 TG 推送")
