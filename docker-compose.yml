@@ -1,16 +1,22 @@
 version: '3.8'
 
 # 代码通过 Dockerfile 的 COPY 打进镜像。
-# 只把数据目录和 .env 作为 volume 挂入，避免三个容器共享源代码/__pycache__ 冲突。
+# 只把数据文件和 .env 作为 volume 挂入，避免三个容器共享源代码/__pycache__ 冲突。
 #
-# 数据目录 ./ 仍然作为默认（历史兼容），因为 common.py 里的
-# CANDIDATES_FILE / TRADES_FILE / RISK_FILE 等都是相对 SCRIPT_DIR。
-# 生产部署建议改到 ./data/ 并相应修改 common.py 路径常量。
+# ⚠️ 首次部署前，请在宿主机运行以下命令初始化数据文件：
+#   for f in altcoin_shadow_trades altcoin_candidates risk_state altcoin_trades_archive weekly_report; do
+#     [ -f "./${f}.json" ] || echo '{}' > "./${f}.json"
+#   done
+#   mkdir -p ./backtest_cache
+#
+# docker-entrypoint.sh 也会在容器内做相同检查，但宿主机文件必须先存在，
+# 否则 Docker bind mount 会把缺失路径创建为目录。
 
 x-common-app: &common-app
   build: .
   volumes:
     # 运行时数据文件（持仓/风控/候选池）
+    # docker-entrypoint.sh 会在容器启动时自动初始化缺失的 JSON 文件
     - ./altcoin_shadow_trades.json:/app/altcoin_shadow_trades.json
     - ./altcoin_candidates.json:/app/altcoin_candidates.json
     - ./risk_state.json:/app/risk_state.json

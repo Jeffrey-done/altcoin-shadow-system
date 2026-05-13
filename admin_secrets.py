@@ -206,56 +206,6 @@ def _save_raw(data: dict) -> None:
         raise
 
 
-def _load_raw() -> dict:
-    """读整个 secrets 文件；不存在或损坏返回空 v2 骨架。自动迁移 v1→v2。"""
-    if not os.path.exists(SECRETS_FILE):
-        return _empty_v2()
-    try:
-        with open(SECRETS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, IOError, OSError) as e:
-        logger.error(f"admin_secrets.json 读取失败: {e}")
-        return _empty_v2()
-
-    version = data.get('_version', 1)
-
-    if version < 2:
-        # 自动迁移 v1 → v2
-        logger.info("admin_secrets: 检测到 v1 格式，自动迁移到 v2（多账户）")
-        v2 = _migrate_v1_to_v2(data)
-        _save_raw(v2)
-        return v2
-
-    # v2 格式，确保字段完整
-    data.setdefault('_version', 2)
-    data.setdefault('admin', {})
-    data.setdefault('accounts', {})
-    data.setdefault('active_account', '')
-
-    # 确保影子账户始终存在
-    if SHADOW_ACCOUNT_ID not in data['accounts']:
-        data['accounts'][SHADOW_ACCOUNT_ID] = {
-            'name': '影子账户（系统）',
-            'created_at': '',
-            'exchanges': {},
-            'system': True,
-        }
-        if not data['active_account']:
-            data['active_account'] = SHADOW_ACCOUNT_ID
-        _save_raw(data)
-
-    return data
-
-
-def _save_raw(data: dict) -> None:
-    """原子写 + 0600 权限。"""
-    tmp = SECRETS_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp, SECRETS_FILE)
-
-
 def file_exists() -> bool:
     """admin 是否做过首次初始化"""
     return os.path.exists(SECRETS_FILE)

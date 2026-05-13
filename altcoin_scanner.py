@@ -542,10 +542,6 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
 
     return live_routes
 
-    # 未知模式 → 安全默认
-    logger.warning(f"未知 PRIMARY_EXCHANGE={mode}，回退到 binance")
-    return [('binance', stake)]
-
 
 def trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h) -> str:
     """统一生成开仓的 reason 字段，避免内联条件重复"""
