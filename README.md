@@ -20,6 +20,32 @@
 
 > 系统当前仅做空（`short_overbought` 策略）。文档中出现的 funding_arb / low_risk 已在 v4.1 移除，仅保留做空策略。
 
+## ⚠️ 从 v4.0 升级到 v4.1
+
+v4.1 修复了 `trade.pnl` 的 TP1 双计数 bug（详见 `SYSTEM_DOCUMENTATION.md` §2）。
+如果你的 `altcoin_shadow_trades.json` 里有 v4.0 时代的已平仓记录（`tp1_triggered=true
+且 status='closed'`），升级后 dashboard / TG 里的累计盈亏数字会显得"变小"——
+这是因为 v4.1 不再把 TP1 利润算两次，**新数字才是真实总盈亏**。
+
+建议运行迁移脚本一次性修正：
+
+```bash
+# 先停掉 scheduler / realtime_monitor / dashboard 三个进程
+docker-compose down  # 或手动 kill
+
+# 预览将修改哪些记录（不写盘）
+python3 migrate_v41.py --dry-run
+
+# 确认无误后执行
+python3 migrate_v41.py
+# 原文件会被备份到 altcoin_shadow_trades.json.bak.v40.*
+
+# 重启服务
+docker-compose up -d
+```
+
+脚本是幂等的（`_v41_migrated` 标记），重复运行不会重复扣减。
+
 ## 核心流程
 
 ```
