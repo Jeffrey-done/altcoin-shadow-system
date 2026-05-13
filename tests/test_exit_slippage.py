@@ -12,11 +12,11 @@
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
+import pytest  # noqa: F401 -- mock_config fixture discovered by pytest
 
-import config
+import config  # noqa: F401 -- imported for future direct monkeypatches
 import common
 from common import utcnow_iso, load_json, atomic_write_json
 from models import Trade
