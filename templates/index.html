@@ -164,6 +164,10 @@
 const socket = io();
 let lastDashboardData = null;
 let currentMode = 'all';
+// 前端视图当前选中的账户（仅影响前端展示，不改后台活跃账户）
+let selectedAccountId = localStorage.getItem('dashboard-selected-account') || null;
+let accountsCache = [];  // 缓存账户列表，用于渲染高亮
+let pnlRefreshTimer = null;
 
 // ── 模式筛选 ──
 function initModeFilter() {
@@ -196,7 +200,8 @@ function updateModeSummary(data) {
 function updateDashboard(data) {
     lastDashboardData = data;
     const ts = data.timestamp ? data.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : '--';
-    document.getElementById('timestamp').textContent = `已更新: ${ts}`;
+    const accSuffix = selectedAccountId ? ` · 查看账户 ${shortAccountLabel(selectedAccountId)}` : '';
+    document.getElementById('timestamp').textContent = `已更新: ${ts}${accSuffix}`;
 
     const a = data.account;
     const todayTotal = a.today_pnl + (data.funding?.today_pnl || 0);
@@ -295,8 +300,13 @@ function updateDashboard(data) {
     }).join('');
 }
 
-// SocketIO
+// SocketIO 推送：只处理与当前选中账户匹配的数据；
+// 如果选择了其他账户，就忽略推送，只用 REST 拉取（避免闪回）
 socket.on('update', function(data) {
+    if (selectedAccountId && data.account_id && data.account_id !== selectedAccountId) {
+        // 推送的是后台活跃账户，前端选的是另一个账户 → 忽略
+        return;
+    }
     updateDashboard(data);
     PnlChart.update(data.pnl_chart);
     BinanceWS.lastData = data;
@@ -336,6 +346,57 @@ document.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
 });
 
+// ── 账户卡片点击切换 ──
+function shortAccountLabel(id) {
+    const acc = accountsCache.find(a => a.id === id);
+    if (acc) return acc.name;
+    return id.length > 12 ? id.slice(0, 12) + '…' : id;
+}
+
+function selectAccount(accountId) {
+    // 再次点同一张卡片 → 取消选择，回到后台活跃账户
+    if (selectedAccountId === accountId) {
+        selectedAccountId = null;
+        localStorage.removeItem('dashboard-selected-account');
+    } else {
+        selectedAccountId = accountId;
+        localStorage.setItem('dashboard-selected-account', accountId);
+    }
+    // 更新卡片高亮
+    document.querySelectorAll('.account-card').forEach(card => {
+        card.classList.toggle('selected', card.dataset.accountId === selectedAccountId);
+    });
+    // 切换对比图
+    if (window.CompareChart && CompareChart.setAccount) {
+        CompareChart.setAccount(selectedAccountId);
+    }
+    // 立即拉一次数据，并开启/关闭定时刷新
+    refreshDashboardForSelection();
+    if (pnlRefreshTimer) { clearInterval(pnlRefreshTimer); pnlRefreshTimer = null; }
+    if (selectedAccountId) {
+        // 选了指定账户：走 REST 轮询（因为 socket 推送只针对后台活跃账户）
+        pnlRefreshTimer = setInterval(refreshDashboardForSelection, 10000);
+    }
+}
+
+async function refreshDashboardForSelection() {
+    try {
+        const qs = selectedAccountId ? ('?account_id=' + encodeURIComponent(selectedAccountId)) : '';
+        const resp = await fetch('/api/data' + qs);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        updateDashboard(data);
+        PnlChart.update(data.pnl_chart);
+        BinanceWS.lastData = data;
+        const symbols = new Set();
+        (data.short_trades?.open || []).forEach(t => symbols.add(t.symbol));
+        symbols.delete('');
+        BinanceWS.updateSymbols([...symbols]);
+    } catch (e) {
+        console.warn('[账户切换] 拉取数据失败:', e);
+    }
+}
+
 // ── 多账户总览 ──
 async function fetchAccountsOverview() {
     try {
@@ -350,19 +411,24 @@ async function fetchAccountsOverview() {
 
 function renderAccountsOverview(data) {
     const container = document.getElementById('accounts-overview');
-    if (!container || !data.accounts || data.accounts.length === 0) {
-        const card = document.getElementById('accounts-overview-card');
-        if (card) card.style.display = 'none';
-        return;
-    }
-    // 仅在多账户时显示
-    if (data.accounts.length <= 1) {
-        const card = document.getElementById('accounts-overview-card');
-        if (card) card.style.display = 'none';
-        return;
-    }
     const card = document.getElementById('accounts-overview-card');
+    if (!container || !data.accounts || data.accounts.length === 0) {
+        if (card) card.style.display = 'none';
+        return;
+    }
+    accountsCache = data.accounts;
+    // 如果之前选的账户已被删除，自动清掉选择
+    if (selectedAccountId && !accountsCache.find(a => a.id === selectedAccountId)) {
+        selectedAccountId = null;
+        localStorage.removeItem('dashboard-selected-account');
+    }
     if (card) card.style.display = '';
+
+    // 首次进入且用户没选过：默认跟随后台活跃账户
+    if (!selectedAccountId && data.active_account) {
+        // 注意：不持久化这个隐式选择，避免覆盖用户的主动选择
+        // 但要让 UI 上高亮当前活跃账户
+    }
 
     const colorClasses = ['acc-0', 'acc-1', 'acc-2'];
     container.innerHTML = data.accounts.map((acc, idx) => {
@@ -371,8 +437,14 @@ function renderAccountsOverview(data) {
         const pnlClass = acc.total_pnl >= 0 ? 'green' : 'red';
         const todayClass = acc.today_pnl >= 0 ? 'green' : 'red';
         const activeClass = acc.is_active ? ' active' : '';
+        // 选中状态：用户显式选择 > 默认跟随后台活跃账户
+        const effectiveSelected = selectedAccountId || data.active_account;
+        const selectedClass = (acc.id === effectiveSelected) ? ' selected' : '';
         return `
-        <div class="account-card${activeClass}">
+        <div class="account-card${activeClass}${selectedClass}"
+             data-account-id="${acc.id}"
+             role="button" tabindex="0"
+             title="点击查看此账户的详细数据">
             <div class="account-card-header">
                 <div>
                     <div class="account-card-name">
@@ -401,6 +473,16 @@ function renderAccountsOverview(data) {
             </div>
         </div>`;
     }).join('');
+
+    // 绑定点击/键盘事件
+    container.querySelectorAll('.account-card').forEach(el => {
+        const id = el.dataset.accountId;
+        el.addEventListener('click', () => selectAccount(id));
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAccount(id); }
+        });
+    });
+
     lucide.createIcons();
 }
 </script>

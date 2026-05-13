@@ -128,10 +128,11 @@ def check_api_token(f):
 #  Data Reading
 # ══════════════════════════════════════════════════════════════════
 
-def get_dashboard_data() -> dict:
-    """汇总所有数据供前端展示（按活跃账户过滤）"""
+def get_dashboard_data(account_id: str = None) -> dict:
+    """汇总所有数据供前端展示（按指定账户过滤；account_id=None 时使用活跃账户）"""
     trades = load_json(TRADES_FILE, [])
-    account_id = get_current_account_id()
+    if account_id is None:
+        account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
     candidates = load_json(CANDIDATES_FILE, [])
     risk_state = load_json(RISK_FILE, {})
@@ -219,8 +220,8 @@ def get_dashboard_data() -> dict:
         pnl_chart_data['cumulative'].append(round(cum, 2))
 
     # 动态余额
-    dynamic_balance = get_dynamic_balance()
-    compound_stake = get_compound_stake()
+    dynamic_balance = get_dynamic_balance(account_id)
+    compound_stake = get_compound_stake(account_id)
 
     # 持仓占用
     short_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_short)
@@ -288,6 +289,7 @@ def get_dashboard_data() -> dict:
         'yesterday_pnl': round(yesterday_pnl, 2),
         'risk_history': risk_history,
         'risk_last_pause': risk_last_pause,
+        'account_id': account_id or '',
         'timestamp': utcnow_iso(),
     }
 
@@ -507,7 +509,9 @@ def api_data():
         _apply_rc()
     except Exception:
         pass
-    data = get_dashboard_data()
+    # 允许前端通过 ?account_id=xxx 切换查看的账户（纯视图，不影响后台活跃账户）
+    account_id = request.args.get('account_id', '').strip() or None
+    data = get_dashboard_data(account_id)
     data = _inject_live_prices(data)
     return jsonify(data)
 
@@ -670,9 +674,10 @@ def api_pnl_compare():
     """
     Return PnL comparison data: shadow vs live cumulative curves.
     Used for the comparison chart on the dashboard.
+    Optional ?account_id=xxx to view a specific account.
     """
     trades = load_json(TRADES_FILE, [])
-    account_id = get_current_account_id()
+    account_id = request.args.get('account_id', '').strip() or get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
 
     shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow' and t.get('status') == 'closed']
