@@ -440,11 +440,15 @@ function renderAccountsOverview(data) {
         // 选中状态：用户显式选择 > 默认跟随后台活跃账户
         const effectiveSelected = selectedAccountId || data.active_account;
         const selectedClass = (acc.id === effectiveSelected) ? ' selected' : '';
+        const disabledClass = (acc.trading_enabled === false) ? ' trading-off' : '';
+        const disabledBadge = (acc.trading_enabled === false)
+            ? '<span class="account-card-status" style="background:var(--red-subtle);color:var(--red);margin-left:6px;"><span class="sync-dot stale" style="width:6px;height:6px;"></span> 已停用</span>'
+            : '';
         return `
-        <div class="account-card${activeClass}${selectedClass}"
+        <div class="account-card${activeClass}${selectedClass}${disabledClass}"
              data-account-id="${acc.id}"
              role="button" tabindex="0"
-             title="点击查看此账户的详细数据">
+             title="点击查看此账户的详细数据${acc.trading_enabled === false ? '（该账户交易已停用）' : ''}">
             <div class="account-card-header">
                 <div>
                     <div class="account-card-name">
@@ -453,8 +457,11 @@ function renderAccountsOverview(data) {
                     </div>
                     <div class="account-card-id">${acc.id}</div>
                 </div>
-                <span class="account-card-status ${statusClass}">
-                    <span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}
+                <span style="display:inline-flex;align-items:center;">
+                    <span class="account-card-status ${statusClass}">
+                        <span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}
+                    </span>
+                    ${disabledBadge}
                 </span>
             </div>
             <div class="account-card-metrics">

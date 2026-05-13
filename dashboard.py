@@ -574,6 +574,7 @@ def api_accounts_overview():
             'is_live': is_live,
             'has_binance': acc.get('has_binance', False),
             'has_okx': acc.get('has_okx', False),
+            'trading_enabled': acc.get('trading_enabled', True),
             'open_count': len(open_trades),
             'closed_count': len(closed_trades),
             'total_pnl': round(total_pnl, 2),

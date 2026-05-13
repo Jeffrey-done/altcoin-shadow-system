@@ -270,7 +270,7 @@ def delete_account(account_id: str) -> None:
 def list_accounts() -> list:
     """
     返回所有账户列表:
-    [{id, name, created_at, has_binance, has_okx}]
+    [{id, name, created_at, has_binance, has_okx, trading_enabled, is_system}]
     """
     d = _load_raw()
     result = []
@@ -282,8 +282,36 @@ def list_accounts() -> list:
             'created_at': acc.get('created_at', ''),
             'has_binance': bool(exchanges.get('binance', {}).get('api_key')),
             'has_okx': bool(exchanges.get('okx', {}).get('api_key')),
+            # 交易开关：默认为 True（兼容未设置该字段的旧账户）
+            'trading_enabled': acc.get('trading_enabled', True),
+            'is_system': bool(acc.get('system')),
         })
     return result
+
+
+def is_account_trading_enabled(account_id: str) -> bool:
+    """
+    返回指定账户的交易开关状态。默认 True（未显式关闭的账户都参与同步开单）。
+    """
+    if not account_id:
+        return True
+    d = _load_raw()
+    acc = d.get('accounts', {}).get(account_id)
+    if not acc:
+        return False
+    return acc.get('trading_enabled', True)
+
+
+def set_account_trading_enabled(account_id: str, enabled: bool) -> None:
+    """
+    切换账户的交易开关。关闭后信号触发时该账户不再参与同步开单，
+    但已有持仓继续被 tracker / realtime_monitor 监控直至平仓。
+    """
+    with _locked_secrets() as (d, save):
+        if account_id not in d.get('accounts', {}):
+            raise ValueError(f"账户 {account_id} 不存在")
+        d['accounts'][account_id]['trading_enabled'] = bool(enabled)
+        save(d)
 
 
 def get_active_account_id() -> str:
@@ -557,8 +585,11 @@ def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) 
 
 def get_all_trading_accounts() -> list:
     """
-    返回所有配置了交易所凭证的账户列表（用于多账户同步开仓）。
-    排除系统影子账户（它不持有真实凭证）和未配置凭证的空账户。
+    返回所有配置了交易所凭证且交易开关打开的账户（用于多账户同步开仓）。
+    排除:
+      - 系统影子账户（它不持有真实凭证，由 scanner 单独注入）
+      - 未配置凭证的空账户
+      - 交易开关被显式关闭（trading_enabled=False）的账户
 
     返回:
         [{'id': 'acc_xxx', 'name': '主账户', 'exchanges': {'binance': {...}, 'okx': {...}}}]
@@ -568,6 +599,9 @@ def get_all_trading_accounts() -> list:
     for acc_id, acc in d.get('accounts', {}).items():
         # 影子账户只做纸上交易，不参与实盘同步
         if acc.get('system'):
+            continue
+        # 交易开关：默认 True，显式 False 则跳过
+        if not acc.get('trading_enabled', True):
             continue
         exchanges = acc.get('exchanges', {})
         # 必须至少有一个交易所配置了 api_key
