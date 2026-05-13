@@ -116,7 +116,7 @@ h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 24px; letter-spacing: 
 </div>
 {% endblock %}
 {% block scripts %}{% endblock %}
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
 <script>lucide.createIcons();</script>
 </body>
 </html>
