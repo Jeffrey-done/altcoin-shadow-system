@@ -43,24 +43,58 @@ const PositionTable = {
             const openedAt = t.opened_at ? new Date(t.opened_at) : null;
             const holdHours = openedAt ? ((Date.now() - openedAt.getTime()) / 3600000).toFixed(1) : '--';
 
-            // Calculate distance to hard stop
-            let hardStopPrice, distToStop;
-            if (direction === 'SHORT') {
-                hardStopPrice = entry * (1 + hardStopPct / 100);
-                distToStop = entry > 0 ? ((hardStopPrice - cur) / cur * 100) : 999;
+            // Calculate distance to effective stop (use trail_stop_price if active, else hard stop)
+            let effectiveStopPrice, distToStop, stopLabel;
+            const trailStop = t.trail_stop_price || 0;
+            const tp1Active = t.tp1_triggered;
+
+            if (trailStop > 0 && (tp1Active || (t.best_pnl_pct || 0) >= (configData?.trail_activate_pct || 3))) {
+                // Use trail/breakeven stop (more restrictive after TP1)
+                effectiveStopPrice = trailStop;
+                stopLabel = tp1Active ? '保本止损' : '移动止损';
+                if (direction === 'SHORT') {
+                    distToStop = entry > 0 ? ((effectiveStopPrice - cur) / cur * 100) : 999;
+                } else {
+                    distToStop = entry > 0 ? ((cur - effectiveStopPrice) / cur * 100) : 999;
+                }
             } else {
-                hardStopPrice = entry * (1 - hardStopPct / 100);
-                distToStop = entry > 0 ? ((cur - hardStopPrice) / cur * 100) : 999;
+                // Use hard stop
+                if (direction === 'SHORT') {
+                    effectiveStopPrice = entry * (1 + hardStopPct / 100);
+                    distToStop = entry > 0 ? ((effectiveStopPrice - cur) / cur * 100) : 999;
+                } else {
+                    effectiveStopPrice = entry * (1 - hardStopPct / 100);
+                    distToStop = entry > 0 ? ((cur - effectiveStopPrice) / cur * 100) : 999;
+                }
+                stopLabel = '距止损';
             }
 
             // Danger row if within 1% of hard stop
             const isDanger = distToStop <= 1.0;
             const dangerClass = isDanger ? 'danger-row' : '';
 
-            // TP1 progress
+            // TP progress bar: show TP1 progress before trigger, TP2 progress after
             let tp1Progress = '';
-            if (direction === 'SHORT' && entry > 0) {
-                const tp1Price = entry * 0.95; // 5% drop target
+            if (t.tp1_triggered) {
+                // TP1 already triggered → show progress towards TP2
+                const tp2Price = t.take_profit_2 || entry * 0.92;
+                if (direction === 'SHORT' && entry > 0) {
+                    const totalDist = entry - tp2Price;
+                    const currentDist = entry - cur;
+                    const pctToTP2 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                    const remainPct = (100 - pctToTP2).toFixed(1);
+                    tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill tp2" style="width:${pctToTP2}%;background:var(--success)"></div></div>
+                        <span style="font-size:0.6rem;color:var(--text-secondary);">距TP2: ${remainPct}%</span>`;
+                } else if (direction === 'LONG' && entry > 0) {
+                    const totalDist = tp2Price - entry;
+                    const currentDist = cur - entry;
+                    const pctToTP2 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                    const remainPct = (100 - pctToTP2).toFixed(1);
+                    tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill tp2" style="width:${pctToTP2}%;background:var(--success)"></div></div>
+                        <span style="font-size:0.6rem;color:var(--text-secondary);">距TP2: ${remainPct}%</span>`;
+                }
+            } else if (direction === 'SHORT' && entry > 0) {
+                const tp1Price = t.take_profit_1 || entry * 0.95;
                 const totalDist = entry - tp1Price;
                 const currentDist = entry - cur;
                 const pctToTP1 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
@@ -68,7 +102,7 @@ const PositionTable = {
                 tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill" style="width:${pctToTP1}%"></div></div>
                     <span style="font-size:0.6rem;color:var(--text-secondary);">距TP1: ${remainPct}%</span>`;
             } else if (direction === 'LONG' && entry > 0) {
-                const tp1Price = entry * 1.05;
+                const tp1Price = t.take_profit_1 || entry * 1.05;
                 const totalDist = tp1Price - entry;
                 const currentDist = cur - entry;
                 const pctToTP1 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
@@ -97,7 +131,7 @@ const PositionTable = {
                 ? (t.tp1_triggered ? '<span class="badge badge-ok">TP1✓</span>' : '')
                 : (t.strategy || '');
 
-            const stopIndicator = `<span class="stop-distance">距止损 ${distToStop.toFixed(1)}%</span>`;
+            const stopIndicator = `<span class="stop-distance">${stopLabel} ${distToStop.toFixed(1)}%</span>`;
 
             return `<tr class="${dangerClass}" data-symbol="${t.symbol}" data-pnl-pct="${pnlPct.toFixed(2)}" data-pnl-u="${pnlU.toFixed(2)}" data-hold="${holdHours}">
                 <td><b>${t.symbol}</b>${stopIndicator}</td>
