@@ -450,13 +450,26 @@ def refresh_open_stake(account_id: Optional[str] = None) -> None:
 def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
     """
     检查某币种在指定账户下是否在冷却期内。
+
+    account_id 语义:
+      - None     → 跨所有账户扫描(默认;和 scanner 其他模块调用方式对齐)
+      - ''       → 仅扫描 account_id 为空的老数据(历史迁移兼容)
+      - 'acc_X'  → 只看指定账户的交易
+
+    为什么 None 不走"活跃账户":is_in_cooldown 的保护意图是"这个币刚刚在
+    任何账户下出过止损,别急着再开" — 如果仅限活跃账户,切账户后冷却
+    立即失效,是风控漏洞。scanner 在多账户循环里已经显式传 account_id
+    做账户级精准检查;不传时应按"全局保守"语义执行。
     """
     from models import CloseType
     trades = load_json(TRADES_FILE, [])
 
-    acc_id = _resolve_account_id(account_id)
-    if acc_id != '_default':
-        trades = filter_trades_by_account(trades, acc_id)
+    # account_id=None 时不过滤(全局视角);显式传入 '' 或 'acc_X' 才按账户过滤。
+    # 这是和旧语义(None → 活跃账户)的关键差别。
+    if account_id is not None:
+        acc_id = _resolve_account_id(account_id)
+        if acc_id != '_default':
+            trades = filter_trades_by_account(trades, acc_id)
 
     now = utcnow()
     today_dt = now.date()

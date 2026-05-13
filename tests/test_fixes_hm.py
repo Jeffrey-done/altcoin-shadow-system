@@ -186,7 +186,11 @@ class TestM2RealizedBalance:
 
 class TestM4CooldownByDate:
     def test_stop_loss_cooldown_still_applies(self, isolated_files, mock_config):
-        """止损平仓 < COOLDOWN_HOURS 小时 → in cooldown"""
+        """止损平仓 < COOLDOWN_HOURS 小时 → in cooldown
+
+        account_id=None(默认)现在走"全账户扫描"语义,老数据 account_id=''
+        也能被正确匹配到(不再要求活跃账户 ID 一致)。
+        """
         recent_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         trades = [{
             'symbol': 'PEPE/USDT', 'status': 'closed',
@@ -198,9 +202,9 @@ class TestM4CooldownByDate:
         assert in_cd is True
 
     def test_same_day_non_stop_still_blocks(self, isolated_files, mock_config):
-        """同日非止损平仓 → 仍然 block（防 same-day 二次开仓）"""
+        """同日非止损平仓 → 仍然 block(防 same-day 二次开仓)"""
         now = datetime.now(timezone.utc)
-        # 今日较早 TP2 平仓（小时数 >= COOLDOWN_HOURS 也会挡，因为是同一日期）
+        # 今日较早 TP2 平仓(小时数 >= COOLDOWN_HOURS 也会挡,因为是同一日期)
         earlier_iso = now.replace(hour=0, minute=30, second=0, microsecond=0).isoformat()
         trades = [{
             'symbol': 'PEPE/USDT', 'status': 'closed',
@@ -223,6 +227,53 @@ class TestM4CooldownByDate:
         atomic_write_json(isolated_files['trades'], trades)
         in_cd, _ = risk_control.is_in_cooldown('PEPE/USDT')
         assert in_cd is False
+
+    def test_cooldown_scans_across_accounts_when_acc_id_not_given(
+        self, isolated_files, mock_config,
+    ):
+        """
+        回归测试: scanner 默认调用 is_in_cooldown(symbol) 不传 account_id 时,
+        应能看到任何账户下的止损交易 — 不应只局限于当前活跃账户。
+
+        场景: acc_A 刚硬止损了 PEPE,scanner 切到 acc_B 再次扫描 PEPE,
+        如果 cooldown 只认活跃账户 → acc_B 会开仓,违反 "24h 同币冷却" 保护。
+        """
+        recent_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        trades = [{
+            'symbol': 'PEPE/USDT', 'status': 'closed',
+            'closed_at': recent_iso,
+            'close_type': 'hard_stop',
+            'account_id': 'acc_A',  # 某个特定账户,不是 _default
+        }]
+        atomic_write_json(isolated_files['trades'], trades)
+        # 默认调用(不传 account_id) — 应当看到 acc_A 的止损并进入冷却
+        in_cd, reason = risk_control.is_in_cooldown('PEPE/USDT')
+        assert in_cd is True, (
+            "is_in_cooldown(symbol) 不传 account_id 时必须跨账户扫描,"
+            "防止切账户后冷却失效"
+        )
+        assert '冷却中' in reason
+
+    def test_cooldown_scoped_to_account_when_explicit_id_given(
+        self, isolated_files, mock_config,
+    ):
+        """
+        显式传 account_id='acc_B' 时,应只看 acc_B 的交易 →
+        acc_A 的止损不触发 acc_B 的冷却(精准账户级查询)。
+        """
+        recent_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        trades = [{
+            'symbol': 'PEPE/USDT', 'status': 'closed',
+            'closed_at': recent_iso,
+            'close_type': 'hard_stop',
+            'account_id': 'acc_A',
+        }]
+        atomic_write_json(isolated_files['trades'], trades)
+        # 显式查 acc_B 视角 — acc_A 的止损不算数
+        in_cd, _ = risk_control.is_in_cooldown('PEPE/USDT', account_id='acc_B')
+        assert in_cd is False, (
+            "显式传 account_id 时应只看该账户的交易"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════
