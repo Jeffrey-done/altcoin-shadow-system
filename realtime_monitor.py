@@ -113,6 +113,26 @@ def refresh_snapshot():
         _trade_snapshots.update(snapshots)
 
 
+def _refresh_snapshot_from_trades(trades: list):
+    """
+    从已在内存中的 Trade 对象列表立刻刷新快照。
+    用于 TP1 触发后立刻让保本止损价进入内存，不用等 30s 定时刷新。
+    """
+    snapshots: dict = {}
+    for trade in trades:
+        if trade.status != 'open':
+            continue
+        try:
+            snap = _build_trade_snapshot(trade)
+            snapshots.setdefault(trade.symbol, []).append(snap)
+        except Exception:
+            pass
+
+    with _snapshot_lock:
+        _trade_snapshots.clear()
+        _trade_snapshots.update(snapshots)
+
+
 def _price_crosses_threshold(snap: dict, price: float) -> bool:
     """
     内存快速判断：当前价格是否进入任何关闭/TP 触发区间。
@@ -221,6 +241,9 @@ def check_main_trades(symbol: str, price: float):
 
         if any_updated:
             save([t.to_dict() for t in trades])
+            # 立即刷新内存快照：TP1 触发后 trail_stop_price 已变成保本止损，
+            # 必须立刻反映到内存里，否则 30s 内价格反弹不会触发保本止损
+            _refresh_snapshot_from_trades(trades)
 
     # ══ 出锁后才触发副作用 ══
     # 1) 实盘发平仓单（JSON 已持久化，失败只会让交易所有悬仓但不会污染 risk_state）
