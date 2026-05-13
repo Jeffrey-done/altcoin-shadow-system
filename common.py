@@ -260,14 +260,23 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
     """
     按账户 ID 过滤交易列表。
     - 如果 account_id 为空或 None，返回所有交易（单账户兼容模式）
-    - 否则只返回匹配该 account_id 的交易，以及没有 account_id 字段的历史交易
+    - 否则只返回匹配该 account_id 的交易
+    - 无 account_id 的历史交易归属影子账户（acc_shadow_system）
     """
     if not account_id:
         return trades
-    return [
-        t for t in trades
-        if t.get('account_id', '') == account_id or t.get('account_id', '') == ''
-    ]
+
+    SHADOW_ID = 'acc_shadow_system'
+    filtered = []
+    for t in trades:
+        t_account = t.get('account_id', '')
+        if t_account == account_id:
+            # 精确匹配
+            filtered.append(t)
+        elif t_account == '' and account_id == SHADOW_ID:
+            # 无标记的旧交易归属影子账户
+            filtered.append(t)
+    return filtered
 
 
 

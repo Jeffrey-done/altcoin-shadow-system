@@ -97,9 +97,32 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     return v2
 
 
+SHADOW_ACCOUNT_ID = 'acc_shadow_system'  # 固定ID，影子账户不可删除
+
+
 def _generate_account_id() -> str:
     """生成唯一账户 ID"""
     return 'acc_' + secrets.token_hex(6)
+
+
+def ensure_shadow_account() -> str:
+    """
+    确保影子账户存在（系统内置，不可删除）。
+    返回影子账户 ID。在系统首次启动或 admin 初始化时调用。
+    """
+    with _locked_secrets() as (d, save):
+        if SHADOW_ACCOUNT_ID not in d.get('accounts', {}):
+            d.setdefault('accounts', {})[SHADOW_ACCOUNT_ID] = {
+                'name': '影子账户（系统）',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'exchanges': {},
+                'system': True,  # 标记为系统账户，不可删除
+            }
+            # 如果没有活跃账户，默认激活影子账户
+            if not d.get('active_account'):
+                d['active_account'] = SHADOW_ACCOUNT_ID
+            save(d)
+    return SHADOW_ACCOUNT_ID
 
 
 @contextmanager
@@ -152,6 +175,19 @@ def _load_raw() -> dict:
     data.setdefault('admin', {})
     data.setdefault('accounts', {})
     data.setdefault('active_account', '')
+
+    # 确保影子账户始终存在
+    if SHADOW_ACCOUNT_ID not in data['accounts']:
+        data['accounts'][SHADOW_ACCOUNT_ID] = {
+            'name': '影子账户（系统）',
+            'created_at': '',
+            'exchanges': {},
+            'system': True,
+        }
+        if not data['active_account']:
+            data['active_account'] = SHADOW_ACCOUNT_ID
+        _save_raw(data)
+
     return data
 
 
@@ -195,6 +231,19 @@ def _load_raw() -> dict:
     data.setdefault('admin', {})
     data.setdefault('accounts', {})
     data.setdefault('active_account', '')
+
+    # 确保影子账户始终存在
+    if SHADOW_ACCOUNT_ID not in data['accounts']:
+        data['accounts'][SHADOW_ACCOUNT_ID] = {
+            'name': '影子账户（系统）',
+            'created_at': '',
+            'exchanges': {},
+            'system': True,
+        }
+        if not data['active_account']:
+            data['active_account'] = SHADOW_ACCOUNT_ID
+        _save_raw(data)
+
     return data
 
 
@@ -248,8 +297,11 @@ def create_account(name: str) -> str:
 
 def delete_account(account_id: str) -> None:
     """
-    删除交易账户。不能删除最后一个账户。
+    删除交易账户。不能删除最后一个账户，也不能删除系统影子账户。
     """
+    if account_id == SHADOW_ACCOUNT_ID:
+        raise ValueError("影子账户（系统）不可删除")
+
     with _locked_secrets() as (d, save):
         if account_id not in d['accounts']:
             raise ValueError(f"账户 {account_id} 不存在")
