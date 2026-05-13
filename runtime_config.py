@@ -82,6 +82,10 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
                                    _enum_validator(['binance', 'okx']),
                                    'auto 模式下的默认选择'),
 
+    # ── 系统资金池（最重要的参数：控制系统"看到"的总本金）──
+    # 不管交易所账户里有多少钱，系统只用这个额度计算仓位和风控
+    'ACCOUNT_BALANCE': (int, _int_validator(10, 10000), '系统可用资金池 (U)'),
+
     # ── 仓位与杠杆（硬上限避免误操作）──
     # stake 上限 500U：就算你误把它设 9999 也只是上限失效，不会一次性爆账户
     'DEFAULT_STAKE': (int, _int_validator(5, 500), '单笔保证金 (U)'),

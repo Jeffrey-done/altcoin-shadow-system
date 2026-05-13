@@ -126,6 +126,15 @@
 <!-- ═══ 仓位与杠杆 ═══ -->
 <div class="card">
   <h2>💰 仓位 & 杠杆</h2>
+  <div class="warn-banner">
+    ⚠️ <b>系统可用资金池</b>：不管交易所账户里实际有多少钱，系统只用下面设定的额度来计算仓位和风控上限。<br>
+    例如账户有 1000U 但设置 100U，则系统满仓最多用 100U × 50% = 50U 持仓。
+  </div>
+  <div class="row">
+    <label>系统可用资金池 (ACCOUNT_BALANCE, U)</label>
+    <input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1">
+    <div class="muted" style="flex:1;">系统"看到"的总本金，风控上限 = 此值 × 最大持仓占比</div>
+  </div>
   <div class="row">
     <label>单笔保证金 (DEFAULT_STAKE, U)</label>
     <input type="number" id="cfg-DEFAULT_STAKE" min="5" max="500" step="1">
@@ -430,7 +439,7 @@ function saveConfig() {
     const changes = {};
     const keys = [
       'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK',
-      'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
+      'ACCOUNT_BALANCE', 'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
       'TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'TP1_CLOSE_RATIO',
       'HARD_STOP_LOSS_PCT', 'SLIPPAGE_ALERT_PCT',
       'RISK_MAX_DAILY_LOSS', 'RISK_MAX_DAILY_TRADES',
