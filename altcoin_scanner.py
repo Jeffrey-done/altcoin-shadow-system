@@ -490,6 +490,9 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
       - 两个都开 + PRIMARY_EXCHANGE='okx'     → [('okx', stake)]
       - 两个都开 + PRIMARY_EXCHANGE='both'    → [('binance', stake/2), ('okx', stake/2)]
       - 两个都开 + PRIMARY_EXCHANGE='auto'    → 按该币种在哪家有合约决定
+
+    SHADOW_PARALLEL 模式：实盘路由前面额外插入一条 ('shadow', stake)，
+    用于同步产生影子对照交易（不占风控额度）。
     """
     binance_on = config.LIVE_MODE
     okx_on = config.OKX_LIVE_MODE
@@ -498,34 +501,46 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
     if not binance_on and not okx_on:
         return [('shadow', stake)]
 
+    # 实盘路由
+    live_routes = []
+
     # 单所实盘
     if binance_on and not okx_on:
-        return [('binance', stake)]
-    if okx_on and not binance_on:
-        return [('okx', stake)]
+        live_routes = [('binance', stake)]
+    elif okx_on and not binance_on:
+        live_routes = [('okx', stake)]
+    else:
+        # 两所都打开 → 看 PRIMARY_EXCHANGE
+        mode = getattr(config, 'PRIMARY_EXCHANGE', 'binance').lower()
 
-    # 两所都打开 → 看 PRIMARY_EXCHANGE
-    mode = getattr(config, 'PRIMARY_EXCHANGE', 'binance').lower()
+        if mode == 'binance':
+            live_routes = [('binance', stake)]
+        elif mode == 'okx':
+            live_routes = [('okx', stake)]
+        elif mode == 'both':
+            # 保证金各一半，向下取整到 1U（避免浮点尾数导致交易所拒单）
+            half = max(1.0, round(stake / 2, 2))
+            live_routes = [('binance', half), ('okx', half)]
+        elif mode == 'auto':
+            # 按品种覆盖决定
+            try:
+                has_okx = okx_has_swap(symbol)
+            except Exception:
+                has_okx = False
+            # Binance 默认全覆盖（系统主数据源就是 Binance）
+            if has_okx:
+                fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
+                live_routes = [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
+            else:
+                live_routes = [('binance', stake)]
+        else:
+            live_routes = [('binance', stake)]
 
-    if mode == 'binance':
-        return [('binance', stake)]
-    if mode == 'okx':
-        return [('okx', stake)]
-    if mode == 'both':
-        # 保证金各一半，向下取整到 1U（避免浮点尾数导致交易所拒单）
-        half = max(1.0, round(stake / 2, 2))
-        return [('binance', half), ('okx', half)]
-    if mode == 'auto':
-        # 按品种覆盖决定
-        try:
-            has_okx = okx_has_swap(symbol)
-        except Exception:
-            has_okx = False
-        # Binance 默认全覆盖（系统主数据源就是 Binance）
-        if has_okx:
-            fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
-            return [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
-        return [('binance', stake)]
+    # 影子并行模式：在实盘路由前插入一条 shadow 路由
+    if getattr(config, 'SHADOW_PARALLEL', False):
+        return [('shadow', stake)] + live_routes
+
+    return live_routes
 
     # 未知模式 → 安全默认
     logger.warning(f"未知 PRIMARY_EXCHANGE={mode}，回退到 binance")
@@ -765,6 +780,9 @@ def check_candidates():
 
         # 每一条 Trade 都单独记录风控 + 推送（因为每笔都是独立的风控事件）
         for trade, entry_price, route_exchange, route_stake in opened_trades:
+            # 影子并行模式下的 shadow 交易不计入风控
+            if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
+                continue
             record_trade_opened(route_stake)
 
             logger.info(

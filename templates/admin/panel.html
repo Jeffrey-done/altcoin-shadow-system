@@ -207,6 +207,11 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); c
           <option value="okx">okx</option>
         </select>
       </div>
+      <div class="form-row">
+        <label>影子并行 (SHADOW_PARALLEL)</label>
+        <input type="checkbox" id="cfg-SHADOW_PARALLEL">
+        <span style="font-size:12px;color:var(--text-dim);">开启后实盘信号同时产生影子对照记录（不占风控额度）</span>
+      </div>
     </div>
   </div>
 
@@ -675,6 +680,7 @@ function saveConfig() {
     var changes = {};
     var keys = [
       'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK',
+      'SHADOW_PARALLEL',
       'ACCOUNT_BALANCE', 'DEFAULT_STAKE', 'LEVERAGE', 'OKX_DEFAULT_LEVERAGE',
       'TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'TP1_CLOSE_RATIO',
       'HARD_STOP_LOSS_PCT', 'SLIPPAGE_ALERT_PCT',
