@@ -660,7 +660,8 @@ def check_candidates():
         else:  # grade B
             actual_stake = round(base_stake * 0.5)
 
-        # ── 风控检查 ──
+        # ── 风控检查（全局预检，任一账户允许即继续；精确检查在并行循环内）──
+        # 这里用默认账户做快速预筛，防止所有账户都满额时浪费 API 调用
         allowed, risk_reason = can_open_trade(actual_stake)
         if not allowed:
             logger.warning(f"  🚫 风控拒绝 {c.symbol}: {risk_reason}")
@@ -714,9 +715,21 @@ def check_candidates():
             opened_any = False
 
             # 构建所有需要执行的任务：(account_id, route_exchange, route_stake)
+            # 每个账户独立检查风控额度
             execution_tasks = []
             for account in all_accounts:
                 acc_id = account['id']
+
+                # ── 每账户独立风控检查 ──
+                acc_allowed, acc_risk_reason = can_open_trade(
+                    actual_stake, account_id=acc_id if acc_id else None
+                )
+                if not acc_allowed:
+                    logger.info(
+                        f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
+                    )
+                    continue
+
                 for route_exchange, route_stake in routes:
                     # 同币同所同账户已有持仓 → 跳过
                     if (c.symbol, route_exchange, acc_id) in already_open_triples:
@@ -816,7 +829,7 @@ def check_candidates():
             # 影子并行模式下的 shadow 交易不计入风控
             if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
                 continue
-            record_trade_opened(route_stake)
+            record_trade_opened(route_stake, account_id=trade.account_id or None)
 
             logger.info(
                 f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "

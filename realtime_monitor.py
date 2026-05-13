@@ -227,6 +227,7 @@ def check_main_trades(symbol: str, price: float):
                 pending_risk_updates.append((
                     result.pnl_usd, trade.stake_remaining,
                     trade.close_reason, trade.symbol, trade.direction,
+                    trade.account_id,
                 ))
                 if result.alert_msg:
                     pending_alerts.append(result.alert_msg)
@@ -251,8 +252,8 @@ def check_main_trades(symbol: str, price: float):
         _perform_exchange_close(trade, action, close_amount)
 
     # 2) 改风控（此时交易已经落盘）
-    for pnl_usd, stake_remaining, close_reason, sym, direction in pending_risk_updates:
-        record_trade_closed(pnl_usd, stake_remaining)
+    for pnl_usd, stake_remaining, close_reason, sym, direction, acc_id in pending_risk_updates:
+        record_trade_closed(pnl_usd, stake_remaining, account_id=acc_id or None)
         logger.info(
             f"⚡ 实时平仓: {sym} | {direction} | "
             f"原因={close_reason} | PnL={pnl_usd:+.2f}U"

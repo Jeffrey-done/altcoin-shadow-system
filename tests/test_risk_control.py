@@ -101,7 +101,7 @@ class TestCanOpenTrade:
         save_risk_state(state)
 
         # Mock _calc_actual_open_stake to return the state value
-        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 880.0)
+        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda account_id=None: 880.0)
 
         # 880 + 50 = 930 > 900 -> blocked
         allowed, reason = can_open_trade(50, strategy='short')
@@ -124,7 +124,7 @@ class TestCanOpenTrade:
         # 850 + 99 = 949 > 900 -> blocked
         state2 = RiskState(date=common.today_str(), total_open_stake=850)
         save_risk_state(state2)
-        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda: 850.0)
+        monkeypatch.setattr(risk_control, '_calc_actual_open_stake', lambda account_id=None: 850.0)
 
         allowed2, reason2 = can_open_trade(99, strategy='short')
         assert allowed2 is False

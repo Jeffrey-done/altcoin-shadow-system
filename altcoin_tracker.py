@@ -488,7 +488,7 @@ def run(check_only: bool = False):
 
             # 平仓时：把 risk 更新和推送推迟到 save 之后
             if result.closed:
-                pending_risk_updates.append((result.pnl_usd, trade.stake_remaining))
+                pending_risk_updates.append((result.pnl_usd, trade.stake_remaining, trade.account_id))
             if result.alert_msg:
                 pending_alerts.append(result.alert_msg)
 
@@ -552,8 +552,8 @@ def run(check_only: bool = False):
         _perform_exchange_close(trade, action, close_amount)
 
     # 2) 改 risk_state（在 trades 已经持久化之后）
-    for pnl_usd, stake_remaining in pending_risk_updates:
-        record_trade_closed(pnl_usd, stake_remaining)
+    for pnl_usd, stake_remaining, acc_id in pending_risk_updates:
+        record_trade_closed(pnl_usd, stake_remaining, account_id=acc_id or None)
 
     # 3) 再推送 TG
     for msg in pending_alerts:
