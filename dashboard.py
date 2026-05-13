@@ -58,7 +58,14 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
 # 只在请求本身是 https 时才把 cookie 标 Secure，免得本地 http 测试拿不到 cookie
 if os.environ.get('DASHBOARD_FORCE_HTTPS_COOKIE', '').lower() in ('1', 'true', 'yes'):
     app.config['SESSION_COOKIE_SECURE'] = True
-socketio = SocketIO(app, cors_allowed_origins="*")
+# CORS 配置：从环境变量读取允许的源，默认只允许同源（不暴露到公网）
+_cors_origins = os.environ.get('DASHBOARD_CORS_ORIGINS', '').strip()
+if _cors_origins:
+    # 支持逗号分隔多个源，如 "http://localhost:3000,https://mydomain.com"
+    _cors_list = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+else:
+    _cors_list = []  # 空列表 = 仅同源
+socketio = SocketIO(app, cors_allowed_origins=_cors_list if _cors_list else None)
 
 # ══════════════════════════════════════════════════════════════════
 #  Admin Panel (挂载在 /<ADMIN_URL_SECRET>/ 下)

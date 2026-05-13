@@ -21,7 +21,10 @@ logger = setup_logger("scheduler")
 
 
 def run_task(name: str, func, timeout: int = None):
-    """安全执行任务，捕获异常，支持超时"""
+    """
+    安全执行任务，捕获异常，支持超时。
+    超时后尝试通过 ctypes 向线程注入异常来终止它，防止僵尸线程持续占用资源。
+    """
     import config
     if timeout is None:
         timeout = config.TASK_TIMEOUT_SECONDS
@@ -40,13 +43,50 @@ def run_task(name: str, func, timeout: int = None):
     thread.join(timeout=timeout)
 
     if thread.is_alive():
-        logger.error(f"[{name}] ⚠️ 超时（>{timeout}s），跳过本次")
+        logger.error(f"[{name}] ⚠️ 超时（>{timeout}s），尝试终止线程")
+        # 尝试向僵尸线程注入 SystemExit 异常
+        _try_kill_thread(thread)
         from common import send_tg
-        send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n已跳过本次执行")
+        send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n已尝试终止线程")
     elif exception[0]:
         logger.error(f"[{name}] 异常: {exception[0]}\n{traceback.format_exc()}")
     else:
         logger.info(f"[{name}] 完成")
+
+
+def _try_kill_thread(thread: threading.Thread) -> bool:
+    """
+    尝试通过 ctypes 向目标线程注入 SystemExit 异常。
+    这不是100%可靠的（如果线程阻塞在 C 扩展中不会生效），但覆盖了大多数 Python 代码场景。
+    返回 True 表示成功发送，False 表示失败。
+    """
+    import ctypes
+    if not thread.is_alive():
+        return True
+    tid = thread.ident
+    if tid is None:
+        return False
+    try:
+        res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(tid),
+            ctypes.py_object(SystemExit)
+        )
+        if res == 0:
+            logger.warning(f"线程 {tid} 已不存在，无需终止")
+            return False
+        elif res == 1:
+            logger.info(f"已向线程 {tid} 注入 SystemExit")
+            return True
+        else:
+            # res > 1 表示出错，需要清理
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(tid), None
+            )
+            logger.error(f"线程 {tid} 终止失败（异常状态）")
+            return False
+    except Exception as e:
+        logger.error(f"终止线程异常: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════

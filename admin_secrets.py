@@ -35,6 +35,7 @@
 """
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -43,13 +44,16 @@ import os
 import secrets
 import stat
 import struct
+import tempfile
 import time as _time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SECRETS_FILE = os.path.join(SCRIPT_DIR, 'admin_secrets.json')
+_SECRETS_LOCK = SECRETS_FILE + '.lock'
 
 logger = logging.getLogger("admin_secrets")
 
@@ -96,6 +100,74 @@ def _migrate_v1_to_v2(data: dict) -> dict:
 def _generate_account_id() -> str:
     """生成唯一账户 ID"""
     return 'acc_' + secrets.token_hex(6)
+
+
+@contextmanager
+def _locked_secrets():
+    """
+    上下文管理器：对 secrets 文件加排他锁，确保 read-modify-write 原子性。
+    防止 admin panel 并发请求导致的丢失写入。
+
+    用法：
+        with _locked_secrets() as (data, save):
+            data['admin']['totp_enabled'] = True
+            save(data)
+    """
+    lock_fd = open(_SECRETS_LOCK, 'a')
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_raw()
+
+        def save(new_data):
+            _save_raw(new_data)
+
+        yield data, save
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def _load_raw() -> dict:
+    """读整个 secrets 文件；不存在或损坏返回空 v2 骨架。自动迁移 v1→v2。"""
+    if not os.path.exists(SECRETS_FILE):
+        return _empty_v2()
+    try:
+        with open(SECRETS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        logger.error(f"admin_secrets.json 读取失败: {e}")
+        return _empty_v2()
+
+    version = data.get('_version', 1)
+
+    if version < 2:
+        # 自动迁移 v1 → v2
+        logger.info("admin_secrets: 检测到 v1 格式，自动迁移到 v2（多账户）")
+        v2 = _migrate_v1_to_v2(data)
+        _save_raw(v2)
+        return v2
+
+    # v2 格式，确保字段完整
+    data.setdefault('_version', 2)
+    data.setdefault('admin', {})
+    data.setdefault('accounts', {})
+    data.setdefault('active_account', '')
+    return data
+
+
+def _save_raw(data: dict) -> None:
+    """原子写 + 0600 权限。"""
+    dir_name = os.path.dirname(SECRETS_FILE)
+    fd, tmp = tempfile.mkstemp(suffix='.tmp', dir=dir_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp, SECRETS_FILE)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _load_raw() -> dict:
@@ -160,17 +232,17 @@ def create_account(name: str) -> str:
     if len(name) > 50:
         raise ValueError("账户名称不能超过 50 个字符")
 
-    d = _load_raw()
-    account_id = _generate_account_id()
-    d['accounts'][account_id] = {
-        'name': name,
-        'created_at': datetime.now(timezone.utc).isoformat(),
-        'exchanges': {},
-    }
-    # 如果是第一个账户，自动设为活跃
-    if not d['active_account']:
-        d['active_account'] = account_id
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        account_id = _generate_account_id()
+        d['accounts'][account_id] = {
+            'name': name,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'exchanges': {},
+        }
+        # 如果是第一个账户，自动设为活跃
+        if not d['active_account']:
+            d['active_account'] = account_id
+        save(d)
     return account_id
 
 
@@ -178,19 +250,19 @@ def delete_account(account_id: str) -> None:
     """
     删除交易账户。不能删除最后一个账户。
     """
-    d = _load_raw()
-    if account_id not in d['accounts']:
-        raise ValueError(f"账户 {account_id} 不存在")
-    if len(d['accounts']) <= 1:
-        raise ValueError("不能删除最后一个账户")
+    with _locked_secrets() as (d, save):
+        if account_id not in d['accounts']:
+            raise ValueError(f"账户 {account_id} 不存在")
+        if len(d['accounts']) <= 1:
+            raise ValueError("不能删除最后一个账户")
 
-    del d['accounts'][account_id]
+        del d['accounts'][account_id]
 
-    # 如果删除的是活跃账户，切换到第一个
-    if d['active_account'] == account_id:
-        d['active_account'] = next(iter(d['accounts']))
+        # 如果删除的是活跃账户，切换到第一个
+        if d['active_account'] == account_id:
+            d['active_account'] = next(iter(d['accounts']))
 
-    _save_raw(d)
+        save(d)
 
 
 def list_accounts() -> list:
@@ -223,19 +295,20 @@ def get_active_account_id() -> str:
     accounts = d.get('accounts', {})
     if accounts:
         first_id = next(iter(accounts))
-        d['active_account'] = first_id
-        _save_raw(d)
+        with _locked_secrets() as (d2, save):
+            d2['active_account'] = first_id
+            save(d2)
         return first_id
     return ''
 
 
 def set_active_account(account_id: str) -> None:
     """切换活跃账户"""
-    d = _load_raw()
-    if account_id not in d['accounts']:
-        raise ValueError(f"账户 {account_id} 不存在")
-    d['active_account'] = account_id
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        if account_id not in d['accounts']:
+            raise ValueError(f"账户 {account_id} 不存在")
+        d['active_account'] = account_id
+        save(d)
 
 
 def rename_account(account_id: str, new_name: str) -> None:
@@ -246,11 +319,11 @@ def rename_account(account_id: str, new_name: str) -> None:
     if len(new_name) > 50:
         raise ValueError("账户名称不能超过 50 个字符")
 
-    d = _load_raw()
-    if account_id not in d['accounts']:
-        raise ValueError(f"账户 {account_id} 不存在")
-    d['accounts'][account_id]['name'] = new_name
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        if account_id not in d['accounts']:
+            raise ValueError(f"账户 {account_id} 不存在")
+        d['accounts'][account_id]['name'] = new_name
+        save(d)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -304,10 +377,10 @@ def set_password(password: str) -> None:
     if password.lower() in ('password', 'admin', '123456789012'):
         raise ValueError("密码太弱，换一个")
 
-    d = _load_raw()
-    d['admin']['password_hash'] = _hash_password(password)
-    d['admin'].setdefault('created_at', datetime.now(timezone.utc).isoformat())
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        d['admin']['password_hash'] = _hash_password(password)
+        d['admin'].setdefault('created_at', datetime.now(timezone.utc).isoformat())
+        save(d)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -325,10 +398,10 @@ def set_totp_secret(secret_b32: str, issuer: str = "altcoin-shadow-admin",
     """
     保存 TOTP secret 并返回 otpauth:// URL。
     """
-    d = _load_raw()
-    d['admin']['totp_secret'] = secret_b32
-    d['admin']['totp_enabled'] = False
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        d['admin']['totp_secret'] = secret_b32
+        d['admin']['totp_enabled'] = False
+        save(d)
 
     return "otpauth://totp/{}:{}?secret={}&issuer={}&digits=6&period=30".format(
         quote(issuer),
@@ -340,11 +413,11 @@ def set_totp_secret(secret_b32: str, issuer: str = "altcoin-shadow-admin",
 
 def enable_totp() -> None:
     """首次验证通过后调用，正式启用 2FA"""
-    d = _load_raw()
-    if not d.get('admin', {}).get('totp_secret'):
-        raise ValueError("TOTP secret 未设置，无法启用")
-    d['admin']['totp_enabled'] = True
-    _save_raw(d)
+    with _locked_secrets() as (d, save):
+        if not d.get('admin', {}).get('totp_secret'):
+            raise ValueError("TOTP secret 未设置，无法启用")
+        d['admin']['totp_enabled'] = True
+        save(d)
 
 
 def get_totp_secret() -> Optional[str]:
@@ -447,22 +520,22 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
         raise ValueError(f"不支持的交易所: {exchange}")
 
     acc_id = _resolve_account_id(account_id)
-    d = _load_raw()
 
-    if acc_id not in d['accounts']:
-        raise ValueError(f"账户 {acc_id} 不存在")
+    with _locked_secrets() as (d, save):
+        if acc_id not in d['accounts']:
+            raise ValueError(f"账户 {acc_id} 不存在")
 
-    exchanges = d['accounts'][acc_id].setdefault('exchanges', {})
-    current = exchanges.get(exchange, {})
+        exchanges = d['accounts'][acc_id].setdefault('exchanges', {})
+        current = exchanges.get(exchange, {})
 
-    for k, v in kwargs.items():
-        if v:
-            current[k] = v
-    current['updated_at'] = datetime.now(timezone.utc).isoformat()
+        for k, v in kwargs.items():
+            if v:
+                current[k] = v
+        current['updated_at'] = datetime.now(timezone.utc).isoformat()
 
-    exchanges[exchange] = current
-    d['accounts'][acc_id]['exchanges'] = exchanges
-    _save_raw(d)
+        exchanges[exchange] = current
+        d['accounts'][acc_id]['exchanges'] = exchanges
+        save(d)
 
 
 def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) -> None:
@@ -470,14 +543,14 @@ def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) 
     exchange = exchange.lower()
     acc_id = _resolve_account_id(account_id)
 
-    d = _load_raw()
-    if acc_id not in d['accounts']:
-        return
-    exchanges = d['accounts'][acc_id].get('exchanges', {})
-    if exchange in exchanges:
-        del exchanges[exchange]
-        d['accounts'][acc_id]['exchanges'] = exchanges
-        _save_raw(d)
+    with _locked_secrets() as (d, save):
+        if acc_id not in d['accounts']:
+            return
+        exchanges = d['accounts'][acc_id].get('exchanges', {})
+        if exchange in exchanges:
+            del exchanges[exchange]
+            d['accounts'][acc_id]['exchanges'] = exchanges
+            save(d)
 
 
 def mask_credentials(exchange: str, account_id: Optional[str] = None) -> dict:

@@ -12,6 +12,8 @@
 """
 
 import time
+from typing import Dict
+
 import ccxt
 import requests
 
@@ -20,15 +22,15 @@ from common import (
     CANDIDATES_FILE, TRADES_FILE,
     setup_logger, send_tg, atomic_write_json, load_json,
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
-    LockedJsonFile,
+    LockedJsonFile, get_compound_stake,
 )
 from models import Candidate, Trade
-from risk_control import can_open_trade, record_trade_opened
+from risk_control import can_open_trade, record_trade_opened, is_in_cooldown
 from signal_score import calculate_signal_score, check_btc_filter
 from exchange_manager import (
     get_binance, get_okx,
     cross_validate_funding, cross_validate_oi,
-    okx_has_swap,
+    okx_has_swap, cross_validate_price,
 )
 
 logger = setup_logger("altcoin_scanner")
@@ -351,7 +353,7 @@ def scan_daily():
         logger.error(f"获取行情失败: {e}")
         return
 
-    candidates: dict[str, Candidate] = {}
+    candidates: Dict[str, Candidate] = {}
     checked = 0
 
     # 排序：热门币优先（减少 API 调用浪费在冷门币上）
@@ -516,7 +518,6 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
     if mode == 'auto':
         # 按品种覆盖决定
         try:
-            from exchange_manager import okx_has_swap
             has_okx = okx_has_swap(symbol)
         except Exception:
             has_okx = False
@@ -573,7 +574,6 @@ def check_candidates():
             continue
 
         # ── 冷却期检查 ──
-        from risk_control import is_in_cooldown
         in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
         if in_cooldown:
             logger.info(f"  ❄️ 冷却中 {c.symbol}: {cooldown_reason}")
@@ -641,7 +641,6 @@ def check_candidates():
             continue
 
         # 根据评分决定仓位（结合自动复利）
-        from common import get_compound_stake
         base_stake = get_compound_stake()
         if score_result["grade"] == "A":
             actual_stake = base_stake
@@ -663,7 +662,6 @@ def check_candidates():
 
         # ── 多交易所价格确认 ──
         if config.OKX_CROSS_VALIDATE_ENABLED:
-            from exchange_manager import cross_validate_price
             price_cv = cross_validate_price(c.symbol, price)
             if price_cv['available'] and not price_cv['pass']:
                 logger.warning(f"  ⚠️ 价格偏差过大 {c.symbol}: {price_cv['reason']}")

@@ -378,7 +378,10 @@ def run_bot():
                 chat_id = str(message.get("chat", {}).get("id", ""))
 
                 # 安全检查：只响应配置的 chat_id
-                if TG_CHAT_ID and chat_id != TG_CHAT_ID:
+                if not TG_CHAT_ID:
+                    logger.warning("TG_CHAT_ID 未配置，拒绝所有请求（安全模式）")
+                    continue
+                if chat_id != TG_CHAT_ID:
                     logger.warning(f"拒绝未授权 chat_id: {chat_id}")
                     continue
 
