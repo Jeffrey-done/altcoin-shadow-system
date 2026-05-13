@@ -147,14 +147,37 @@ def main_loop():
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
     logger.info("=== 调度器启动 v4.1 ===")
 
-    # 启动时对账一次：修正风控状态与交易记录的漂移（幽灵亏损预防）
+    # 启动时对账：遍历所有交易账户，修正风控状态与交易记录的漂移（幽灵亏损预防）
     try:
         from risk_control import reconcile_risk_state
-        diff = reconcile_risk_state(notify=True)
-        if diff:
-            logger.warning(f"启动对账修正了 {len(diff)} 项风控字段: {list(diff.keys())}")
+        from common import get_all_trading_account_ids, get_current_account_id
+
+        # 收集需要对账的账户：活跃账户 + 所有配置了凭证的交易账户
+        account_ids_to_reconcile = set()
+        active_id = get_current_account_id()
+        if active_id:
+            account_ids_to_reconcile.add(active_id)
+        for acc_id in get_all_trading_account_ids():
+            account_ids_to_reconcile.add(acc_id)
+
+        if not account_ids_to_reconcile:
+            # 单账户兼容模式：不传 account_id，对账默认账户
+            diff = reconcile_risk_state(notify=True)
+            if diff:
+                logger.warning(f"启动对账修正了 {len(diff)} 项风控字段: {list(diff.keys())}")
+            else:
+                logger.info("启动对账：风控状态一致 ✅")
         else:
-            logger.info("启动对账：风控状态一致 ✅")
+            total_diffs = 0
+            for acc_id in account_ids_to_reconcile:
+                diff = reconcile_risk_state(account_id=acc_id, notify=True)
+                if diff:
+                    total_diffs += len(diff)
+                    logger.warning(f"启动对账 [{acc_id}] 修正了 {len(diff)} 项: {list(diff.keys())}")
+            if total_diffs == 0:
+                logger.info(f"启动对账：所有 {len(account_ids_to_reconcile)} 个账户风控状态一致 ✅")
+            else:
+                logger.warning(f"启动对账：共修正 {total_diffs} 项偏差（覆盖 {len(account_ids_to_reconcile)} 个账户）")
     except Exception as e:
         logger.error(f"启动对账异常: {e}")
 

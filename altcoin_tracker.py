@@ -355,10 +355,14 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     coid = make_client_order_id(prefix, f"{trade.id[:10]}{trade.symbol}",
                                  exchange_name=trade.exchange)
 
+    # 使用开仓时记录的 account_id，确保平仓用正确账户的凭证
+    acc_id = trade.account_id if trade.account_id else None
+
     try:
         result = execute_close(
             trade.symbol, trade.direction, close_amount,
             exchange_name=trade.exchange, client_order_id=coid,
+            account_id=acc_id,
         )
     except Exception as e:
         logger.error(f"❌ [{trade.exchange}] 平仓调用异常 {trade.symbol}: {e}")

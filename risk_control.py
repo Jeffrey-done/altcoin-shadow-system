@@ -323,7 +323,7 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
         state.total_open_stake = actual_stake
         save_risk_state(state, account_id)
 
-    dynamic_bal = get_dynamic_balance()
+    dynamic_bal = get_dynamic_balance(account_id=_resolve_account_id(account_id))
     max_position = dynamic_bal * config.RISK_MAX_POSITION_PCT
     if state.total_open_stake + stake > max_position:
         reason = (

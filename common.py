@@ -292,20 +292,22 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
 
 
 
-def get_compound_stake() -> float:
+def get_compound_stake(account_id: str = None) -> float:
     """
     自动复利：根据累计已实现盈亏动态调整单笔保证金。
     公式：stake = DEFAULT_STAKE + (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
     上限：COMPOUND_MAX_STAKE
 
-    只计算当前活跃账户的交易。
+    参数:
+      account_id: 指定账户 ID；None 使用当前活跃账户
     """
     import config
     if not config.AUTO_COMPOUND_ENABLED:
         return config.DEFAULT_STAKE
 
     trades = load_json(TRADES_FILE, [])
-    account_id = get_current_account_id()
+    if account_id is None:
+        account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
 
     total_pnl = sum(
@@ -323,11 +325,12 @@ def get_compound_stake() -> float:
     return stake
 
 
-def get_dynamic_balance() -> float:
+def get_dynamic_balance(account_id: str = None) -> float:
     """
     计算动态账户余额 = 初始本金 + 已实现盈亏 + TP1已锁定利润。
 
-    只计算当前活跃账户的交易。
+    参数:
+      account_id: 指定账户 ID；None 使用当前活跃账户
 
     TP1锁定利润说明：
       当 TP1 触发时，50%仓位已平仓并锁定利润（tp1_locked_pnl），
@@ -336,7 +339,8 @@ def get_dynamic_balance() -> float:
     """
     import config
     trades = load_json(TRADES_FILE, [])
-    account_id = get_current_account_id()
+    if account_id is None:
+        account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
 
     total_pnl = 0.0

@@ -227,7 +227,8 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
 
 
 def execute_close_position(symbol: str, direction: str, amount: float,
-                           client_order_id: Optional[str] = None) -> dict:
+                           client_order_id: Optional[str] = None,
+                           account_id: Optional[str] = None) -> dict:
     """
     Binance 实盘平仓。
 
@@ -236,11 +237,12 @@ def execute_close_position(symbol: str, direction: str, amount: float,
       direction: 'SHORT' 或 'LONG'
       amount: 平仓数量
       client_order_id: 平仓幂等键（防止 evaluate 在同一秒被触发多次重复平仓）
+      account_id: 指定账户 ID（多账户模式）；None 使用活跃账户
     """
     if not config.LIVE_MODE:
         return {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
 
-    exchange = get_live_exchange()
+    exchange = get_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
@@ -454,12 +456,13 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
 
 
 def execute_okx_close_position(symbol: str, direction: str, amount: float,
-                                client_order_id: Optional[str] = None) -> dict:
+                                client_order_id: Optional[str] = None,
+                                account_id: Optional[str] = None) -> dict:
     """OKX 实盘平仓"""
     if not config.OKX_LIVE_MODE:
         return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": amount, "error": ""}
 
-    exchange = get_okx_live_exchange()
+    exchange = get_okx_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
@@ -564,16 +567,24 @@ def execute_open(symbol: str, direction: str, stake: float,
 
 def execute_close(symbol: str, direction: str, amount: float,
                   exchange_name: str = 'binance',
-                  client_order_id: Optional[str] = None) -> dict:
+                  client_order_id: Optional[str] = None,
+                  account_id: Optional[str] = None) -> dict:
     """
     统一平仓接口，根据交易所名称路由。
     影子交易（exchange_name='shadow'）直接返回成功，不发真实订单。
+
+    参数:
+      account_id: 指定账户 ID（多账户模式）；None 使用活跃账户
     """
     if exchange_name == 'shadow':
         return {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
     if exchange_name == 'okx':
-        return execute_okx_close_position(symbol, direction, amount, client_order_id=client_order_id)
-    return execute_close_position(symbol, direction, amount, client_order_id=client_order_id)
+        return execute_okx_close_position(symbol, direction, amount,
+                                          client_order_id=client_order_id,
+                                          account_id=account_id)
+    return execute_close_position(symbol, direction, amount,
+                                  client_order_id=client_order_id,
+                                  account_id=account_id)
 
 
 def make_client_order_id(prefix: str, symbol: str, exchange_name: str = 'binance',
