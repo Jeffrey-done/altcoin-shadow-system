@@ -520,6 +520,95 @@ def api_events():
     return jsonify({'events': events})
 
 
+@app.route('/api/accounts/overview')
+@check_api_token
+def api_accounts_overview():
+    """
+    返回所有账户的概览数据（全局视图，不受 active_account 影响）。
+    用于前端多账户看板，管理员切换账户不改变此视图。
+    """
+    try:
+        from admin_secrets import list_accounts, get_active_account_id, SHADOW_ACCOUNT_ID
+    except ImportError:
+        return jsonify({'accounts': [], 'active_account': ''})
+
+    all_accounts = list_accounts()
+    active_id = get_active_account_id()
+    all_trades = load_json(TRADES_FILE, [])
+
+    accounts_data = []
+    for acc in all_accounts:
+        acc_id = acc['id']
+        # 按账户过滤交易
+        acc_trades = filter_trades_by_account(all_trades, acc_id)
+
+        open_trades = [t for t in acc_trades if t.get('status') == 'open']
+        closed_trades = [t for t in acc_trades if t.get('status') == 'closed']
+
+        total_pnl = sum(
+            t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            for t in closed_trades
+        )
+        today = today_str()
+        today_pnl = sum(
+            t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            for t in closed_trades
+            if (t.get('closed_at') or '')[:10] == today
+        )
+
+        # 判断账户是否为实盘模式
+        is_live = any(
+            t.get('exchange', 'shadow') != 'shadow'
+            for t in open_trades
+        )
+
+        accounts_data.append({
+            'id': acc_id,
+            'name': acc['name'],
+            'is_active': acc_id == active_id,
+            'is_system': acc_id == SHADOW_ACCOUNT_ID,
+            'is_live': is_live,
+            'has_binance': acc.get('has_binance', False),
+            'has_okx': acc.get('has_okx', False),
+            'open_count': len(open_trades),
+            'closed_count': len(closed_trades),
+            'total_pnl': round(total_pnl, 2),
+            'today_pnl': round(today_pnl, 2),
+        })
+
+    return jsonify({
+        'accounts': accounts_data,
+        'active_account': active_id,
+        'total_accounts': len(accounts_data),
+    })
+
+
+@app.route('/api/data/all')
+@check_api_token
+def api_data_all_accounts():
+    """
+    返回所有账户的合并交易数据（全局视图）。
+    前端可以同时展示所有账户的持仓，不受 active_account 限制。
+    """
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc()
+    except Exception:
+        pass
+
+    all_trades = load_json(TRADES_FILE, [])
+    # 不按账户过滤 - 返回全部
+    open_trades = [t for t in all_trades if t.get('status') == 'open']
+    closed_trades = [t for t in all_trades if t.get('status') == 'closed']
+
+    return jsonify({
+        'open_trades': open_trades,
+        'closed_trades': closed_trades[-50:],
+        'total_open': len(open_trades),
+        'total_closed': len(closed_trades),
+    })
+
+
 @app.route('/api/trades/filtered')
 @check_api_token
 def api_trades_filtered():

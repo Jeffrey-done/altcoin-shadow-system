@@ -40,15 +40,21 @@ logger = setup_logger("live_executor")
 #  Binance 实盘
 # ══════════════════════════════════════════════════════════════════
 
-def get_live_exchange():
+def get_live_exchange(account_id: Optional[str] = None):
     """创建已认证的 Binance 合约交易所实例
 
-    凭证优先级：admin_secrets.json > .env 环境变量
+    凭证优先级：
+      - 指定 account_id 时：使用该账户的独立凭证（多账户并行模式）
+      - 未指定时：admin_secrets.json 活跃账户 > .env 环境变量
     （admin panel 修改后立即生效，无需重启进程）
     """
     try:
-        from admin_secrets import get_exchange_credentials
-        creds = get_exchange_credentials('binance')
+        if account_id:
+            from admin_secrets import get_account_exchange_credentials
+            creds = get_account_exchange_credentials('binance', account_id)
+        else:
+            from admin_secrets import get_exchange_credentials
+            creds = get_exchange_credentials('binance')
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
     except Exception as e:
@@ -93,7 +99,8 @@ def _check_slippage(symbol: str, exchange_name: str,
 
 
 def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
-                       client_order_id: Optional[str] = None) -> dict:
+                       client_order_id: Optional[str] = None,
+                       account_id: Optional[str] = None) -> dict:
     """
     实盘开空单（Binance）。
 
@@ -112,7 +119,7 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
     if not config.LIVE_MODE:
         return {"success": True, "order_id": "SHADOW", "price": 0, "amount": 0, "error": ""}
 
-    exchange = get_live_exchange()
+    exchange = get_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
@@ -164,14 +171,15 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
 
 
 def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE,
-                      client_order_id: Optional[str] = None) -> dict:
+                      client_order_id: Optional[str] = None,
+                      account_id: Optional[str] = None) -> dict:
     """
     实盘开多单（当前做空系统未使用，保留给未来扩展）。
     """
     if not config.LIVE_MODE:
         return {"success": True, "order_id": "SHADOW", "price": 0, "amount": 0, "error": ""}
 
-    exchange = get_live_exchange()
+    exchange = get_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
 
@@ -299,8 +307,32 @@ def check_live_balance() -> dict:
 #  OKX 实盘执行
 # ══════════════════════════════════════════════════════════════════
 
-def get_okx_live_exchange():
-    """创建已认证的 OKX 合约交易所实例"""
+def get_okx_live_exchange(account_id: Optional[str] = None):
+    """创建已认证的 OKX 合约交易所实例（支持多账户）"""
+    if account_id:
+        # 多账户模式：使用指定账户的凭证
+        try:
+            from admin_secrets import get_account_exchange_credentials
+            creds = get_account_exchange_credentials('okx', account_id)
+            api_key = creds.get('api_key', '')
+            secret = creds.get('secret', '')
+            passphrase = creds.get('passphrase', '')
+        except Exception as e:
+            logger.warning(f"获取账户 {account_id} OKX 凭证失败: {e}")
+            return None
+        if not api_key or not secret or not passphrase:
+            return None
+        try:
+            return ccxt.okx({
+                'apiKey': api_key,
+                'secret': secret,
+                'password': passphrase,
+                'enableRateLimit': True,
+            })
+        except Exception as e:
+            logger.warning(f"OKX 认证实例创建失败 (account={account_id}): {e}")
+            return None
+    # 默认模式：使用活跃账户
     return get_okx(authenticated=True)
 
 
@@ -317,14 +349,15 @@ def _okx_cloid(prefix: str, symbol: str, ts_ms: int) -> str:
 
 
 def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE,
-                            client_order_id: Optional[str] = None) -> dict:
+                            client_order_id: Optional[str] = None,
+                            account_id: Optional[str] = None) -> dict:
     """
     OKX 实盘开空单（v3.0：补齐幂等键 + 滑点告警 + 成交均价回填）。
     """
     if not config.OKX_LIVE_MODE:
         return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": 0, "error": ""}
 
-    exchange = get_okx_live_exchange()
+    exchange = get_okx_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
@@ -370,12 +403,13 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
 
 
 def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE,
-                           client_order_id: Optional[str] = None) -> dict:
+                           client_order_id: Optional[str] = None,
+                           account_id: Optional[str] = None) -> dict:
     """OKX 实盘开多单"""
     if not config.OKX_LIVE_MODE:
         return {"success": True, "order_id": "SHADOW_OKX", "price": 0, "amount": 0, "error": ""}
 
-    exchange = get_okx_live_exchange()
+    exchange = get_okx_live_exchange(account_id)
     if not exchange:
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
 
@@ -503,7 +537,8 @@ def _is_exchange_live(exchange_name: str) -> bool:
 
 def execute_open(symbol: str, direction: str, stake: float,
                  exchange_name: str = 'binance', leverage: Optional[int] = None,
-                 client_order_id: Optional[str] = None) -> dict:
+                 client_order_id: Optional[str] = None,
+                 account_id: Optional[str] = None) -> dict:
     """
     统一开仓接口，根据交易所名称路由到对应执行函数。
 
@@ -511,19 +546,20 @@ def execute_open(symbol: str, direction: str, stake: float,
       exchange_name: 'binance' | 'okx'
       direction: 'SHORT' | 'LONG'
       client_order_id: 幂等键；若为 None，上层应传入 symbol+timestamp 的拼接串
+      account_id: 指定账户 ID（多账户并行模式）；None 使用活跃账户
     """
     if exchange_name == 'okx':
         lev = leverage or config.OKX_DEFAULT_LEVERAGE
         if direction == 'SHORT':
-            return execute_okx_open_short(symbol, stake, lev, client_order_id=client_order_id)
+            return execute_okx_open_short(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
         else:
-            return execute_okx_open_long(symbol, stake, lev, client_order_id=client_order_id)
+            return execute_okx_open_long(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
     else:
         lev = leverage or config.LEVERAGE
         if direction == 'SHORT':
-            return execute_open_short(symbol, stake, lev, client_order_id=client_order_id)
+            return execute_open_short(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
         else:
-            return execute_open_long(symbol, stake, lev, client_order_id=client_order_id)
+            return execute_open_long(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
 
 
 def execute_close(symbol: str, direction: str, amount: float,

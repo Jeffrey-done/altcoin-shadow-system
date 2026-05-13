@@ -555,6 +555,58 @@ def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) 
             save(d)
 
 
+def get_all_trading_accounts() -> list:
+    """
+    返回所有配置了交易所凭证的账户列表（用于多账户同步开仓）。
+    排除系统影子账户（它不持有真实凭证）和未配置凭证的空账户。
+
+    返回:
+        [{'id': 'acc_xxx', 'name': '主账户', 'exchanges': {'binance': {...}, 'okx': {...}}}]
+    """
+    d = _load_raw()
+    result = []
+    for acc_id, acc in d.get('accounts', {}).items():
+        # 影子账户只做纸上交易，不参与实盘同步
+        if acc.get('system'):
+            continue
+        exchanges = acc.get('exchanges', {})
+        # 必须至少有一个交易所配置了 api_key
+        has_any_creds = any(
+            ex_data.get('api_key') for ex_data in exchanges.values()
+        )
+        if has_any_creds:
+            result.append({
+                'id': acc_id,
+                'name': acc.get('name', ''),
+                'exchanges': exchanges,
+            })
+    return result
+
+
+def get_account_exchange_credentials(exchange: str, account_id: str) -> dict:
+    """
+    获取指定账户的交易所凭证（不回退到环境变量）。
+    用于多账户并行下单场景，每个账户使用自己独立的凭证。
+    """
+    exchange = exchange.lower()
+    d = _load_raw()
+    acc = d.get('accounts', {}).get(account_id, {})
+    exch_data = acc.get('exchanges', {}).get(exchange, {})
+
+    if exchange == 'binance':
+        return {
+            'api_key': exch_data.get('api_key', ''),
+            'secret': exch_data.get('secret', ''),
+        }
+    if exchange == 'okx':
+        return {
+            'api_key': exch_data.get('api_key', ''),
+            'secret': exch_data.get('secret', ''),
+            'passphrase': exch_data.get('passphrase', ''),
+        }
+    return {}
+
+
 def mask_credentials(exchange: str, account_id: Optional[str] = None) -> dict:
     """
     返回脱敏后的凭证（供 admin panel 显示）。

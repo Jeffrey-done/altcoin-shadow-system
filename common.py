@@ -256,6 +256,18 @@ def get_current_account_id() -> str:
         return ''
 
 
+def get_all_trading_account_ids() -> list:
+    """
+    返回所有配置了凭证的交易账户 ID 列表（用于多账户同步开仓）。
+    不含系统影子账户。如果 admin_secrets 不可用，返回空列表。
+    """
+    try:
+        from admin_secrets import get_all_trading_accounts
+        return [acc['id'] for acc in get_all_trading_accounts()]
+    except Exception:
+        return []
+
+
 def filter_trades_by_account(trades: list, account_id: str = None) -> list:
     """
     按账户 ID 过滤交易列表。

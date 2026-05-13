@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-小币种超买做空扫描器 v4.0
+小币种超买做空扫描器 v5.0
 多时间框架策略：
   - 每4小时扫描全市场，筛选日线 RSI>78 的候选池
   - 每1小时检查候选池，确认 4h RSI 回落 或 1H 弃盘点 触发信号
@@ -9,9 +9,11 @@
   - 杠杆仓位计算（10x）
   - 硬止损价格
   - 风控检查（开仓前必须通过）
+  - v5.0: 多账户同步开仓（所有配置了凭证的账户毫秒级并行下单）
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict
 
 import ccxt
@@ -689,47 +691,80 @@ def check_candidates():
             logger.warning(f"  ⚠️ 无可用交易所路由 {c.symbol}，跳过")
             continue
 
+        # ── 多账户同步开仓 v5.0 ──
+        # 获取所有配置了凭证的交易账户，为每个账户并行执行开仓
+        from admin_secrets import get_all_trading_accounts
+        from common import get_all_trading_account_ids
+        all_accounts = get_all_trading_accounts()
+
+        # 如果没有配置任何交易账户，使用影子模式（兼容旧单账户部署）
+        if not all_accounts:
+            all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}}]
+
         # ── 锁内二次校验准备 ──
-        # 已开仓判重改为按 (symbol, exchange) 粒度：
-        # 同币在 Binance 和 OKX 各开一次是允许的（both 模式本身如此）
+        # 已开仓判重改为按 (symbol, exchange, account_id) 粒度：
+        # 同币在不同账户各开一次是允许的（多账户同步模式）
         with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
-            already_open_pairs = {
-                (t.get('symbol'), t.get('exchange', 'shadow'))
+            already_open_triples = {
+                (t.get('symbol'), t.get('exchange', 'shadow'), t.get('account_id', ''))
                 for t in trades_raw if t.get('status') == 'open'
             }
 
-            opened_trades = []     # [(trade_dict, send_msg_bool)]
+            opened_trades = []     # [(trade, entry_price, route_exchange, route_stake)]
             opened_any = False
 
-            for route_exchange, route_stake in routes:
-                # 同币同所已有持仓 → 跳过这一条路由（但其他路由可继续）
-                if (c.symbol, route_exchange) in already_open_pairs:
-                    logger.warning(
-                        f"  ⏩ 跳过 {c.symbol}@{route_exchange}：锁内发现已有持仓"
-                    )
-                    continue
+            # 构建所有需要执行的任务：(account_id, route_exchange, route_stake)
+            execution_tasks = []
+            for account in all_accounts:
+                acc_id = account['id']
+                for route_exchange, route_stake in routes:
+                    # 同币同所同账户已有持仓 → 跳过
+                    if (c.symbol, route_exchange, acc_id) in already_open_triples:
+                        logger.warning(
+                            f"  ⏩ 跳过 {c.symbol}@{route_exchange}@{acc_id}：锁内发现已有持仓"
+                        )
+                        continue
+                    execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
 
-                # 为每条路由生成独立的 client_order_id + 下真单（影子模式内部直接成功）
-                from live_executor import execute_open, make_client_order_id
-                coid = make_client_order_id('sho', c.symbol, route_exchange)
+            if not execution_tasks:
+                c.triggered = False
+                continue
 
-                if route_exchange == 'shadow':
-                    # 纯影子交易：不调 API，直接用 ticker 价记账
-                    live_result = {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""}
-                else:
-                    live_result = execute_open(
-                        c.symbol, 'SHORT', route_stake,
-                        exchange_name=route_exchange,
-                        leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
-                        client_order_id=coid,
-                    )
+            # ── 并行执行所有账户的下单（毫秒级同步）──
+            from live_executor import execute_open, make_client_order_id
 
+            def _execute_one(task_args):
+                """单个账户单个路由的下单任务"""
+                acc_id, acc_name, r_exchange, r_stake = task_args
+                coid = make_client_order_id('sho', c.symbol, r_exchange)
+
+                if r_exchange == 'shadow':
+                    return (acc_id, acc_name, r_exchange, r_stake,
+                            {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""})
+
+                result = execute_open(
+                    c.symbol, 'SHORT', r_stake,
+                    exchange_name=r_exchange,
+                    leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
+                    client_order_id=coid,
+                    account_id=acc_id if acc_id else None,
+                )
+                return (acc_id, acc_name, r_exchange, r_stake, result)
+
+            # 使用 ThreadPoolExecutor 实现毫秒级并行
+            # max_workers = 账户数 × 路由数，确保所有下单同时发出
+            with ThreadPoolExecutor(max_workers=max(len(execution_tasks), 4)) as executor:
+                futures = [executor.submit(_execute_one, task) for task in execution_tasks]
+                results = [f.result() for f in as_completed(futures)]
+
+            # 处理执行结果
+            for acc_id, acc_name, route_exchange, route_stake, live_result in results:
                 if not live_result["success"]:
                     logger.error(
-                        f"  ❌ {route_exchange} 下单失败 {c.symbol}: {live_result['error']}"
+                        f"  ❌ [{acc_name}] {route_exchange} 下单失败 {c.symbol}: {live_result['error']}"
                     )
                     send_tg(
-                        f"❌ <b>[{route_exchange.upper()}] 实盘下单失败</b>\n\n"
+                        f"❌ <b>[{route_exchange.upper()}][{acc_name}] 实盘下单失败</b>\n\n"
                         f"币种：{c.symbol}\n"
                         f"原因：{live_result['error']}\n"
                         f"本次跳过，不记录风控扣账。"
@@ -746,6 +781,8 @@ def check_candidates():
                     exchange=route_exchange,
                     live_order_id=live_result.get("order_id") or None,
                 )
+                # 覆盖 trade 的 account_id（create_short 默认用 active_account）
+                trade.account_id = acc_id
                 opened_trades.append((trade, entry_price, route_exchange, route_stake))
                 trades_raw.append(trade.to_dict())
                 opened_any = True

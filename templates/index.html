@@ -16,6 +16,17 @@
 {% endblock %}
 
 {% block content %}
+<!-- Multi-Account Overview (Global View) -->
+<div class="card" style="margin-bottom:16px;" id="accounts-overview-card">
+    <div class="section-title">
+        <i data-lucide="users"></i> Accounts Overview
+        <span class="sync-status" id="sync-status"><span class="sync-dot"></span> Live</span>
+    </div>
+    <div class="account-overview" id="accounts-overview">
+        <!-- Populated by JS -->
+    </div>
+</div>
+
 <!-- Metric Cards -->
 <div class="grid grid-4">
     <div class="card metric-card">
@@ -319,7 +330,78 @@ document.addEventListener('DOMContentLoaded', () => {
             PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
         }
     });
+    // Fetch multi-account overview
+    fetchAccountsOverview();
+    setInterval(fetchAccountsOverview, 15000);
     lucide.createIcons();
 });
+
+// ── Multi-Account Overview ──
+async function fetchAccountsOverview() {
+    try {
+        const resp = await fetch('/api/accounts/overview');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderAccountsOverview(data);
+    } catch (e) {
+        console.warn('[Accounts] fetch failed:', e);
+    }
+}
+
+function renderAccountsOverview(data) {
+    const container = document.getElementById('accounts-overview');
+    if (!container || !data.accounts || data.accounts.length === 0) {
+        const card = document.getElementById('accounts-overview-card');
+        if (card) card.style.display = 'none';
+        return;
+    }
+    // Only show if >1 account
+    if (data.accounts.length <= 1) {
+        const card = document.getElementById('accounts-overview-card');
+        if (card) card.style.display = 'none';
+        return;
+    }
+    const card = document.getElementById('accounts-overview-card');
+    if (card) card.style.display = '';
+
+    const colorClasses = ['acc-0', 'acc-1', 'acc-2'];
+    container.innerHTML = data.accounts.map((acc, idx) => {
+        const statusClass = acc.is_live ? 'live' : 'shadow';
+        const statusText = acc.is_live ? 'LIVE' : 'SHADOW';
+        const pnlClass = acc.total_pnl >= 0 ? 'green' : 'red';
+        const todayClass = acc.today_pnl >= 0 ? 'green' : 'red';
+        const activeClass = acc.is_active ? ' active' : '';
+        return `
+        <div class="account-card${activeClass}">
+            <div class="account-card-header">
+                <div>
+                    <div class="account-card-name">
+                        <span class="account-badge ${colorClasses[idx % 3]}">${acc.name.charAt(0)}</span>
+                        ${acc.name}
+                    </div>
+                    <div class="account-card-id">${acc.id}</div>
+                </div>
+                <span class="account-card-status ${statusClass}">
+                    <span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}
+                </span>
+            </div>
+            <div class="account-card-metrics">
+                <div class="account-metric">
+                    <div class="account-metric-label">Open</div>
+                    <div class="account-metric-value">${acc.open_count}</div>
+                </div>
+                <div class="account-metric">
+                    <div class="account-metric-label">Today</div>
+                    <div class="account-metric-value ${todayClass}">${acc.today_pnl >= 0 ? '+' : ''}${acc.today_pnl.toFixed(2)}U</div>
+                </div>
+                <div class="account-metric">
+                    <div class="account-metric-label">Total</div>
+                    <div class="account-metric-value ${pnlClass}">${acc.total_pnl >= 0 ? '+' : ''}${acc.total_pnl.toFixed(2)}U</div>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+    lucide.createIcons();
+}
 </script>
 {% endblock %}
