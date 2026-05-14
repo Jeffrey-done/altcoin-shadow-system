@@ -10,18 +10,13 @@ Telegram Bot 交互指令模块
   /candidates - 候选池（等待触发的币）
   /risk       - 风控状态详情
   /compare    - 影子 vs 实盘盈亏对比
-  /diagnose   - 扫描器诊断（BTC过滤/候选池/风控/冷却/最近交易）
-  /diagmarket - 市场条件预检（慢，需网络）
   /help       - 显示所有可用指令
 """
 
-import contextlib
-import html as _html
-import io
 import os
 import sys
-import threading
 import time
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,22 +44,12 @@ def cmd_help() -> str:
     """显示帮助"""
     return (
         "🤖 <b>影子做空系统 - 可用指令</b>\n\n"
-        "<b>📊 状态查询</b>\n"
         "/status - 当前持仓概览 + 风控状态\n"
         "/balance - 账户余额、今日/累计盈亏\n"
         "/positions - 所有持仓详情\n"
         "/candidates - 候选池（等待触发）\n"
         "/risk - 风控状态详情\n"
-        "/compare - 影子 vs 实盘盈亏对比\n\n"
-        "<b>🔍 扫描器诊断</b>\n"
-        "/diagnose - 综合诊断（不含市场预检）\n"
-        "/diag_btc - BTC 趋势过滤器状态\n"
-        "/diag_candidates - 候选池详情\n"
-        "/diag_risk - 风控状态详情\n"
-        "/diag_cooldowns - 冷却期检查\n"
-        "/diag_trades - 最近交易记录\n"
-        "/diag_market - 市场条件预检（慢，需网络）\n"
-        "/diag_params - 策略参数摘要\n\n"
+        "/compare - 影子 vs 实盘盈亏对比\n"
         "/help - 显示本帮助\n"
     )
 
@@ -370,97 +355,6 @@ def cmd_compare() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  扫描器诊断指令（封装 diagnose.py 的 check_* 函数）
-# ══════════════════════════════════════════════════════════════════
-
-def _capture_diag(func, *args, **kwargs) -> str:
-    """
-    运行 diagnose.py 中的某个 check_*() 函数，并捕获其 stdout。
-    返回 HTML 转义后的字符串，外层用 <pre> 包裹便于在 TG 中等宽呈现。
-    """
-    buf = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(buf):
-            func(*args, **kwargs)
-    except Exception as e:
-        logger.error(f"诊断函数 {getattr(func, '__name__', func)} 异常: {e}")
-        buf.write(f"\n❌ 诊断异常: {e}\n")
-    text = buf.getvalue().strip() or "(无输出)"
-    return f"<pre>{_html.escape(text)}</pre>"
-
-
-def cmd_diag_btc() -> str:
-    import diagnose
-    return "🔍 <b>BTC 趋势过滤器</b>\n" + _capture_diag(diagnose.check_btc_filter)
-
-
-def cmd_diag_candidates() -> str:
-    import diagnose
-    return "🔍 <b>候选池状态</b>\n" + _capture_diag(diagnose.check_candidates)
-
-
-def cmd_diag_risk() -> str:
-    import diagnose
-    return "🔍 <b>风控状态</b>\n" + _capture_diag(diagnose.check_risk_state)
-
-
-def cmd_diag_cooldowns() -> str:
-    import diagnose
-    return "🔍 <b>冷却期检查</b>\n" + _capture_diag(diagnose.check_cooldowns)
-
-
-def cmd_diag_trades() -> str:
-    import diagnose
-    return "🔍 <b>最近交易记录</b>\n" + _capture_diag(diagnose.check_recent_trades)
-
-
-def cmd_diag_market() -> str:
-    import diagnose
-    return "🔍 <b>市场条件预检</b>\n" + _capture_diag(diagnose.check_market_conditions)
-
-
-def cmd_diag_params() -> str:
-    import diagnose
-    return "🔍 <b>策略参数</b>\n" + _capture_diag(diagnose.check_scheduler)
-
-
-def cmd_diagnose() -> str:
-    """综合诊断：跑所有不需要网络的 check_*"""
-    import diagnose
-    from common import utcnow, today_str
-
-    buf = io.StringIO()
-    header = (
-        f"🔍 扫描器诊断报告\n"
-        f"   时间: {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"   当日: {today_str()}\n"
-    )
-    try:
-        with contextlib.redirect_stdout(buf):
-            print(header)
-            diagnose.check_btc_filter()
-            diagnose.check_candidates()
-            diagnose.check_risk_state()
-            diagnose.check_cooldowns()
-            diagnose.check_recent_trades()
-            diagnose.check_scheduler()
-    except Exception as e:
-        logger.error(f"综合诊断异常: {e}")
-        buf.write(f"\n❌ 诊断异常: {e}\n")
-
-    tail = (
-        "\n💡 排查优先级:\n"
-        "   1. BTC过滤是否触发 → 等BTC企稳即可\n"
-        "   2. 候选池是否为空 → 市场太冷/条件太严\n"
-        "   3. 风控是否暂停 → 检查连亏/日亏损上限\n"
-        "   4. 冷却期 → 等24h自动解除\n"
-        "   5. 市场条件 → 用 /diag_market 查看\n"
-    )
-    text = (buf.getvalue() + tail).strip()
-    return f"<pre>{_html.escape(text)}</pre>"
-
-
-# ══════════════════════════════════════════════════════════════════
 #  指令路由
 # ══════════════════════════════════════════════════════════════════
 
@@ -471,16 +365,6 @@ COMMANDS = {
     '/candidates': cmd_candidates,
     '/risk': cmd_risk,
     '/compare': cmd_compare,
-    # 诊断
-    '/diagnose': cmd_diagnose,
-    '/diag_btc': cmd_diag_btc,
-    '/diag_candidates': cmd_diag_candidates,
-    '/diag_risk': cmd_diag_risk,
-    '/diag_cooldowns': cmd_diag_cooldowns,
-    '/diag_trades': cmd_diag_trades,
-    '/diag_market': cmd_diag_market,
-    '/diag_params': cmd_diag_params,
-    # 帮助
     '/help': cmd_help,
     '/start': cmd_help,  # TG bot 首次 /start 也显示帮助
 }
@@ -503,61 +387,20 @@ def handle_command(text: str) -> str:
 #  Telegram API 轮询
 # ══════════════════════════════════════════════════════════════════
 
-_TG_MAX_LEN = 4000  # Telegram 单条消息上限 4096，留余量给标签
-
-
-def _split_for_tg(text: str) -> list:
-    """
-    将长消息按 Telegram 上限分片。
-    若整段被 <pre>...</pre> 包裹（诊断输出），则在分片之间补全 <pre> 关闭/重开，
-    避免 HTML 解析失败。
-    """
-    if len(text) <= _TG_MAX_LEN:
-        return [text]
-
-    is_pre = text.startswith("<pre>") and text.endswith("</pre>")
-    if is_pre:
-        inner = text[len("<pre>"): -len("</pre>")]
-        # 按行尽量切分以保持可读性
-        chunks, buf = [], ""
-        for line in inner.splitlines(keepends=True):
-            # 单行就超长的极端情况，强制硬切
-            if len(line) > _TG_MAX_LEN - 20:
-                if buf:
-                    chunks.append(buf)
-                    buf = ""
-                for i in range(0, len(line), _TG_MAX_LEN - 20):
-                    chunks.append(line[i:i + (_TG_MAX_LEN - 20)])
-                continue
-            if len(buf) + len(line) > _TG_MAX_LEN - 20:
-                chunks.append(buf)
-                buf = line
-            else:
-                buf += line
-        if buf:
-            chunks.append(buf)
-        return [f"<pre>{c}</pre>" for c in chunks if c]
-
-    # 非 <pre> 文本：按字符硬切
-    return [text[i:i + _TG_MAX_LEN] for i in range(0, len(text), _TG_MAX_LEN)]
-
-
 def _send_reply(chat_id: str, text: str):
-    """发送回复消息（自动分片以应对长诊断输出）"""
-    for part in _split_for_tg(text):
-        try:
-            _requests.post(
-                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": part,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=10,
-            )
-        except Exception as e:
-            logger.error(f"回复消息失败: {e}")
+    """发送回复消息"""
+    try:
+        _requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"回复消息失败: {e}")
 
 
 def _poll_updates():
