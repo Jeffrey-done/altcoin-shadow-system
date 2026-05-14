@@ -10,18 +10,13 @@ Telegram Bot 交互指令模块
   /candidates - 候选池（等待触发的币）
   /risk       - 风控状态详情
   /compare    - 影子 vs 实盘盈亏对比
-  /diagnose   - 扫描器诊断（BTC过滤/候选池/风控/冷却/最近交易）
-  /diagmarket - 市场条件预检（慢，需网络）
   /help       - 显示所有可用指令
 """
 
-import contextlib
-import html as _html
-import io
 import os
 import sys
-import threading
 import time
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,7 +29,6 @@ from common import (
     get_dynamic_balance, get_compound_stake,
     get_current_account_id, filter_trades_by_account,
     TG_BOT_TOKEN, TG_CHAT_ID,
-    tg_request,
 )
 
 logger = setup_logger("tg_bot")
@@ -50,22 +44,12 @@ def cmd_help() -> str:
     """显示帮助"""
     return (
         "🤖 <b>影子做空系统 - 可用指令</b>\n\n"
-        "<b>📊 状态查询</b>\n"
         "/status - 当前持仓概览 + 风控状态\n"
         "/balance - 账户余额、今日/累计盈亏\n"
         "/positions - 所有持仓详情\n"
         "/candidates - 候选池（等待触发）\n"
         "/risk - 风控状态详情\n"
-        "/compare - 影子 vs 实盘盈亏对比\n\n"
-        "<b>🔍 扫描器诊断</b>\n"
-        "/diagnose - 综合诊断（仅本地数据，秒回）\n"
-        "/diag_btc - BTC 趋势过滤器（需网络）\n"
-        "/diag_candidates - 候选池详情\n"
-        "/diag_risk - 风控状态详情\n"
-        "/diag_cooldowns - 冷却期检查\n"
-        "/diag_trades - 最近交易记录\n"
-        "/diag_market - 市场条件预检（慢，需网络）\n"
-        "/diag_params - 策略参数摘要\n\n"
+        "/compare - 影子 vs 实盘盈亏对比\n"
         "/help - 显示本帮助\n"
     )
 
@@ -371,100 +355,6 @@ def cmd_compare() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  扫描器诊断指令（封装 diagnose.py 的 check_* 函数）
-# ══════════════════════════════════════════════════════════════════
-
-def _capture_diag(func, *args, **kwargs) -> str:
-    """
-    运行 diagnose.py 中的某个 check_*() 函数，并捕获其 stdout。
-    返回 HTML 转义后的字符串，外层用 <pre> 包裹便于在 TG 中等宽呈现。
-    """
-    buf = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(buf):
-            func(*args, **kwargs)
-    except Exception as e:
-        logger.error(f"诊断函数 {getattr(func, '__name__', func)} 异常: {e}")
-        buf.write(f"\n❌ 诊断异常: {e}\n")
-    text = buf.getvalue().strip() or "(无输出)"
-    return f"<pre>{_html.escape(text)}</pre>"
-
-
-def cmd_diag_btc() -> str:
-    import diagnose
-    return "🔍 <b>BTC 趋势过滤器</b>\n" + _capture_diag(diagnose.check_btc_filter)
-
-
-def cmd_diag_candidates() -> str:
-    import diagnose
-    return "🔍 <b>候选池状态</b>\n" + _capture_diag(diagnose.check_candidates)
-
-
-def cmd_diag_risk() -> str:
-    import diagnose
-    return "🔍 <b>风控状态</b>\n" + _capture_diag(diagnose.check_risk_state)
-
-
-def cmd_diag_cooldowns() -> str:
-    import diagnose
-    return "🔍 <b>冷却期检查</b>\n" + _capture_diag(diagnose.check_cooldowns)
-
-
-def cmd_diag_trades() -> str:
-    import diagnose
-    return "🔍 <b>最近交易记录</b>\n" + _capture_diag(diagnose.check_recent_trades)
-
-
-def cmd_diag_market() -> str:
-    import diagnose
-    return "🔍 <b>市场条件预检</b>\n" + _capture_diag(diagnose.check_market_conditions)
-
-
-def cmd_diag_params() -> str:
-    import diagnose
-    return "🔍 <b>策略参数</b>\n" + _capture_diag(diagnose.check_scheduler)
-
-
-def cmd_diagnose() -> str:
-    """
-    综合诊断：只跑纯本地（不打网络）的 check_*。
-    BTC 过滤器和市场预检属于网络调用，单独通过 /diag_btc 和 /diag_market 触发。
-    """
-    import diagnose
-    from common import utcnow, today_str
-
-    buf = io.StringIO()
-    header = (
-        f"🔍 扫描器诊断报告（本地数据）\n"
-        f"   时间: {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"   当日: {today_str()}\n"
-        f"   提示: BTC过滤用 /diag_btc，市场预检用 /diag_market\n"
-    )
-    try:
-        with contextlib.redirect_stdout(buf):
-            print(header)
-            diagnose.check_candidates()
-            diagnose.check_risk_state()
-            diagnose.check_cooldowns()
-            diagnose.check_recent_trades()
-            diagnose.check_scheduler()
-    except Exception as e:
-        logger.error(f"综合诊断异常: {e}")
-        buf.write(f"\n❌ 诊断异常: {e}\n")
-
-    tail = (
-        "\n💡 排查优先级:\n"
-        "   1. BTC过滤是否触发 → /diag_btc（需网络）\n"
-        "   2. 候选池是否为空 → 市场太冷/条件太严\n"
-        "   3. 风控是否暂停 → 检查连亏/日亏损上限\n"
-        "   4. 冷却期 → 等24h自动解除\n"
-        "   5. 市场条件 → /diag_market（慢，需网络）\n"
-    )
-    text = (buf.getvalue() + tail).strip()
-    return f"<pre>{_html.escape(text)}</pre>"
-
-
-# ══════════════════════════════════════════════════════════════════
 #  指令路由
 # ══════════════════════════════════════════════════════════════════
 
@@ -475,16 +365,6 @@ COMMANDS = {
     '/candidates': cmd_candidates,
     '/risk': cmd_risk,
     '/compare': cmd_compare,
-    # 诊断
-    '/diagnose': cmd_diagnose,
-    '/diag_btc': cmd_diag_btc,
-    '/diag_candidates': cmd_diag_candidates,
-    '/diag_risk': cmd_diag_risk,
-    '/diag_cooldowns': cmd_diag_cooldowns,
-    '/diag_trades': cmd_diag_trades,
-    '/diag_market': cmd_diag_market,
-    '/diag_params': cmd_diag_params,
-    # 帮助
     '/help': cmd_help,
     '/start': cmd_help,  # TG bot 首次 /start 也显示帮助
 }
@@ -507,93 +387,51 @@ def handle_command(text: str) -> str:
 #  Telegram API 轮询
 # ══════════════════════════════════════════════════════════════════
 
-_TG_MAX_LEN = 4000  # Telegram 单条消息上限 4096，留余量给标签
-
-
-def _split_for_tg(text: str) -> list:
-    """
-    将长消息按 Telegram 上限分片。
-    若整段被 <pre>...</pre> 包裹（诊断输出），则在分片之间补全 <pre> 关闭/重开，
-    避免 HTML 解析失败。
-    """
-    if len(text) <= _TG_MAX_LEN:
-        return [text]
-
-    is_pre = text.startswith("<pre>") and text.endswith("</pre>")
-    if is_pre:
-        inner = text[len("<pre>"): -len("</pre>")]
-        # 按行尽量切分以保持可读性
-        chunks, buf = [], ""
-        for line in inner.splitlines(keepends=True):
-            # 单行就超长的极端情况，强制硬切
-            if len(line) > _TG_MAX_LEN - 20:
-                if buf:
-                    chunks.append(buf)
-                    buf = ""
-                for i in range(0, len(line), _TG_MAX_LEN - 20):
-                    chunks.append(line[i:i + (_TG_MAX_LEN - 20)])
-                continue
-            if len(buf) + len(line) > _TG_MAX_LEN - 20:
-                chunks.append(buf)
-                buf = line
-            else:
-                buf += line
-        if buf:
-            chunks.append(buf)
-        return [f"<pre>{c}</pre>" for c in chunks if c]
-
-    # 非 <pre> 文本：按字符硬切
-    return [text[i:i + _TG_MAX_LEN] for i in range(0, len(text), _TG_MAX_LEN)]
-
-
 def _send_reply(chat_id: str, text: str):
-    """发送回复消息（自动分片以应对长诊断输出，复用 common.tg_request 的代理+重试）"""
-    for part in _split_for_tg(text):
-        resp = tg_request(
-            "POST",
+    """发送回复消息"""
+    try:
+        _requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": part,
+                "text": text,
                 "parse_mode": "HTML",
-                "disable_web_page_preview": True,
             },
+            timeout=10,
         )
-        if resp is None or resp.status_code != 200:
-            # tg_request 内部已经做过失败日志降噪，这里不再额外打日志
-            break  # 后续分片也大概率发不出去，省一次重试
+    except Exception as e:
+        logger.error(f"回复消息失败: {e}")
 
 
 def _poll_updates():
-    """
-    拉取新消息（长轮询 30s）。
-    使用 tg_request 自带的代理 + 指数退避，避免在网络抖动时疯狂重试刷日志。
-    """
-    resp = tg_request(
-        "GET",
-        f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates",
-        params={
-            "offset": _last_update_id + 1,
-            "timeout": 30,  # Telegram 长轮询 30 秒
-            "allowed_updates": '["message"]',
-        },
-        base_timeout=35,  # 客户端 timeout 比服务端长 5s
-        max_retries=1,    # poll 失败就外层退避，不在这里重试
-    )
-    if resp is None or resp.status_code != 200:
-        return None  # None 表示失败，让主循环触发退避
+    """拉取新消息"""
     try:
+        resp = _requests.get(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates",
+            params={
+                "offset": _last_update_id + 1,
+                "timeout": 30,  # 长轮询 30 秒
+                "allowed_updates": '["message"]',
+            },
+            timeout=35,
+        )
+        if resp.status_code != 200:
+            return []
+
         data = resp.json()
         if not data.get("ok"):
-            return None
+            return []
+
         return data.get("result", [])
+    except _requests.exceptions.Timeout:
+        return []  # 长轮询超时是正常的
     except Exception as e:
-        logger.error(f"解析 getUpdates 响应失败: {e}")
-        return None
+        logger.error(f"拉取消息异常: {e}")
+        return []
 
 
 def run_bot():
-    """TG Bot 主循环（阻塞式），网络抖动时指数退避，避免日志爆炸。"""
+    """TG Bot 主循环（阻塞式）"""
     global _last_update_id
 
     if not TG_BOT_TOKEN:
@@ -602,27 +440,9 @@ def run_bot():
 
     logger.info("🤖 TG Bot 已启动，等待指令...")
 
-    poll_failures = 0  # 连续失败次数
-
     while True:
         try:
             updates = _poll_updates()
-
-            if updates is None:
-                # 网络失败：指数退避 5s → 30s → 60s → 60s ...
-                poll_failures += 1
-                backoff = min(5 * (2 ** (poll_failures - 1)), 60)
-                if poll_failures in (1, 3, 10, 30):
-                    logger.warning(
-                        f"getUpdates 连续失败 {poll_failures} 次，{backoff}s 后重试"
-                        f"（请确认 .env 中是否需要配置 TG_PROXY）"
-                    )
-                time.sleep(backoff)
-                continue
-
-            if poll_failures > 0:
-                logger.info(f"🟢 TG 网络已恢复（之前失败 {poll_failures} 次）")
-                poll_failures = 0
 
             for update in updates:
                 _last_update_id = update.get("update_id", _last_update_id)
@@ -642,36 +462,15 @@ def run_bot():
                 if not text.startswith('/'):
                     continue
 
-                # 处理指令（在 worker 线程里跑，30s 超时；这样某条慢指令
-                # 不会阻塞 polling 线程，后续指令可以继续接收和处理）
-                _dispatch_command(chat_id, text)
+                # 处理指令
+                reply = handle_command(text)
+                if reply:
+                    _send_reply(chat_id, reply)
+                    logger.info(f"处理指令: {text.split()[0]} → 已回复")
 
         except Exception as e:
             logger.error(f"Bot 循环异常: {e}")
             time.sleep(5)
-
-
-def _dispatch_command(chat_id: str, text: str):
-    """把一条指令派发到 worker 线程并发处理，超时 30s 自动放弃。"""
-    cmd_short = text.split()[0]
-
-    def _worker():
-        start = time.time()
-        try:
-            reply = handle_command(text)
-        except Exception as e:
-            logger.error(f"worker 异常 ({cmd_short}): {e}")
-            reply = f"❌ 指令执行失败: {e}"
-        elapsed = time.time() - start
-        if reply:
-            _send_reply(chat_id, reply)
-            logger.info(f"处理指令: {cmd_short} → 已回复（{elapsed:.1f}s）")
-
-    t = threading.Thread(target=_worker, daemon=True, name=f"tg-cmd-{cmd_short}")
-    t.start()
-    # 注意：不 join。worker 自己跑完会调用 _send_reply。
-    # 上限保护：如果同时有大量指令排队，限制并发线程数，避免 OOM。
-    # 当前看每条指令都很轻（最慢的 /diag_market 大概 5-15s），不需要队列。
 
 
 def start_bot_thread():
