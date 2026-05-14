@@ -45,83 +45,6 @@ def load_env():
 TG_BOT_TOKEN, TG_CHAT_ID = load_env()
 
 
-# ── Telegram 网络层（代理 + 重试 + 退避） ──────────────────────────
-# VPS 到 api.telegram.org 不稳定时，可以通过以下方式配置代理：
-#   .env 里设置 TG_PROXY=socks5h://127.0.0.1:1080
-#                TG_PROXY=http://127.0.0.1:7890
-#   或标准 HTTPS_PROXY / HTTP_PROXY 环境变量也会被识别（TG_PROXY 优先级最高）
-def get_tg_proxies():
-    """
-    返回 requests 用的 proxies 字典；未配置时返回 None。
-    优先级: TG_PROXY > HTTPS_PROXY > HTTP_PROXY
-    """
-    proxy = (
-        os.environ.get('TG_PROXY')
-        or os.environ.get('HTTPS_PROXY')
-        or os.environ.get('https_proxy')
-        or os.environ.get('HTTP_PROXY')
-        or os.environ.get('http_proxy')
-    )
-    if not proxy:
-        return None
-    return {"http": proxy, "https": proxy}
-
-
-# 失败计数：用于日志降噪。连续失败时只在第 1、5、25、125 次打 WARNING，避免日志爆炸。
-_tg_consecutive_failures = 0
-
-
-def _tg_should_log_failure() -> bool:
-    """连续失败时只在 1/5/25/125 次打 WARNING，防止刷屏。"""
-    n = _tg_consecutive_failures
-    return n in (1, 5, 25, 125) or (n > 125 and n % 500 == 0)
-
-
-def tg_request(method: str, url: str, *, max_retries: int = 3,
-               base_timeout: int = 10, **kwargs):
-    """
-    统一的 Telegram HTTP 请求函数。
-    - 自动注入代理（TG_PROXY / HTTPS_PROXY）
-    - 指数退避重试：1s → 2s → 4s
-    - 网络错误（ConnectionError / Timeout）会重试，业务错误（4xx/5xx）直接返回
-    返回 requests.Response 或 None（彻底失败时）。
-    """
-    global _tg_consecutive_failures
-    proxies = get_tg_proxies()
-    last_err = None
-
-    for attempt in range(max_retries):
-        try:
-            resp = requests.request(
-                method, url,
-                proxies=proxies,
-                timeout=base_timeout * (1 + attempt),  # 10s → 20s → 30s
-                **kwargs,
-            )
-            _tg_consecutive_failures = 0  # 成功就清零
-            return resp
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError) as e:
-            last_err = e
-            if attempt < max_retries - 1:
-                # 指数退避：1s, 2s, 4s
-                import time as _time
-                _time.sleep(2 ** attempt)
-        except Exception as e:
-            last_err = e
-            break  # 其它异常不重试
-
-    _tg_consecutive_failures += 1
-    if _tg_should_log_failure():
-        logging.warning(
-            f"TG 网络请求失败（连续第 {_tg_consecutive_failures} 次）: "
-            f"{type(last_err).__name__}: {last_err}"
-            f"{' [已配置代理]' if proxies else ' [未配置代理，建议设置 TG_PROXY]'}"
-        )
-    return None
-
-
 # ── 日志配置 ─────────────────────────────────────────────────────
 def setup_logger(name: str) -> logging.Logger:
     """统一日志格式，支持 LOG_LEVEL 环境变量"""
@@ -139,21 +62,23 @@ def setup_logger(name: str) -> logging.Logger:
 
 # ── TG 推送 ──────────────────────────────────────────────────────
 def send_tg(msg: str) -> bool:
-    """发送 Telegram 消息，返回是否成功。失败时不抛异常（使用 tg_request 内部已重试 + 降噪日志）。"""
+    """发送 Telegram 消息，返回是否成功"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         logging.warning("TG 配置缺失，跳过推送")
         return False
-    resp = tg_request(
-        "POST",
-        f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-        json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-    )
-    if resp is None:
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logging.warning(f"TG 推送返回非 200: {resp.status_code} {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"TG 推送失败: {e}")
         return False
-    if resp.status_code != 200:
-        logging.warning(f"TG 推送返回非 200: {resp.status_code} {resp.text[:200]}")
-        return False
-    return True
 
 
 # ── 原子写 JSON ──────────────────────────────────────────────────

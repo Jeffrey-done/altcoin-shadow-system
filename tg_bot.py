@@ -34,7 +34,6 @@ from common import (
     get_dynamic_balance, get_compound_stake,
     get_current_account_id, filter_trades_by_account,
     TG_BOT_TOKEN, TG_CHAT_ID,
-    tg_request,
 )
 
 logger = setup_logger("tg_bot")
@@ -547,53 +546,52 @@ def _split_for_tg(text: str) -> list:
 
 
 def _send_reply(chat_id: str, text: str):
-    """发送回复消息（自动分片以应对长诊断输出，复用 common.tg_request 的代理+重试）"""
+    """发送回复消息（自动分片以应对长诊断输出）"""
     for part in _split_for_tg(text):
-        resp = tg_request(
-            "POST",
-            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": part,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-        )
-        if resp is None or resp.status_code != 200:
-            # tg_request 内部已经做过失败日志降噪，这里不再额外打日志
-            break  # 后续分片也大概率发不出去，省一次重试
+        try:
+            _requests.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": part,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
+            )
+        except Exception as e:
+            logger.error(f"回复消息失败: {e}")
 
 
 def _poll_updates():
-    """
-    拉取新消息（长轮询 30s）。
-    使用 tg_request 自带的代理 + 指数退避，避免在网络抖动时疯狂重试刷日志。
-    """
-    resp = tg_request(
-        "GET",
-        f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates",
-        params={
-            "offset": _last_update_id + 1,
-            "timeout": 30,  # Telegram 长轮询 30 秒
-            "allowed_updates": '["message"]',
-        },
-        base_timeout=35,  # 客户端 timeout 比服务端长 5s
-        max_retries=1,    # poll 失败就外层退避，不在这里重试
-    )
-    if resp is None or resp.status_code != 200:
-        return None  # None 表示失败，让主循环触发退避
+    """拉取新消息"""
     try:
+        resp = _requests.get(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates",
+            params={
+                "offset": _last_update_id + 1,
+                "timeout": 30,  # 长轮询 30 秒
+                "allowed_updates": '["message"]',
+            },
+            timeout=35,
+        )
+        if resp.status_code != 200:
+            return []
+
         data = resp.json()
         if not data.get("ok"):
-            return None
+            return []
+
         return data.get("result", [])
+    except _requests.exceptions.Timeout:
+        return []  # 长轮询超时是正常的
     except Exception as e:
-        logger.error(f"解析 getUpdates 响应失败: {e}")
-        return None
+        logger.error(f"拉取消息异常: {e}")
+        return []
 
 
 def run_bot():
-    """TG Bot 主循环（阻塞式），网络抖动时指数退避，避免日志爆炸。"""
+    """TG Bot 主循环（阻塞式）"""
     global _last_update_id
 
     if not TG_BOT_TOKEN:
@@ -602,27 +600,9 @@ def run_bot():
 
     logger.info("🤖 TG Bot 已启动，等待指令...")
 
-    poll_failures = 0  # 连续失败次数
-
     while True:
         try:
             updates = _poll_updates()
-
-            if updates is None:
-                # 网络失败：指数退避 5s → 30s → 60s → 60s ...
-                poll_failures += 1
-                backoff = min(5 * (2 ** (poll_failures - 1)), 60)
-                if poll_failures in (1, 3, 10, 30):
-                    logger.warning(
-                        f"getUpdates 连续失败 {poll_failures} 次，{backoff}s 后重试"
-                        f"（请确认 .env 中是否需要配置 TG_PROXY）"
-                    )
-                time.sleep(backoff)
-                continue
-
-            if poll_failures > 0:
-                logger.info(f"🟢 TG 网络已恢复（之前失败 {poll_failures} 次）")
-                poll_failures = 0
 
             for update in updates:
                 _last_update_id = update.get("update_id", _last_update_id)
