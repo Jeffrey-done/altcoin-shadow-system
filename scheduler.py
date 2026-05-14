@@ -3,6 +3,12 @@
 定时任务调度器 — 替代 crontab
 在 Docker 容器内按计划执行所有策略模块。
 
+v4.2 改进（提升信号响应速度）：
+  - check_candidates: 每小时 → 每 15 分钟（入场延迟从最差59分降到14分）
+  - tracker_check: 每小时 → 每 10 分钟（止盈止损响应加快6倍）
+  - scan_daily: 保持每小时（日线 RSI 变化慢，不需要更频繁）
+  - API 调用量整体不增（候选池通常 0~6 币，15分钟一次 ≈ 24次调用，远低于限制）
+
 v4.1 改进（防止任务漏跑）：
   - 每个任务用"上次执行时间 + 间隔"判断，而不是精确到分钟的等值比较
   - 即使主循环被 GC/IO 卡住跨过了整点，下一轮仍然会补跑
@@ -172,6 +178,18 @@ def _due_for_hourly(name: str, now: datetime, minute_offset: int) -> bool:
     return last is None or last < target
 
 
+def _due_for_minutes(name: str, now: datetime, interval_minutes: int) -> bool:
+    """
+    判断"每 N 分钟"执行一次的任务是否该跑。
+    基于上次执行时间 + 间隔判断，不依赖整点对齐。
+    """
+    last = _last_run.get(name)
+    if last is None:
+        return True
+    elapsed = (now - last).total_seconds()
+    return elapsed >= interval_minutes * 60
+
+
 def _due_for_interval(name: str, now: datetime, interval_hours: int, minute_offset: int) -> bool:
     """
     判断"每 N 小时（在 hour % N == 0 那一小时的第 minute_offset 分）执行"的任务是否该跑。
@@ -208,7 +226,8 @@ def _mark_done(name: str, now: datetime):
 
 def main_loop():
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
-    logger.info("=== 调度器启动 v4.1 ===")
+    logger.info("=== 调度器启动 v4.2 ===")
+    logger.info("  频率: scan_daily=1h | check_candidates=15min | tracker=10min")
 
     # 启动时先做 in-flight journal 恢复：反查交易所 pending clOrdId，
     # 发现"交易所已成交但 trades.json 没记录"的幽灵订单立即告警。
@@ -290,15 +309,15 @@ def main_loop():
             )
             _mark_done('scan_daily', now)
 
-        # ── 每小时 :15 止盈止损检查 ──
-        if _due_for_hourly('tracker_check', now, 15):
+        # ── 每 10 分钟止盈止损检查（加快止损响应速度）──
+        if _due_for_minutes('tracker_check', now, 10):
             # 止盈检查不耗时，保持线程模式
             from altcoin_tracker import run as tracker_run
             run_task("止盈检查", lambda: tracker_run(check_only=True))
             _mark_done('tracker_check', now)
 
-        # ── 每小时 :30 候选确认 ──
-        if _due_for_hourly('check_candidates', now, 30):
+        # ── 每 15 分钟候选确认（加快入场响应，最差延迟从59分钟降到14分钟）──
+        if _due_for_minutes('check_candidates', now, 15):
             # M10: 候选确认可能触发多所并行开仓，长耗时任务用子进程
             run_task(
                 "候选确认", None,
