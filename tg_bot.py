@@ -57,8 +57,8 @@ def cmd_help() -> str:
         "/risk - 风控状态详情\n"
         "/compare - 影子 vs 实盘盈亏对比\n\n"
         "<b>🔍 扫描器诊断</b>\n"
-        "/diagnose - 综合诊断（仅本地数据，秒回）\n"
-        "/diag_btc - BTC 趋势过滤器（需网络）\n"
+        "/diagnose - 综合诊断（不含市场预检）\n"
+        "/diag_btc - BTC 趋势过滤器状态\n"
         "/diag_candidates - 候选池详情\n"
         "/diag_risk - 风控状态详情\n"
         "/diag_cooldowns - 冷却期检查\n"
@@ -425,23 +425,20 @@ def cmd_diag_params() -> str:
 
 
 def cmd_diagnose() -> str:
-    """
-    综合诊断：只跑纯本地（不打网络）的 check_*。
-    BTC 过滤器和市场预检属于网络调用，单独通过 /diag_btc 和 /diag_market 触发。
-    """
+    """综合诊断：跑所有不需要网络的 check_*"""
     import diagnose
     from common import utcnow, today_str
 
     buf = io.StringIO()
     header = (
-        f"🔍 扫描器诊断报告（本地数据）\n"
+        f"🔍 扫描器诊断报告\n"
         f"   时间: {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"   当日: {today_str()}\n"
-        f"   提示: BTC过滤用 /diag_btc，市场预检用 /diag_market\n"
     )
     try:
         with contextlib.redirect_stdout(buf):
             print(header)
+            diagnose.check_btc_filter()
             diagnose.check_candidates()
             diagnose.check_risk_state()
             diagnose.check_cooldowns()
@@ -453,11 +450,11 @@ def cmd_diagnose() -> str:
 
     tail = (
         "\n💡 排查优先级:\n"
-        "   1. BTC过滤是否触发 → /diag_btc（需网络）\n"
+        "   1. BTC过滤是否触发 → 等BTC企稳即可\n"
         "   2. 候选池是否为空 → 市场太冷/条件太严\n"
         "   3. 风控是否暂停 → 检查连亏/日亏损上限\n"
         "   4. 冷却期 → 等24h自动解除\n"
-        "   5. 市场条件 → /diag_market（慢，需网络）\n"
+        "   5. 市场条件 → 用 /diag_market 查看\n"
     )
     text = (buf.getvalue() + tail).strip()
     return f"<pre>{_html.escape(text)}</pre>"
@@ -622,36 +619,15 @@ def run_bot():
                 if not text.startswith('/'):
                     continue
 
-                # 处理指令（在 worker 线程里跑，30s 超时；这样某条慢指令
-                # 不会阻塞 polling 线程，后续指令可以继续接收和处理）
-                _dispatch_command(chat_id, text)
+                # 处理指令
+                reply = handle_command(text)
+                if reply:
+                    _send_reply(chat_id, reply)
+                    logger.info(f"处理指令: {text.split()[0]} → 已回复")
 
         except Exception as e:
             logger.error(f"Bot 循环异常: {e}")
             time.sleep(5)
-
-
-def _dispatch_command(chat_id: str, text: str):
-    """把一条指令派发到 worker 线程并发处理，超时 30s 自动放弃。"""
-    cmd_short = text.split()[0]
-
-    def _worker():
-        start = time.time()
-        try:
-            reply = handle_command(text)
-        except Exception as e:
-            logger.error(f"worker 异常 ({cmd_short}): {e}")
-            reply = f"❌ 指令执行失败: {e}"
-        elapsed = time.time() - start
-        if reply:
-            _send_reply(chat_id, reply)
-            logger.info(f"处理指令: {cmd_short} → 已回复（{elapsed:.1f}s）")
-
-    t = threading.Thread(target=_worker, daemon=True, name=f"tg-cmd-{cmd_short}")
-    t.start()
-    # 注意：不 join。worker 自己跑完会调用 _send_reply。
-    # 上限保护：如果同时有大量指令排队，限制并发线程数，避免 OOM。
-    # 当前看每条指令都很轻（最慢的 /diag_market 大概 5-15s），不需要队列。
 
 
 def start_bot_thread():
