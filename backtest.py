@@ -522,22 +522,96 @@ def calculate_stats(trades: List[BacktestTrade], params: BacktestParams) -> Back
 #  回测主流程
 # ══════════════════════════════════════════════════════════════════
 
+def _parse_date(s: str) -> datetime:
+    """'YYYY-MM-DD' → UTC midnight datetime"""
+    return datetime.strptime(s, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+
+
+def filter_klines_by_date(klines: List[dict],
+                          date_from: Optional[str] = None,
+                          date_to: Optional[str] = None) -> List[dict]:
+    """
+    把 K 线裁剪到 [date_from 00:00, date_to 24:00) UTC 区间内。
+    保持顺序，不修改原列表。任意端为空表示不限。
+    """
+    if not date_from and not date_to:
+        return klines
+    out = []
+    from_dt = _parse_date(date_from) if date_from else None
+    to_dt = (_parse_date(date_to) + timedelta(days=1)) if date_to else None
+    for k in klines:
+        # k['time'] 形如 '2026-05-13T12:00:00+00:00'
+        try:
+            t = datetime.fromisoformat(k['time'])
+        except Exception:
+            continue
+        if from_dt and t < from_dt:
+            continue
+        if to_dt and t >= to_dt:
+            continue
+        out.append(k)
+    return out
+
+
 def run_backtest(symbol: str, days: int = 90,
-                 params: Optional[BacktestParams] = None) -> BacktestResult:
-    """对单个币种执行完整回测"""
+                 params: Optional[BacktestParams] = None,
+                 date_from: Optional[str] = None,
+                 date_to: Optional[str] = None) -> BacktestResult:
+    """
+    对单个币种执行完整回测。
+
+    时间窗口选择两选一：
+      - 用 days：拉过去 N 天数据，全部参与回测
+      - 用 date_from/date_to：拉足够长的数据（确保 RSI 窗口够热身），
+        但只在 [date_from, date_to] 区间内检测信号 + 模拟交易
+
+    给 date_from/date_to 时，days 会被自动放大到覆盖范围 + 30 天预热，
+    保证 RSI 序列在窗口起点已经稳定。
+    """
     if params is None:
         params = BacktestParams()
 
-    klines = load_cached_klines(symbol, '1h', days)
-    if not klines:
+    # ── 决定要拉多少天数据 ──
+    if date_from or date_to:
+        from_dt = _parse_date(date_from) if date_from else _parse_date(date_to)
+        to_dt = _parse_date(date_to) if date_to else _parse_date(date_from)
+        # 从 from_dt 往前预热 30 天，到 to_dt 截止
+        now_utc = datetime.now(timezone.utc)
+        end_dt = min(to_dt + timedelta(days=1), now_utc)
+        fetch_days = max(30, (now_utc - (from_dt - timedelta(days=30))).days + 1)
+    else:
+        fetch_days = days
+
+    klines_full = load_cached_klines(symbol, '1h', fetch_days)
+    if not klines_full:
         logger.error(f"无法获取 {symbol} 历史数据")
         return BacktestResult(params=asdict(params))
 
-    # 检测信号
-    signals = detect_entry_signals(klines, params)
-    # 过滤：确保 entry_idx+1 存在（需要下一根bar的open作为入场价）
-    signals = [s for s in signals if s + 1 < len(klines)]
-    logger.info(f"检测到 {len(signals)} 个入场信号")
+    # 信号检测必须用完整序列（前面要 RSI 热身）；
+    # 只是过滤掉发生在窗口外的信号
+    signals_all = detect_entry_signals(klines_full, params)
+    signals_all = [s for s in signals_all if s + 1 < len(klines_full)]
+
+    if date_from or date_to:
+        from_dt = _parse_date(date_from) if date_from else _parse_date(date_to)
+        to_dt_excl = (_parse_date(date_to) + timedelta(days=1)) if date_to else _parse_date(date_from) + timedelta(days=1)
+        signals = []
+        for s in signals_all:
+            try:
+                t = datetime.fromisoformat(klines_full[s + 1]['time'])
+            except Exception:
+                continue
+            if from_dt <= t < to_dt_excl:
+                signals.append(s)
+        klines = klines_full  # 模拟交易用完整序列（出场可能延伸到窗口外，符合实盘）
+        logger.info(
+            f"窗口 [{date_from or '...'}, {date_to or '...'}] 内检测到 {len(signals)} "
+            f"个入场信号（完整序列共 {len(signals_all)} 个）"
+        )
+    else:
+        klines = klines_full
+        signals = signals_all
+        logger.info(f"检测到 {len(signals)} 个入场信号")
 
     # 模拟每笔交易
     trades = []
@@ -800,15 +874,20 @@ def print_grid_results(results: List[BacktestResult], top_n: int = 10):
 # ══════════════════════════════════════════════════════════════════
 
 def run_batch_backtest(symbols: List[str], days: int = 90,
-                       params: Optional[BacktestParams] = None) -> List[BacktestResult]:
+                       params: Optional[BacktestParams] = None,
+                       date_from: Optional[str] = None,
+                       date_to: Optional[str] = None) -> List[BacktestResult]:
     """对多个币种执行批量回测，返回每个币种的 BacktestResult"""
     if params is None:
         params = BacktestParams()
 
     results = []
     for symbol in symbols:
-        logger.info(f"批量回测: {symbol} / {days}天")
-        result = run_backtest(symbol, days, params)
+        if date_from or date_to:
+            logger.info(f"批量回测: {symbol} / 窗口 {date_from or '...'} ~ {date_to or '...'}")
+        else:
+            logger.info(f"批量回测: {symbol} / {days}天")
+        result = run_backtest(symbol, days, params, date_from=date_from, date_to=date_to)
         results.append(result)
 
     return results
@@ -1053,7 +1132,66 @@ if __name__ == '__main__':
     parser.add_argument('--monthly', action='store_true', help='仅输出月度分解（需先有回测数据）')
     parser.add_argument('--symbols', nargs='+', help='多币种回测')
 
+    # ── 时间窗口（与 --days 二选一；同时给则窗口生效，days 自动扩展为预热）──
+    parser.add_argument('--date-from', dest='date_from', type=str, default=None,
+                        help='窗口起始日 YYYY-MM-DD（含），不传 = 不限')
+    parser.add_argument('--date-to', dest='date_to', type=str, default=None,
+                        help='窗口结束日 YYYY-MM-DD（含），不传 = 不限。'
+                             '只回测此区间内开仓的信号；出场可延伸到区间外')
+    parser.add_argument('--day', type=str, default=None,
+                        help='便捷参数：等价于 --date-from X --date-to X')
+
+    # ── 单次回测的参数覆盖（不修改 config.py，方便对比） ──
+    parser.add_argument('--daily-rsi-min', dest='daily_rsi_min', type=float, default=None,
+                        help='临时覆盖 daily_rsi_min（不改 config）')
+    parser.add_argument('--h4-rsi-drop', dest='h4_rsi_drop', type=float, default=None,
+                        help='临时覆盖 h4_rsi_drop')
+    parser.add_argument('--h4-rsi-enter', dest='h4_rsi_enter', type=float, default=None,
+                        help='临时覆盖 h4_rsi_enter')
+    parser.add_argument('--tp1', type=float, default=None, help='临时覆盖 tp1_pct')
+    parser.add_argument('--tp2', type=float, default=None, help='临时覆盖 tp2_pct')
+    parser.add_argument('--hard-stop', dest='hard_stop_pct', type=float, default=None,
+                        help='临时覆盖 hard_stop_pct')
+
     args = parser.parse_args()
+
+    # --day 作为快捷方式
+    if args.day:
+        args.date_from = args.date_from or args.day
+        args.date_to = args.date_to or args.day
+
+    # 构造覆盖后的参数
+    def _build_params() -> BacktestParams:
+        p = BacktestParams()
+        if args.daily_rsi_min is not None:
+            p.daily_rsi_min = args.daily_rsi_min
+        if args.h4_rsi_drop is not None:
+            p.h4_rsi_drop = args.h4_rsi_drop
+        if args.h4_rsi_enter is not None:
+            p.h4_rsi_enter = args.h4_rsi_enter
+        if args.tp1 is not None:
+            p.tp1_pct = args.tp1
+        if args.tp2 is not None:
+            p.tp2_pct = args.tp2
+        if args.hard_stop_pct is not None:
+            p.hard_stop_pct = args.hard_stop_pct
+        return p
+
+    custom_params = _build_params()
+    has_overrides = any([
+        args.daily_rsi_min is not None, args.h4_rsi_drop is not None,
+        args.h4_rsi_enter is not None, args.tp1 is not None,
+        args.tp2 is not None, args.hard_stop_pct is not None,
+    ])
+    if has_overrides:
+        print(f"\n⚙️  参数覆盖: daily_rsi_min={custom_params.daily_rsi_min}, "
+              f"h4_rsi_drop={custom_params.h4_rsi_drop}, "
+              f"h4_rsi_enter={custom_params.h4_rsi_enter}, "
+              f"tp1={custom_params.tp1_pct}%, tp2={custom_params.tp2_pct}%, "
+              f"hard_stop={custom_params.hard_stop_pct}%")
+
+    if args.date_from or args.date_to:
+        print(f"📅 时间窗口: [{args.date_from or '...'}, {args.date_to or '...'}] UTC")
 
     symbols = args.symbols or [args.symbol]
 
@@ -1061,7 +1199,8 @@ if __name__ == '__main__':
         # 仅输出月度分解（对指定币种跑回测后只显示月度）
         print(f"\n📅 月度分解回测: {symbols} / {args.days}天")
         for symbol in symbols:
-            result = run_backtest(symbol, args.days)
+            result = run_backtest(symbol, args.days, params=custom_params,
+                                  date_from=args.date_from, date_to=args.date_to)
             if result.trades:
                 print_monthly_breakdown(result.trades, symbol)
             else:
@@ -1071,9 +1210,14 @@ if __name__ == '__main__':
         # 批量回测
         batch_symbols = config.BATCH_BACKTEST_SYMBOLS
         batch_days = args.days if args.days != 90 else config.BATCH_BACKTEST_DAYS
-        print(f"\n🚀 批量回测: {len(batch_symbols)} 个币种 / {batch_days}天")
+        if args.date_from or args.date_to:
+            print(f"\n🚀 批量回测: {len(batch_symbols)} 个币种 / 窗口 "
+                  f"{args.date_from or '...'} ~ {args.date_to or '...'}")
+        else:
+            print(f"\n🚀 批量回测: {len(batch_symbols)} 个币种 / {batch_days}天")
 
-        results = run_batch_backtest(batch_symbols, batch_days)
+        results = run_batch_backtest(batch_symbols, batch_days, params=custom_params,
+                                     date_from=args.date_from, date_to=args.date_to)
         correlation = calculate_correlation_matrix(results)
         rankings = rank_coins(results)
         report = generate_batch_report(results, correlation, rankings)
@@ -1085,13 +1229,17 @@ if __name__ == '__main__':
         save_data = {
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'days': batch_days,
+            'date_from': args.date_from,
+            'date_to': args.date_to,
             'report': report,
             'config_snapshot': {
-                'daily_rsi_min': config.DAILY_RSI_MIN,
-                'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
-                'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
-                'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+                'daily_rsi_min': custom_params.daily_rsi_min,
+                'tp1_pct': custom_params.tp1_pct,
+                'tp2_pct': custom_params.tp2_pct,
+                'hard_stop_pct': custom_params.hard_stop_pct,
+                'h4_rsi_drop': custom_params.h4_rsi_drop,
                 'batch_symbols': config.BATCH_BACKTEST_SYMBOLS,
+                'overrides_applied': has_overrides,
             },
         }
         atomic_write_json(BATCH_BACKTEST_RESULTS_FILE, save_data)
@@ -1099,6 +1247,8 @@ if __name__ == '__main__':
 
     elif args.grid:
         # 网格搜索
+        if args.date_from or args.date_to:
+            print(f"\n⚠️  --grid 暂不支持 --date-from/--date-to（已忽略，仍按 --days 跑）")
         print(f"\n🔍 参数网格搜索: {symbols[0]} / {args.days}天")
         results = grid_search(symbols[0], args.days)
         print_grid_results(results)
@@ -1118,8 +1268,12 @@ if __name__ == '__main__':
         # 单次回测
         all_results = []
         for symbol in symbols:
-            print(f"\n🎯 回测: {symbol} / {args.days}天")
-            result = run_backtest(symbol, args.days)
+            if args.date_from or args.date_to:
+                print(f"\n🎯 回测: {symbol} / 窗口 {args.date_from or '...'} ~ {args.date_to or '...'}")
+            else:
+                print(f"\n🎯 回测: {symbol} / {args.days}天")
+            result = run_backtest(symbol, args.days, params=custom_params,
+                                  date_from=args.date_from, date_to=args.date_to)
             print_result(result)
             all_results.append(result)
 
@@ -1138,15 +1292,18 @@ if __name__ == '__main__':
         save_data = {
             'symbols': symbols,
             'days': args.days,
+            'date_from': args.date_from,
+            'date_to': args.date_to,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'results': [r.to_dict() for r in all_results],
             'config_snapshot': {
-                'daily_rsi_min': config.DAILY_RSI_MIN,
-                'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
-                'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
-                'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
-                'h4_rsi_drop': config.H4_RSI_DROP,
-                'leverage': config.LEVERAGE,
+                'daily_rsi_min': custom_params.daily_rsi_min,
+                'tp1_pct': custom_params.tp1_pct,
+                'tp2_pct': custom_params.tp2_pct,
+                'hard_stop_pct': custom_params.hard_stop_pct,
+                'h4_rsi_drop': custom_params.h4_rsi_drop,
+                'leverage': custom_params.leverage,
+                'overrides_applied': has_overrides,
             },
         }
         atomic_write_json(BACKTEST_RESULTS_FILE, save_data)
