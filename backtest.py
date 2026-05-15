@@ -27,6 +27,7 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from common import setup_logger, atomic_write_json
+from signal_score import calculate_signal_score
 
 logger = setup_logger("backtest")
 
@@ -131,6 +132,169 @@ def calc_rsi_series(closes: List[float], period: int = 14) -> List[float]:
             rsi[idx] = round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
     return rsi
+
+
+# ══════════════════════════════════════════════════════════════════
+#  量价背离检测（回测版：直接用 K 线数据，不调 API）
+# ══════════════════════════════════════════════════════════════════
+
+def detect_volume_divergence_backtest(klines: List[dict], signal_idx: int,
+                                      vol_div_bonus_override: Optional[dict] = None) -> dict:
+    """
+    回测版量价背离检测：用信号点前24根1H K线检测。
+    逻辑与 altcoin_scanner.py 中 detect_volume_divergence 完全一致。
+
+    参数:
+      klines: 完整K线列表
+      signal_idx: 信号触发的K线索引
+      vol_div_bonus_override: 可选，覆盖加分值 {"strong": 12, "medium": 8, "mild": 6}
+
+    返回:
+      {"divergence": bool, "shrink_ratio": float, "score_bonus": int, "reason": str}
+    """
+    # 默认加分值（原始配置）
+    bonus_strong = 8   # 缩量60%+
+    bonus_medium = 5   # 缩量45%+
+    bonus_mild = 3     # 缩量30%+
+
+    if vol_div_bonus_override:
+        bonus_strong = vol_div_bonus_override.get("strong", bonus_strong)
+        bonus_medium = vol_div_bonus_override.get("medium", bonus_medium)
+        bonus_mild = vol_div_bonus_override.get("mild", bonus_mild)
+
+    result = {"divergence": False, "shrink_ratio": 1.0, "score_bonus": 0, "reason": ""}
+
+    # 取信号点前24根K线（丢弃最后一根未收盘）
+    end_idx = signal_idx  # 信号触发时这根已收盘
+    start_idx = max(0, end_idx - 23)  # 24根
+
+    if end_idx - start_idx < 10:
+        return result
+
+    segment = klines[start_idx:end_idx + 1]
+
+    highs = [k['high'] for k in segment]
+    volumes = [k['volume'] for k in segment]
+
+    # 找局部高点（高于前后2根K线的high）
+    peaks = []  # [(index, high_price, volume)]
+    for i in range(2, len(highs) - 2):
+        if (highs[i] >= highs[i-1] and highs[i] >= highs[i-2]
+                and highs[i] >= highs[i+1] and highs[i] >= highs[i+2]):
+            peaks.append((i, highs[i], volumes[i]))
+
+    if len(peaks) < 2:
+        return result
+
+    # 比较最近两个高点
+    prev_peak = peaks[-2]
+    last_peak = peaks[-1]
+
+    prev_price, prev_vol = prev_peak[1], prev_peak[2]
+    last_price, last_vol = last_peak[1], last_peak[2]
+
+    # 价格创新高或持平（差距<1%）
+    price_higher = last_price >= prev_price * 0.99
+
+    if not price_higher:
+        return result
+
+    # 成交量缩减检查
+    if prev_vol <= 0:
+        return result
+
+    vol_ratio = last_vol / prev_vol  # <1 表示缩量
+
+    if vol_ratio < 0.70:
+        # 量价背离成立
+        shrink_pct = round((1 - vol_ratio) * 100, 0)
+        result["divergence"] = True
+        result["shrink_ratio"] = round(vol_ratio, 2)
+
+        if vol_ratio < 0.40:
+            result["score_bonus"] = bonus_strong   # 缩量60%+
+        elif vol_ratio < 0.55:
+            result["score_bonus"] = bonus_medium   # 缩量45%+
+        else:
+            result["score_bonus"] = bonus_mild     # 缩量30%+
+
+        result["reason"] = f"量价背离：价格新高但成交量缩{shrink_pct:.0f}%"
+
+    return result
+
+
+def score_filter_signal(klines: List[dict], rsi_series: List[float],
+                        signal_idx: int, params: 'BacktestParams',
+                        vol_div_bonus_override: Optional[dict] = None,
+                        score_threshold: int = None) -> dict:
+    """
+    对回测中的一个信号做评分过滤。
+
+    参数:
+      klines: 完整K线列表
+      rsi_series: 完整RSI序列
+      signal_idx: 信号触发的K线索引
+      params: 回测参数
+      vol_div_bonus_override: 量价背离加分覆盖
+      score_threshold: 评分阈值（低于此分跳过），默认用 config.SCORE_HALF_THRESHOLD
+
+    返回:
+      {"passed": bool, "score": int, "grade": str, "stake": float,
+       "vol_divergence": dict, "details": dict}
+    """
+    if score_threshold is None:
+        score_threshold = config.SCORE_HALF_THRESHOLD
+
+    # ── 从K线上下文中提取评分所需参数 ──
+
+    # RSI 相关
+    current_rsi = rsi_series[signal_idx]
+    lookback = 20
+    peak_start = max(0, signal_idx - lookback)
+    rsi_peak = max(rsi_series[peak_start:signal_idx])
+
+    # 用 RSI peak 近似 rsi_1d（因为回测中 1H RSI peak ≈ 日线超买）
+    rsi_1d_approx = rsi_peak
+    rsi_4h_approx = current_rsi
+    rsi_4h_peak_approx = rsi_peak
+
+    # 24h 涨跌幅（用24根前的收盘价 vs 当前）
+    pct_24h = 0.0
+    if signal_idx >= 24:
+        old_close = klines[signal_idx - 24]['close']
+        cur_close = klines[signal_idx]['close']
+        if old_close > 0:
+            pct_24h = (cur_close - old_close) / old_close * 100
+
+    # 量价背离检测
+    vol_div = detect_volume_divergence_backtest(klines, signal_idx, vol_div_bonus_override)
+
+    # 调用 signal_score 评分（回测中无法获取 OI / funding / yao_score，使用保守默认值）
+    score_result = calculate_signal_score(
+        rsi_1d=rsi_1d_approx,
+        rsi_4h=rsi_4h_approx,
+        rsi_4h_peak=rsi_4h_peak_approx,
+        pct_24h=pct_24h,
+        oi_change=0.0,          # 回测中无 OI 数据，保守给0
+        funding_rate=0.01,      # 假设中性费率
+        yao_score=0,            # 回测中无妖币判定
+        trigger_type='4h_rsi',  # 回测信号均为 RSI 回落触发
+        abandon_oi_declining=False,
+        btc_24h_pct=0.0,        # 回测中无 BTC 数据，中性
+        cross_validate_bonus=0, # 回测中无 OKX 交叉验证
+        vol_divergence_bonus=vol_div.get("score_bonus", 0),
+    )
+
+    passed = score_result["score"] >= score_threshold
+
+    return {
+        "passed": passed,
+        "score": score_result["score"],
+        "grade": score_result["grade"],
+        "stake": score_result["stake"],
+        "vol_divergence": vol_div,
+        "details": score_result["details"],
+    }
 
 
 
@@ -556,7 +720,10 @@ def filter_klines_by_date(klines: List[dict],
 def run_backtest(symbol: str, days: int = 90,
                  params: Optional[BacktestParams] = None,
                  date_from: Optional[str] = None,
-                 date_to: Optional[str] = None) -> BacktestResult:
+                 date_to: Optional[str] = None,
+                 score_filter: bool = False,
+                 vol_div_bonus_override: Optional[dict] = None,
+                 score_threshold: Optional[int] = None) -> BacktestResult:
     """
     对单个币种执行完整回测。
 
@@ -564,6 +731,11 @@ def run_backtest(symbol: str, days: int = 90,
       - 用 days：拉过去 N 天数据，全部参与回测
       - 用 date_from/date_to：拉足够长的数据（确保 RSI 窗口够热身），
         但只在 [date_from, date_to] 区间内检测信号 + 模拟交易
+
+    评分过滤（可选）：
+      - score_filter=True：对每个信号执行评分过滤（含量价背离），低于阈值跳过
+      - vol_div_bonus_override: 覆盖量价背离加分值 {"strong": 12, "medium": 8, "mild": 6}
+      - score_threshold: 覆盖评分阈值（默认 config.SCORE_HALF_THRESHOLD=40）
 
     给 date_from/date_to 时，days 会被自动放大到覆盖范围 + 30 天预热，
     保证 RSI 序列在窗口起点已经稳定。
@@ -613,12 +785,46 @@ def run_backtest(symbol: str, days: int = 90,
         signals = signals_all
         logger.info(f"检测到 {len(signals)} 个入场信号")
 
-    # 模拟每笔交易
+    # 模拟每笔交易（可选评分过滤）
     trades = []
+    skipped_by_score = 0
+
+    if score_filter:
+        # 预计算 RSI 序列用于评分
+        closes = [k['close'] for k in klines]
+        rsi_series_full = calc_rsi_series(closes, params.rsi_period)
+
     for sig_idx in signals:
-        trade = simulate_trade(klines, sig_idx, params)
+        # ── 评分过滤 ──
+        if score_filter:
+            sf = score_filter_signal(
+                klines, rsi_series_full, sig_idx, params,
+                vol_div_bonus_override=vol_div_bonus_override,
+                score_threshold=score_threshold,
+            )
+            if not sf["passed"]:
+                skipped_by_score += 1
+                continue
+            # 如果评分通过且为半仓（grade=B），调整stake
+            if sf["grade"] == "B":
+                # 临时修改 params.stake 用于该笔交易
+                original_stake = params.stake
+                params.stake = round(params.stake * 0.5)
+                trade = simulate_trade(klines, sig_idx, params)
+                params.stake = original_stake
+            else:
+                trade = simulate_trade(klines, sig_idx, params)
+        else:
+            trade = simulate_trade(klines, sig_idx, params)
+
         trade.symbol = symbol
         trades.append(trade)
+
+    if score_filter:
+        logger.info(
+            f"  📊 评分过滤: {len(signals)}个信号 → {len(trades)}个通过 "
+            f"({skipped_by_score}个被跳过，阈值={score_threshold or config.SCORE_HALF_THRESHOLD}分)"
+        )
 
     # 统计
     result = calculate_stats(trades, params)
@@ -876,7 +1082,10 @@ def print_grid_results(results: List[BacktestResult], top_n: int = 10):
 def run_batch_backtest(symbols: List[str], days: int = 90,
                        params: Optional[BacktestParams] = None,
                        date_from: Optional[str] = None,
-                       date_to: Optional[str] = None) -> List[BacktestResult]:
+                       date_to: Optional[str] = None,
+                       score_filter: bool = False,
+                       vol_div_bonus_override: Optional[dict] = None,
+                       score_threshold: Optional[int] = None) -> List[BacktestResult]:
     """对多个币种执行批量回测，返回每个币种的 BacktestResult"""
     if params is None:
         params = BacktestParams()
@@ -887,7 +1096,10 @@ def run_batch_backtest(symbols: List[str], days: int = 90,
             logger.info(f"批量回测: {symbol} / 窗口 {date_from or '...'} ~ {date_to or '...'}")
         else:
             logger.info(f"批量回测: {symbol} / {days}天")
-        result = run_backtest(symbol, days, params, date_from=date_from, date_to=date_to)
+        result = run_backtest(symbol, days, params, date_from=date_from, date_to=date_to,
+                              score_filter=score_filter,
+                              vol_div_bonus_override=vol_div_bonus_override,
+                              score_threshold=score_threshold)
         results.append(result)
 
     return results
@@ -1153,6 +1365,16 @@ if __name__ == '__main__':
     parser.add_argument('--hard-stop', dest='hard_stop_pct', type=float, default=None,
                         help='临时覆盖 hard_stop_pct')
 
+    # ── 评分过滤（含量价背离权重对比）──
+    parser.add_argument('--score-filter', dest='score_filter', action='store_true',
+                        help='启用评分过滤（含量价背离），低于阈值的信号跳过')
+    parser.add_argument('--score-threshold', dest='score_threshold', type=int, default=None,
+                        help='评分阈值（默认40），低于此分的信号不开单')
+    parser.add_argument('--vol-div-bonus', dest='vol_div_bonus', type=str, default=None,
+                        help='量价背离加分覆盖，格式: "mild,medium,strong" 如 "6,8,12"（默认 3,5,8）')
+    parser.add_argument('--compare-bonus', dest='compare_bonus', action='store_true',
+                        help='对比模式：自动跑两次（原始权重 vs 新权重），输出对比报告')
+
     args = parser.parse_args()
 
     # --day 作为快捷方式
@@ -1190,17 +1412,117 @@ if __name__ == '__main__':
               f"tp1={custom_params.tp1_pct}%, tp2={custom_params.tp2_pct}%, "
               f"hard_stop={custom_params.hard_stop_pct}%")
 
+    # ── 解析量价背离加分覆盖 ──
+    vol_div_bonus_override = None
+    if args.vol_div_bonus:
+        parts = [int(x.strip()) for x in args.vol_div_bonus.split(',')]
+        if len(parts) == 3:
+            vol_div_bonus_override = {"mild": parts[0], "medium": parts[1], "strong": parts[2]}
+            print(f"📊 量价背离加分覆盖: 轻微={parts[0]} 中等={parts[1]} 强烈={parts[2]}")
+        else:
+            print("⚠️  --vol-div-bonus 格式错误，应为 'mild,medium,strong' 如 '6,8,12'")
+            sys.exit(1)
+
+    if args.score_filter:
+        threshold = args.score_threshold or config.SCORE_HALF_THRESHOLD
+        print(f"📊 评分过滤已启用（阈值={threshold}分）")
+
     if args.date_from or args.date_to:
         print(f"📅 时间窗口: [{args.date_from or '...'}, {args.date_to or '...'}] UTC")
 
     symbols = args.symbols or [args.symbol]
+
+    # ══════════════════════════════════════════════════════════════════
+    #  对比模式：原始权重 vs 新权重，自动跑两轮
+    # ══════════════════════════════════════════════════════════════════
+    if args.compare_bonus:
+        if not vol_div_bonus_override:
+            vol_div_bonus_override = {"mild": 6, "medium": 8, "strong": 12}
+            print(f"📊 对比模式: 未指定 --vol-div-bonus，使用推荐新权重 (6,8,12)")
+
+        print(f"\n{'='*70}")
+        print(f"  🔄 对比回测: {symbols} / {args.days}天")
+        print(f"     原始权重: mild=3, medium=5, strong=8")
+        print(f"     新权重:   mild={vol_div_bonus_override['mild']}, "
+              f"medium={vol_div_bonus_override['medium']}, "
+              f"strong={vol_div_bonus_override['strong']}")
+        print(f"{'='*70}")
+
+        threshold = args.score_threshold or config.SCORE_HALF_THRESHOLD
+
+        for symbol in symbols:
+            print(f"\n{'─'*60}")
+            print(f"  📌 {symbol}")
+            print(f"{'─'*60}")
+
+            # A) 原始权重 + 评分过滤
+            print(f"\n  ▶ [A] 原始权重 (3,5,8) + 评分过滤(阈值={threshold}):")
+            result_old = run_backtest(
+                symbol, args.days, params=custom_params,
+                date_from=args.date_from, date_to=args.date_to,
+                score_filter=True,
+                vol_div_bonus_override={"mild": 3, "medium": 5, "strong": 8},
+                score_threshold=threshold,
+            )
+
+            # B) 新权重 + 评分过滤
+            print(f"\n  ▶ [B] 新权重 ({vol_div_bonus_override['mild']},"
+                  f"{vol_div_bonus_override['medium']},"
+                  f"{vol_div_bonus_override['strong']}) + 评分过滤(阈值={threshold}):")
+            result_new = run_backtest(
+                symbol, args.days, params=custom_params,
+                date_from=args.date_from, date_to=args.date_to,
+                score_filter=True,
+                vol_div_bonus_override=vol_div_bonus_override,
+                score_threshold=threshold,
+            )
+
+            # C) 无评分过滤（基线）
+            print(f"\n  ▶ [C] 无评分过滤（基线）:")
+            result_base = run_backtest(
+                symbol, args.days, params=custom_params,
+                date_from=args.date_from, date_to=args.date_to,
+                score_filter=False,
+            )
+
+            # 打印对比表
+            print(f"\n  {'─'*55}")
+            print(f"  📊 对比结果: {symbol}")
+            print(f"  {'─'*55}")
+            print(f"  {'模式':<22} {'交易数':>6} {'胜率':>7} {'盈亏比':>6} {'总盈亏':>9} {'回撤':>6}")
+            print(f"  {'─'*55}")
+            print(f"  {'[C] 无过滤(基线)':<20} {result_base.total_trades:>5} "
+                  f"{result_base.win_rate:>6.1f}% {result_base.profit_loss_ratio:>5.2f}x "
+                  f"{result_base.total_pnl:>+8.2f}U {result_base.max_drawdown:>5.1f}%")
+            print(f"  {'[A] 原始(3,5,8)':<20} {result_old.total_trades:>5} "
+                  f"{result_old.win_rate:>6.1f}% {result_old.profit_loss_ratio:>5.2f}x "
+                  f"{result_old.total_pnl:>+8.2f}U {result_old.max_drawdown:>5.1f}%")
+            new_label = f"[B] 新({vol_div_bonus_override['mild']},{vol_div_bonus_override['medium']},{vol_div_bonus_override['strong']})"
+            print(f"  {new_label:<20} {result_new.total_trades:>5} "
+                  f"{result_new.win_rate:>6.1f}% {result_new.profit_loss_ratio:>5.2f}x "
+                  f"{result_new.total_pnl:>+8.2f}U {result_new.max_drawdown:>5.1f}%")
+            print(f"  {'─'*55}")
+
+            # 差值分析
+            if result_new.total_trades > result_old.total_trades:
+                extra = result_new.total_trades - result_old.total_trades
+                pnl_diff = result_new.total_pnl - result_old.total_pnl
+                print(f"  💡 新权重多放入 {extra} 笔交易，盈亏变化: {pnl_diff:+.2f}U")
+            elif result_new.total_trades == result_old.total_trades:
+                print(f"  ℹ️  交易数相同，量价背离加分未改变过滤结果")
+            print()
+
+        sys.exit(0)
 
     if args.monthly:
         # 仅输出月度分解（对指定币种跑回测后只显示月度）
         print(f"\n📅 月度分解回测: {symbols} / {args.days}天")
         for symbol in symbols:
             result = run_backtest(symbol, args.days, params=custom_params,
-                                  date_from=args.date_from, date_to=args.date_to)
+                                  date_from=args.date_from, date_to=args.date_to,
+                                  score_filter=args.score_filter,
+                                  vol_div_bonus_override=vol_div_bonus_override,
+                                  score_threshold=args.score_threshold)
             if result.trades:
                 print_monthly_breakdown(result.trades, symbol)
             else:
@@ -1217,7 +1539,10 @@ if __name__ == '__main__':
             print(f"\n🚀 批量回测: {len(batch_symbols)} 个币种 / {batch_days}天")
 
         results = run_batch_backtest(batch_symbols, batch_days, params=custom_params,
-                                     date_from=args.date_from, date_to=args.date_to)
+                                     date_from=args.date_from, date_to=args.date_to,
+                                     score_filter=args.score_filter,
+                                     vol_div_bonus_override=vol_div_bonus_override,
+                                     score_threshold=args.score_threshold)
         correlation = calculate_correlation_matrix(results)
         rankings = rank_coins(results)
         report = generate_batch_report(results, correlation, rankings)
@@ -1273,7 +1598,10 @@ if __name__ == '__main__':
             else:
                 print(f"\n🎯 回测: {symbol} / {args.days}天")
             result = run_backtest(symbol, args.days, params=custom_params,
-                                  date_from=args.date_from, date_to=args.date_to)
+                                  date_from=args.date_from, date_to=args.date_to,
+                                  score_filter=args.score_filter,
+                                  vol_div_bonus_override=vol_div_bonus_override,
+                                  score_threshold=args.score_threshold)
             print_result(result)
             all_results.append(result)
 
