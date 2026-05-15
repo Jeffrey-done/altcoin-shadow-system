@@ -35,7 +35,7 @@ PCT_24H_MIN = 10               # 24h 涨幅最低要求（%）
 #  RSI 参数
 # ══════════════════════════════════════════════════════════════════
 RSI_PERIOD = 14                # RSI 计算周期
-DAILY_RSI_MIN = 80             # 日线 RSI 超买阈值（回测优化：78→80减少假信号）
+DAILY_RSI_MIN = 75             # 日线 RSI 超买阈值（降低至75扩大候选池覆盖）
 H4_RSI_ENTER = 70              # 4h RSI 回落进入阈值
 H4_RSI_DROP = 10               # 4h RSI 需从峰值回落的点数
 H4_RSI_PEAK_LOOKBACK = 10     # 4h RSI 峰值回溯 K 线数
