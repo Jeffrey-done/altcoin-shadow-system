@@ -772,11 +772,9 @@ function toggleLiveMode(key, el) {
   }; doToggle();
 }
 
-// 保存"仓位与风控"tab 上的所有字段：依据 fields_meta.scope 自动分两路：
-//   - account 字段 → POST /api/config { account_id: cfgTargetAccountId, changes: {...} }
-//   - global  字段 → POST /api/config { changes: {...} }（不带 account_id 即落 _global）
-// 全局字段（LIVE_MODE / OKX_LIVE_MODE / PRIMARY_EXCHANGE 等）在 tab-live 里有自己
-// 的 toggleLiveMode()，正常场景下 saveConfig 只会触发账号字段保存。
+// 保存"仓位与风控"tab 上的所有字段：合并成一次 /api/config POST，避免重复 TG。
+// server 端 /api/config 会自动按 fields_meta.scope 拆分账号字段 vs 全局字段，
+// 分别 save_account_overrides / save_global_overrides，但只推送一条 TG 总结。
 function saveConfig() {
   const accId = cfgTargetAccountId || currentActiveId || '';
   if (!accId) {
@@ -784,8 +782,7 @@ function saveConfig() {
     return;
   }
   const meta = lastConfigState.fields_meta || {};
-  const accountChanges = {};
-  const globalChanges = {};
+  const changes = {};
 
   Object.keys(meta).forEach(key => {
     const el = document.getElementById('cfg-' + key);
@@ -799,29 +796,30 @@ function saveConfig() {
     } else {
       value = el.value;
     }
-    if (meta[key].scope === 'global') globalChanges[key] = value;
-    else accountChanges[key] = value;
+    changes[key] = value;
   });
+
+  if (!Object.keys(changes).length) {
+    alertBox('没有需要保存的字段', 'warning');
+    return;
+  }
 
   const doSave = async () => {
     try {
-      let savedCount = 0;
-      let totpRequired = false;
-      // 先存账号字段（最常用）
-      if (Object.keys(accountChanges).length) {
-        const r = await api('POST', 'api/config', { account_id: accId, changes: accountChanges });
-        if (r.needTotp) { totpRequired = true; }
-        else { savedCount += Object.keys(accountChanges).length; }
-      }
-      if (totpRequired) { openTotpModal(doSave); return; }
-      // 再存可能存在的全局字段（实际上 tab-position 不应有全局字段，保险起见）
-      if (Object.keys(globalChanges).length) {
-        const r2 = await api('POST', 'api/config', { changes: globalChanges });
-        if (r2.needTotp) { openTotpModal(doSave); return; }
-        savedCount += Object.keys(globalChanges).length;
-      }
+      // server 端按 fields_meta.scope 自动分流：
+      //   account 字段 → save_account_overrides(account_id)
+      //   global  字段 → save_global_overrides()
+      // 一次请求 → 一条 TG 总结
+      const r = await api('POST', 'api/config', { account_id: accId, changes });
+      if (r.needTotp) { openTotpModal(doSave); return; }
       const accName = (currentAccounts.find(a => a.id === accId) || {}).name || accId;
-      alertBox(`已保存 ${savedCount} 项更改到账号「${accName}」`, 'ok');
+      const accCount = (r.saved && r.saved.account_fields || []).length;
+      const globalCount = (r.saved && r.saved.global || []).length;
+      const summary = [
+        accCount ? `${accCount} 项到账号「${accName}」` : '',
+        globalCount ? `${globalCount} 项到全局` : '',
+      ].filter(Boolean).join('，') || `${Object.keys(r.applied||{}).length} 项更改`;
+      alertBox('已保存：' + summary, 'ok');
       loadState();
     } catch (e) {
       alertBox('保存失败: ' + e.message, 'error');
