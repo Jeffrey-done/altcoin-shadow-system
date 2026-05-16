@@ -531,11 +531,27 @@ def create_blueprint(url_secret: str) -> Blueprint:
 
         current = runtime_config.get_current_values()
 
+        # ── 多账号配置：每账号一份 overrides + 全局 overrides ──
+        # 前端切账号下拉时直接从这里 reload 表单，不需要再发请求。
+        # current 仍保留作为"已 apply 到 config 模块的当前生效值"快照（向后兼容）。
+        global_config = runtime_config.load_global_overrides()
+        accounts_config = runtime_config.load_all_account_overrides()
+
+        # 为每个账号补全：用 ALLOWED 中的字段名做模板，没覆盖过的字段返回 None
+        # 让前端能区分"未设置（用全局默认）" vs "显式设了某个值"
+        for acc_id in [a['id'] for a in admin_secrets.list_accounts()]:
+            if acc_id not in accounts_config:
+                accounts_config[acc_id] = {}
+
         fields_meta = {}
         for key, (t, _v, label) in runtime_config.ALLOWED.items():
-            fields_meta[key] = {'type': t.__name__, 'label': label}
+            fields_meta[key] = {
+                'type': t.__name__,
+                'label': label,
+                'scope': 'global' if key in runtime_config.GLOBAL_FIELDS else 'account',
+            }
 
-        # 复利实时数据
+        # 复利实时数据（按"当前活跃账号"算，前端切账号时会另发请求带 account_id）
         try:
             from common import get_compound_stake, get_dynamic_balance
             import config as _cfg
@@ -551,14 +567,30 @@ def create_blueprint(url_secret: str) -> Blueprint:
         accounts = admin_secrets.list_accounts()
         active_id = admin_secrets.get_active_account_id()
 
+        # 每账号的复利实时数据
+        compound_per_account = {}
+        try:
+            from common import get_compound_stake as _gcs, get_dynamic_balance as _gdb
+            for acc in accounts:
+                aid = acc['id']
+                compound_per_account[aid] = {
+                    'current_stake': round(_gcs(aid), 2),
+                    'dynamic_balance': round(_gdb(aid), 2),
+                }
+        except Exception:
+            pass
+
         data = {
             'config': current,
             'fields_meta': fields_meta,
+            'global_config': global_config,
+            'accounts_config': accounts_config,
             'compound': {
                 'current_stake': compound_stake,
                 'dynamic_balance': dynamic_balance,
                 'enabled': compound_enabled,
             },
+            'compound_per_account': compound_per_account,
             'exchanges': {
                 'binance': {
                     'has_credentials': bool(bn_masked.get('api_key')),
@@ -616,8 +648,17 @@ def create_blueprint(url_secret: str) -> Blueprint:
     def api_set_config():
         data = request.get_json(silent=True) or {}
         changes = data.get('changes') or {}
+        target_account_id = (data.get('account_id') or '').strip() or None
+
         if not isinstance(changes, dict):
             return jsonify({'error': 'changes must be object'}), 400
+
+        # 校验 account_id 合法性（必须是已注册账号）
+        if target_account_id is not None:
+            valid_ids = {a['id'] for a in admin_secrets.list_accounts()}
+            if target_account_id not in valid_ids:
+                return jsonify({'error': 'unknown account_id',
+                                'message': f'account_id={target_account_id} 不存在'}), 400
 
         errors = {}
         cleaned = {}
@@ -631,28 +672,51 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if errors:
             return jsonify({'error': 'validation', 'details': errors}), 400
 
-        # 跨字段一致性硬阻塞（2026-05 修复）：
-        # 致命组合（如 DEFAULT_STAKE > ACCOUNT_BALANCE）必须在保存前拦截，
-        # 否则会让风控永远拒绝开仓。warnings 不阻止保存，仅在响应里反馈让 UI 提示。
-        active_id = ''
+        # 拆分字段：全局字段 vs 账号字段
+        global_changes = {k: v for k, v in cleaned.items()
+                          if k in runtime_config.GLOBAL_FIELDS}
+        account_changes = {k: v for k, v in cleaned.items()
+                           if k in runtime_config.ACCOUNT_FIELDS}
+
+        # 没指定 account_id 时，账号字段沿用旧行为（落到当前活跃账号）；
+        # 指定了就严格落到那个账号。全局字段始终落 _global。
+        if target_account_id is None:
+            try:
+                target_account_id = admin_secrets.get_active_account_id()
+            except Exception:
+                target_account_id = ''
+            implicit_active = True
+        else:
+            implicit_active = False
+
+        # 跨字段一致性硬阻塞（2026-05 修复）：致命组合（如 DEFAULT_STAKE >
+        # ACCOUNT_BALANCE）必须在保存前拦截。这里用 target_account_id 的当前
+        # overrides + 即将的 cleaned 作为合并源，避免跨账号互相污染。
+        existing_for_check = {}
         try:
-            active_id = admin_secrets.get_active_account_id()
+            existing_for_check.update(runtime_config.load_global_overrides())
+            if target_account_id:
+                existing_for_check.update(
+                    runtime_config.load_account_overrides(target_account_id)
+                )
         except Exception:
             pass
-        merged_for_check = {**runtime_config.load_overrides(), **cleaned}
+        merged_for_check = {**existing_for_check, **cleaned}
         consistency_errors, consistency_warnings = (
             runtime_config.validate_cross_field_consistency(
-                merged_for_check, account_id=active_id
+                merged_for_check, account_id=target_account_id
             )
         )
         if consistency_errors:
             _audit('config.update.blocked', changes=cleaned,
+                   account_id=target_account_id,
                    reason='cross_field_consistency', errors=consistency_errors)
             try:
                 from common import send_tg, tg_escape
                 send_tg(
                     f"🚫 <b>Admin 配置保存被拒</b>\n\n"
                     f"IP: <code>{tg_escape(_client_ip())}</code>\n"
+                    f"账号: <code>{tg_escape(target_account_id or '(空)')}</code>\n"
                     + "\n".join(f"• {tg_escape(e)}" for e in consistency_errors)
                 )
             except Exception:
@@ -663,19 +727,34 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 'warnings': consistency_warnings,
             }), 400
 
-        existing = runtime_config.load_overrides()
-        merged = {**existing, **cleaned}
+        # ── 实际写盘：全局 / 账号分两路，分别上锁 ──
         try:
-            runtime_config.save_overrides(merged)
+            if global_changes:
+                runtime_config.save_global_overrides(global_changes)
+            if account_changes:
+                if not target_account_id:
+                    return jsonify({
+                        'error': 'no_active_account',
+                        'message': '没有活跃账号，账号级字段无法保存。先创建/激活一个账号或显式传 account_id。',
+                    }), 400
+                runtime_config.save_account_overrides(target_account_id, account_changes)
         except ValueError as ve:
-            # 防御纵深：save_overrides 内部最后一道关卡（理论上前面已经拦截）
+            # 防御纵深：内部最后一道关卡（理论上前面已经拦截）
             return jsonify({'error': 'consistency', 'details': [str(ve)]}), 400
+
+        # apply_overrides 只把"活跃账号"配置应用到全局 config 模块。
+        # 如果保存的是非活跃账号，applied 字典可能为空（不影响存盘）。
         applied = runtime_config.apply_overrides(force=True)
 
-        _audit('config.update', changes=cleaned, warnings=consistency_warnings)
+        _audit('config.update', changes=cleaned, warnings=consistency_warnings,
+               account_id=target_account_id, implicit_active=implicit_active)
         try:
             from common import send_tg, tg_escape
-            lines = [f"• {k}: {v['old']} → {v['new']}" for k, v in applied.items()]
+            scope_label = (
+                f"全局" if (global_changes and not account_changes) else
+                f"账号 {target_account_id or '(?)'}{' [自动当前活跃]' if implicit_active else ''}"
+            )
+            lines = [f"• {k}: {v!r}" for k, v in cleaned.items()]
             extra = ""
             if consistency_warnings:
                 extra = "\n\n⚠️ 警告：\n" + "\n".join(
@@ -683,6 +762,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 )
             send_tg(
                 f"⚙️ <b>Admin 修改运行时配置</b>\n\n"
+                f"作用域: {tg_escape(scope_label)}\n"
                 f"IP: <code>{tg_escape(_client_ip())}</code>\n\n"
                 + "\n".join(lines[:10]) + extra
             )
@@ -692,6 +772,11 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return jsonify({
             'ok': True,
             'applied': applied,
+            'saved': {
+                'global': list(global_changes.keys()),
+                'account_id': target_account_id,
+                'account_fields': list(account_changes.keys()),
+            },
             'warnings': consistency_warnings,
         })
 

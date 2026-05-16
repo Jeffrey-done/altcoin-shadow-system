@@ -398,26 +398,38 @@ def _account_balance_for(account_id: str = None) -> float:
     """
     返回指定账户的本金 (ACCOUNT_BALANCE)。
 
-    B7 修复：之前所有账户都返回全局 config.ACCOUNT_BALANCE，但 admin panel
-    设计上每个账户可以独立设 ACCOUNT_BALANCE（runtime_config.json 的
-    {account_id: {"ACCOUNT_BALANCE": N}}）。
-    runtime_config.apply_overrides() 只把"当前活跃账户"的覆盖写到全局 config
-    模块，所以前端切到非活跃账户视图（/api/data?account_id=acc_B）时，原来
-    会用错的本金计算余额。
+    B7 修复：每个账户可以独立设 ACCOUNT_BALANCE。runtime_config.apply_overrides()
+    只把"当前活跃账户"的覆盖写到全局 config 模块，所以前端切到非活跃账户视图
+    （/api/data?account_id=acc_B）时，原来会用错的本金计算余额。
 
-    现在改成读 runtime_config.load_account_overrides(account_id) 拿那个账户
-    自己的 ACCOUNT_BALANCE；没设的话再 fallback 到全局值。
+    现在统一通过 _account_param() 走 per-account override，没设的话再 fallback
+    到全局值。
     """
     import config
     fallback = float(getattr(config, 'ACCOUNT_BALANCE', 0))
+    return float(_account_param(account_id, 'ACCOUNT_BALANCE', fallback))
+
+
+def _account_param(account_id: str, key: str, fallback):
+    """
+    通用：取指定账户对该字段的覆盖值；没有就 fallback。
+
+    所有 ACCOUNT_FIELDS（ACCOUNT_BALANCE / DEFAULT_STAKE / LEVERAGE / 复利参数 /
+    止盈止损 / 风控等）都走这个入口，统一 per-account 优先 → 全局 config fallback。
+
+    参数:
+      account_id: 账户 ID；空字符串或 None 直接返回 fallback
+      key:        runtime_config.ALLOWED 中的字段名
+      fallback:   读不到时的回退值（通常是 config 模块对应属性）
+    """
     if not account_id:
         return fallback
     try:
         import runtime_config
         overrides = runtime_config.load_account_overrides(account_id) or {}
-        val = overrides.get('ACCOUNT_BALANCE')
+        val = overrides.get(key)
         if val is not None:
-            return float(val)
+            return val
     except Exception:
         # runtime_config.json 损坏 / 不存在 / admin 模块未加载都走 fallback
         pass
@@ -434,16 +446,27 @@ def get_compound_stake(account_id: str = None) -> float:
         而不是 (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
       - 上限仍为 COMPOUND_MAX_STAKE
 
+    多账号修复：所有复利参数（AUTO_COMPOUND_ENABLED / DEFAULT_STAKE /
+    COMPOUND_STEP / COMPOUND_INCREASE / COMPOUND_MAX_STAKE）现在都先查
+    指定账号的 runtime_config.json 覆盖，没有再 fallback 到全局 config，
+    这样不同账号可以有独立的复利曲线。
+
     参数:
       account_id: 指定账户 ID；None 使用当前活跃账户
     """
     import config
-    if not config.AUTO_COMPOUND_ENABLED:
-        return config.DEFAULT_STAKE
-
-    trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
+
+    enabled = _account_param(account_id, 'AUTO_COMPOUND_ENABLED',
+                             getattr(config, 'AUTO_COMPOUND_ENABLED', True))
+    default_stake = _account_param(account_id, 'DEFAULT_STAKE',
+                                   getattr(config, 'DEFAULT_STAKE', 50))
+
+    if not enabled:
+        return default_stake
+
+    trades = load_json(TRADES_FILE, [])
     trades = filter_trades_by_account(trades, account_id)
 
     total_pnl = sum(
@@ -452,13 +475,19 @@ def get_compound_stake(account_id: str = None) -> float:
     )
 
     if total_pnl <= 0:
-        return config.DEFAULT_STAKE
+        return default_stake
+
+    step = max(int(_account_param(account_id, 'COMPOUND_STEP',
+                                  getattr(config, 'COMPOUND_STEP', 50))), 1)
+    increase = _account_param(account_id, 'COMPOUND_INCREASE',
+                              getattr(config, 'COMPOUND_INCREASE', 25))
+    max_stake = _account_param(account_id, 'COMPOUND_MAX_STAKE',
+                               getattr(config, 'COMPOUND_MAX_STAKE', 300))
 
     # 平滑复利：用比例代替整数步数，stake 随 total_pnl 连续增长
-    step = max(config.COMPOUND_STEP, 1)
     ratio = total_pnl / step
-    stake = config.DEFAULT_STAKE + ratio * config.COMPOUND_INCREASE
-    stake = min(stake, config.COMPOUND_MAX_STAKE)
+    stake = default_stake + ratio * increase
+    stake = min(stake, max_stake)
 
     # 四舍五入到整数 U（交易所最小精度，也避免浮点尾数扰动风控比对）
     return round(stake)

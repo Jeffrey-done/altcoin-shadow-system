@@ -301,6 +301,24 @@ select { cursor: pointer; }
 
   <!-- TAB: Position & Risk -->
   <div class="tab-content" id="tab-position">
+    <!-- 多账号配置选择器：所有 ACCOUNT_FIELDS 现在按账号独立保存 -->
+    <div class="card" style="background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(99,102,241,0.02));border:1px solid rgba(99,102,241,0.3);">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div>
+          <div style="font-weight:600;font-size:0.92rem;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
+            <i data-lucide="users" style="width:16px;height:16px;color:var(--accent);"></i>
+            正在编辑账号配置
+          </div>
+          <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">
+            下面所有仓位/止盈止损/风控/复利参数都是<b style="color:var(--accent);">独立保存</b>到所选账号；切换账号会自动加载该账号已保存的值。
+          </div>
+        </div>
+        <select id="cfg-target-account" onchange="onTargetAccountChange()" class="btn btn-ghost btn-sm" style="padding:8px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.78rem;min-width:200px;">
+          <option value="">（加载中...）</option>
+        </select>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-title"><i data-lucide="coins"></i> 仓位与杠杆</div>
       <div class="form-row"><label>账户余额 (U)</label><input type="number" id="cfg-ACCOUNT_BALANCE" min="10" max="10000" step="1"></div>
@@ -315,6 +333,15 @@ select { cursor: pointer; }
         <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">动态余额</label><span id="compound-dynamic-balance" style="font-weight:700;">--</span></div>
         <div class="form-row" style="margin-bottom:0;"><label style="color:var(--text-primary);">状态</label><span id="compound-status" class="badge badge-success">--</span></div>
       </div>
+
+      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--accent);display:flex;align-items:center;gap:6px;"><i data-lucide="sliders-horizontal" style="width:14px;height:14px;"></i> 复利曲线参数（每账号独立）</h4>
+      <div class="form-row">
+        <label>启用自动复利</label>
+        <input type="checkbox" id="cfg-AUTO_COMPOUND_ENABLED">
+      </div>
+      <div class="form-row"><label>步进 (盈利每 N U 加一档)</label><input type="number" id="cfg-COMPOUND_STEP" min="10" max="500" step="1"></div>
+      <div class="form-row"><label>每档增加保证金 (U)</label><input type="number" id="cfg-COMPOUND_INCREASE" min="1" max="200" step="1"></div>
+      <div class="form-row"><label>复利后保证金上限 (U)</label><input type="number" id="cfg-COMPOUND_MAX_STAKE" min="10" max="1000" step="1"></div>
     </div>
 
     <div class="card">
@@ -337,8 +364,11 @@ select { cursor: pointer; }
 
     <div style="margin:24px 0;">
       <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 36px;font-size:0.88rem;">
-        <i data-lucide="check" style="width:16px;height:16px;"></i> 保存所有设置
+        <i data-lucide="check" style="width:16px;height:16px;"></i> 保存到所选账号
       </button>
+      <span style="margin-left:14px;font-size:0.72rem;color:var(--text-muted);">
+        全局字段（实盘开关/路由）会落到 <code>_global</code>；账号字段会落到上方下拉所选账号。
+      </span>
     </div>
   </div>
 
@@ -486,6 +516,17 @@ const CSRF_TOKEN = "{{ csrf_token }}";
 let pendingAction = null;
 let currentAccounts = [];
 let currentActiveId = '';
+// 多账号配置：存所有账号的 overrides + 全局 overrides + fields_meta
+// 用于切换账号下拉时本地 reload 表单，不需要每次发请求
+let lastConfigState = {
+  global_config: {},          // _global 段
+  accounts_config: {},        // { acc_id: {...overrides} }
+  fields_meta: {},            // { KEY: {type, label, scope: 'global'|'account'} }
+  config_active_snapshot: {}, // 当前已 apply 到 config 模块的快照（向后兼容）
+  compound_per_account: {},   // { acc_id: {current_stake, dynamic_balance} }
+};
+// 仓位/止盈止损/风控/复利 tab 选择的"目标账号"（可能 != 后台活跃账号）
+let cfgTargetAccountId = '';
 
 async function api(method, path, body) {
   const headers = {'X-Admin-CSRF': CSRF_TOKEN};
@@ -529,7 +570,24 @@ async function switchAccount(accId) { if (accId === currentActiveId) return; try
 async function loadState() {
   try {
     const s = await api('GET', 'api/state');
-    for (const k in s.config) { const el = document.getElementById('cfg-' + k); if (!el) continue; if (el.type === 'checkbox') el.checked = !!s.config[k]; else el.value = s.config[k]; }
+    // 缓存多账号配置原始数据（切账号下拉时本地 reload 表单用，不再发请求）
+    lastConfigState.global_config = s.global_config || {};
+    lastConfigState.accounts_config = s.accounts_config || {};
+    lastConfigState.fields_meta = s.fields_meta || {};
+    lastConfigState.config_active_snapshot = s.config || {};
+    lastConfigState.compound_per_account = s.compound_per_account || {};
+
+    // 1. 全局字段：始终从 global_config 读（落到 #cfg-LIVE_MODE 等）
+    Object.entries(s.config || {}).forEach(([k, v]) => {
+      const meta = (s.fields_meta || {})[k];
+      if (meta && meta.scope === 'global') {
+        const el = document.getElementById('cfg-' + k);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+      }
+    });
+
+    // 2. 账号字段：等下面 currentAccounts 决定后再 populate（见 onTargetAccountChange）
     const bnBadge = document.getElementById('badge-live-bn'), okxBadge = document.getElementById('badge-live-okx');
     bnBadge.textContent = s.config.LIVE_MODE ? 'LIVE' : 'OFF'; bnBadge.className = 'badge ' + (s.config.LIVE_MODE ? 'badge-danger' : 'badge-success');
     okxBadge.textContent = s.config.OKX_LIVE_MODE ? 'LIVE' : 'OFF'; okxBadge.className = 'badge ' + (s.config.OKX_LIVE_MODE ? 'badge-danger' : 'badge-success');
@@ -537,9 +595,95 @@ async function loadState() {
     const okx = s.exchanges.okx; document.getElementById('okx-status').innerHTML = okx.has_credentials ? '<span class="dot dot-green"></span> 已配置 | ' + (okx.masked.api_key || '') : '<span class="dot dot-red"></span> 未配置';
     const sess = s.session; document.getElementById('session-info').innerHTML = Math.floor(sess.idle_remaining_sec / 60) + ' min | ' + (sess.fresh_totp ? '<span class="dot dot-green"></span>' : '<span class="dot dot-yellow"></span>') + ' 2FA';
     currentAccounts = s.accounts || []; currentActiveId = s.active_account || ''; updateAccountUI();
-    if (s.compound) { const cs = s.compound; document.getElementById('compound-current-stake').textContent = cs.current_stake + 'U'; document.getElementById('compound-half-stake').textContent = Math.round(cs.current_stake * 0.5) + 'U'; document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U'; const stEl = document.getElementById('compound-status'); if (cs.enabled && cs.current_stake > (s.config.DEFAULT_STAKE || 50)) { stEl.textContent = '已激活 (+' + (cs.current_stake - (s.config.DEFAULT_STAKE||50)) + 'U)'; stEl.className = 'badge badge-success'; } else if (cs.enabled) { stEl.textContent = '已启用（等待中）'; stEl.className = 'badge badge-warning'; } else { stEl.textContent = '未启用'; stEl.className = 'badge badge-danger'; } }
+
+    // 3. 渲染"配置目标账号"下拉，默认选当前活跃账号
+    rebuildCfgTargetAccountDropdown();
+
+    // 4. populate 账号字段表单（基于 cfgTargetAccountId）
+    populateAccountFieldsForm();
+
+    // 5. 复利显示（基于 cfgTargetAccountId）
+    refreshCompoundDisplay();
+
     lucide.createIcons();
   } catch (e) { alertBox('加载失败: ' + e.message, 'error'); }
+}
+
+// 渲染"配置目标账号"下拉
+function rebuildCfgTargetAccountDropdown() {
+  const sel = document.getElementById('cfg-target-account');
+  if (!sel) return;
+  const prev = cfgTargetAccountId || currentActiveId || '';
+  sel.innerHTML = '';
+  currentAccounts.forEach(acc => {
+    const opt = document.createElement('option');
+    opt.value = acc.id;
+    const tag = acc.id === currentActiveId ? '（当前活跃）' : '';
+    opt.textContent = `${acc.name} ${tag}`.trim();
+    if (acc.id === prev) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  cfgTargetAccountId = sel.value || currentActiveId || '';
+}
+
+// populate 仓位/止盈止损/风控/复利 表单为指定账号的值
+function populateAccountFieldsForm() {
+  const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
+  const globalSnap = lastConfigState.config_active_snapshot || {};
+  const meta = lastConfigState.fields_meta || {};
+
+  Object.keys(meta).forEach(key => {
+    if (meta[key].scope !== 'account') return;
+    const el = document.getElementById('cfg-' + key);
+    if (!el) return;
+    // 优先该账号的覆盖值，否则用 config 模块当前快照（来自 config.py 默认值或 _global 不会覆盖账号字段）
+    let val = accOverrides[key];
+    if (val === undefined) val = globalSnap[key];
+    if (val === undefined || val === null) {
+      // 没值就置空，让 placeholder/min 显示
+      if (el.type !== 'checkbox') el.value = '';
+      else el.checked = false;
+      return;
+    }
+    if (el.type === 'checkbox') el.checked = !!val;
+    else el.value = val;
+  });
+}
+
+// 切换"配置目标账号"下拉时
+function onTargetAccountChange() {
+  const sel = document.getElementById('cfg-target-account');
+  cfgTargetAccountId = sel.value;
+  populateAccountFieldsForm();
+  refreshCompoundDisplay();
+}
+
+// 刷新复利状态显示（按 cfgTargetAccountId）
+function refreshCompoundDisplay() {
+  const cs = (lastConfigState.compound_per_account || {})[cfgTargetAccountId];
+  if (!cs) return;
+  const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
+  const globalSnap = lastConfigState.config_active_snapshot || {};
+  const stake = cs.current_stake;
+  const baseStake = accOverrides.DEFAULT_STAKE !== undefined ? accOverrides.DEFAULT_STAKE : (globalSnap.DEFAULT_STAKE || 50);
+  const enabled = accOverrides.AUTO_COMPOUND_ENABLED !== undefined
+    ? accOverrides.AUTO_COMPOUND_ENABLED
+    : (globalSnap.AUTO_COMPOUND_ENABLED !== undefined ? globalSnap.AUTO_COMPOUND_ENABLED : true);
+
+  document.getElementById('compound-current-stake').textContent = stake + 'U';
+  document.getElementById('compound-half-stake').textContent = Math.round(stake * 0.5) + 'U';
+  document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U';
+  const stEl = document.getElementById('compound-status');
+  if (enabled && stake > baseStake) {
+    stEl.textContent = '已激活 (+' + (stake - baseStake) + 'U)';
+    stEl.className = 'badge badge-success';
+  } else if (enabled) {
+    stEl.textContent = '已启用（等待中）';
+    stEl.className = 'badge badge-warning';
+  } else {
+    stEl.textContent = '未启用';
+    stEl.className = 'badge badge-danger';
+  }
 }
 
 function updateAccountUI() {
@@ -603,12 +747,62 @@ function toggleLiveMode(key, el) {
   }; doToggle();
 }
 
+// 保存"仓位与风控"tab 上的所有字段：依据 fields_meta.scope 自动分两路：
+//   - account 字段 → POST /api/config { account_id: cfgTargetAccountId, changes: {...} }
+//   - global  字段 → POST /api/config { changes: {...} }（不带 account_id 即落 _global）
+// 全局字段（LIVE_MODE / OKX_LIVE_MODE / PRIMARY_EXCHANGE 等）在 tab-live 里有自己
+// 的 toggleLiveMode()，正常场景下 saveConfig 只会触发账号字段保存。
 function saveConfig() {
+  const accId = cfgTargetAccountId || currentActiveId || '';
+  if (!accId) {
+    alertBox('请先选择一个账号', 'error');
+    return;
+  }
+  const meta = lastConfigState.fields_meta || {};
+  const accountChanges = {};
+  const globalChanges = {};
+
+  Object.keys(meta).forEach(key => {
+    const el = document.getElementById('cfg-' + key);
+    if (!el) return;
+    let value;
+    if (el.type === 'checkbox') value = el.checked;
+    else if (el.type === 'number') {
+      if (el.value === '' || el.value === null) return; // 空值跳过
+      value = parseFloat(el.value);
+      if (Number.isNaN(value)) return;
+    } else {
+      value = el.value;
+    }
+    if (meta[key].scope === 'global') globalChanges[key] = value;
+    else accountChanges[key] = value;
+  });
+
   const doSave = async () => {
-    const changes = {}; const keys = ['LIVE_MODE','OKX_LIVE_MODE','PRIMARY_EXCHANGE','PRIMARY_EXCHANGE_FALLBACK','ACCOUNT_BALANCE','DEFAULT_STAKE','LEVERAGE','OKX_DEFAULT_LEVERAGE','TP1_MULTIPLIER','TP2_MULTIPLIER','TP1_CLOSE_RATIO','HARD_STOP_LOSS_PCT','SLIPPAGE_ALERT_PCT','RISK_MAX_DAILY_LOSS','RISK_MAX_DAILY_TRADES','RISK_CONSECUTIVE_LOSS_PAUSE','RISK_MAX_POSITION_PCT','COOLDOWN_HOURS'];
-    keys.forEach(key => { const el = document.getElementById('cfg-' + key); if (!el) return; if (el.type === 'checkbox') changes[key] = el.checked; else if (el.type === 'number') changes[key] = parseFloat(el.value); else changes[key] = el.value; });
-    try { const r = await api('POST', 'api/config', {changes}); if (r.needTotp) { openTotpModal(doSave); return; } alertBox('已保存 ' + Object.keys(r.applied||{}).length + ' 项更改', 'ok'); loadState(); } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
-  }; doSave();
+    try {
+      let savedCount = 0;
+      let totpRequired = false;
+      // 先存账号字段（最常用）
+      if (Object.keys(accountChanges).length) {
+        const r = await api('POST', 'api/config', { account_id: accId, changes: accountChanges });
+        if (r.needTotp) { totpRequired = true; }
+        else { savedCount += Object.keys(accountChanges).length; }
+      }
+      if (totpRequired) { openTotpModal(doSave); return; }
+      // 再存可能存在的全局字段（实际上 tab-position 不应有全局字段，保险起见）
+      if (Object.keys(globalChanges).length) {
+        const r2 = await api('POST', 'api/config', { changes: globalChanges });
+        if (r2.needTotp) { openTotpModal(doSave); return; }
+        savedCount += Object.keys(globalChanges).length;
+      }
+      const accName = (currentAccounts.find(a => a.id === accId) || {}).name || accId;
+      alertBox(`已保存 ${savedCount} 项更改到账号「${accName}」`, 'ok');
+      loadState();
+    } catch (e) {
+      alertBox('保存失败: ' + e.message, 'error');
+    }
+  };
+  doSave();
 }
 
 function saveCredentials(exchange) {

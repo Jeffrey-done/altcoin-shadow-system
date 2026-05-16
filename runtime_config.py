@@ -83,6 +83,12 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
     'LEVERAGE': (int, _int_validator(1, 20), 'Binance 杠杆倍数'),
     'OKX_DEFAULT_LEVERAGE': (int, _int_validator(1, 20), 'OKX 杠杆倍数'),
 
+    # ── 复利策略（每账号独立曲线）──
+    'AUTO_COMPOUND_ENABLED': (bool, None, '自动复利总开关'),
+    'COMPOUND_STEP': (int, _int_validator(10, 500), '每累计盈利 N U 步进 (U)'),
+    'COMPOUND_INCREASE': (int, _int_validator(1, 200), '每步增加的保证金 (U)'),
+    'COMPOUND_MAX_STAKE': (int, _int_validator(10, 1000), '复利后单笔保证金上限 (U)'),
+
     # ── 止盈止损档位 ──
     'TP1_MULTIPLIER': (float, _pct_validator(0.80, 1.0), 'TP1 价格乘数'),
     'TP2_MULTIPLIER': (float, _pct_validator(0.70, 1.0), 'TP2 价格乘数'),
@@ -377,6 +383,25 @@ def load_account_overrides(account_id: str) -> dict:
     """读取指定账户的配置覆盖"""
     data = _load_raw_config()
     return data.get(account_id, {})
+
+
+def load_all_account_overrides() -> dict:
+    """
+    读取所有账户的配置覆盖，结构：
+        { 'acc_abc': { 'ACCOUNT_BALANCE': 100, 'DEFAULT_STAKE': 50, ... },
+          'acc_def': { 'ACCOUNT_BALANCE': 500, ... } }
+
+    注意：不会包含 _global 段。供 admin panel /api/state 一次性下发到前端，
+    前端切账号时本地 reload 表单不需要再发请求。
+    """
+    data = _load_raw_config()
+    out = {}
+    for key, value in data.items():
+        if key.startswith('_'):
+            continue
+        if isinstance(value, dict):
+            out[key] = value
+    return out
 
 
 def save_account_overrides(account_id: str, overrides: dict) -> None:
