@@ -43,7 +43,6 @@ import os
 import secrets
 import stat
 import struct
-import sys
 import tempfile
 import time as _time
 from contextlib import contextmanager
@@ -52,38 +51,11 @@ from typing import Optional
 from urllib.parse import quote
 
 
-# L-1: 跨平台文件锁兼容（与 common._LockShim 保持一致）
-if sys.platform == 'win32':
-    import msvcrt
-
-    class _LockShim:
-        """Windows flock 仿真层（NF-1: 加 lseek(0) 让多进程锁同一 byte，与 common._LockShim 一致）"""
-        LOCK_EX = 1
-        LOCK_SH = 2
-        LOCK_UN = 0
-
-        @staticmethod
-        def flock(fd, op: int) -> None:
-            try:
-                fileno = fd.fileno()
-            except AttributeError:
-                fileno = fd
-            # NF-1: 锁住固定的 byte 0，避免 'a' 模式打开的 fd 在 EOF 处加锁导致互斥失效
-            try:
-                os.lseek(fileno, 0, os.SEEK_SET)
-            except OSError:
-                pass
-            if op == _LockShim.LOCK_UN:
-                try:
-                    msvcrt.locking(fileno, msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
-                return
-            msvcrt.locking(fileno, msvcrt.LK_LOCK, 1)
-
-    fcntl = _LockShim()
-else:
-    import fcntl  # noqa: F401
+# NF-5 修复（基于 L-1）：跨平台文件锁不再重复定义；统一从 common 导入
+# common.fcntl 在 Windows 是 common._LockShim() 实例（含 NF-1 的 lseek(0) 修复），
+# 在 Linux/Mac 是真正的 fcntl 模块。两边都暴露 flock / LOCK_EX / LOCK_UN，
+# 从而 admin_secrets 全文 fcntl.flock(...) / fcntl.LOCK_EX 用法不变。
+from common import fcntl  # noqa: F401  (共用 shim，避免 NF-1 类修复需要改两处)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SECRETS_FILE = os.path.join(SCRIPT_DIR, 'admin_secrets.json')

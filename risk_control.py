@@ -371,11 +371,19 @@ def record_trade_opened(stake: float = config.DEFAULT_STAKE, strategy: str = 'sh
 
 
 def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
-                        account_id: Optional[str] = None) -> None:
+                        account_id: Optional[str] = None,
+                        trade_account_id: Optional[str] = None) -> None:
     """
     记录指定账户的平仓事件（全程加锁）。
     pnl < 0 表示亏损。
+
+    NF-4: 与 ``release_partial_stake`` 同样的语义 —— 当 ``account_id`` 未指定
+    但调用方知道这笔交易自带的 account_id（含空字符串），优先使用
+    ``trade_account_id``，避免回退到当前活跃账户造成跨账户错账。
     """
+    # NF-4: 优先用 trade 自带的 account_id
+    if account_id is None and trade_account_id is not None:
+        account_id = trade_account_id
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
 
@@ -447,7 +455,8 @@ def refresh_open_stake(account_id: Optional[str] = None) -> None:
             logger.info(f"🔄 持仓同步 [{_resolve_account_id(account_id)}]：{actual:.0f}U（无偏差）")
 
 
-def release_partial_stake(stake: float, account_id: Optional[str] = None) -> None:
+def release_partial_stake(stake: float, account_id: Optional[str] = None,
+                          trade_account_id: Optional[str] = None) -> None:
     """
     M-1 修复：TP1 半仓平仓后释放保证金到 total_open_stake，
     但不影响 daily_loss / consecutive_losses（这些只在最终平仓时记账）。
@@ -455,7 +464,15 @@ def release_partial_stake(stake: float, account_id: Optional[str] = None) -> Non
     背景：record_trade_closed 会重置/累加连亏计数，把"TP1 锁定的浮动利润"
     当成实现盈利记账会让 TP1 后再硬止损的整笔亏损被错误地清空连亏计数。
     专用函数只动 total_open_stake，避免误触发风控状态。
+
+    NF-4 修复：当 ``account_id`` 未指定但调用方知道这笔交易自带的 account_id
+    （包括空字符串 ``''`` 表示 v4.3 之前的老数据 → 全局默认账户），优先使用
+    ``trade_account_id``。否则在多账户环境里调 ``release_partial_stake(stake)``
+    会回退到 *当前活跃账户*，把 TP1 释放的 stake 错记到错误账户上。
     """
+    # NF-4: 优先用 trade 自带的 account_id（可能是空字符串，代表全局默认）
+    if account_id is None and trade_account_id is not None:
+        account_id = trade_account_id
     if stake <= 0:
         return
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):

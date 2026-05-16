@@ -367,14 +367,16 @@ def check_main_trades(symbol: str, price: float):
 
     # 2) 改风控（此时交易已经落盘）
     for pnl_usd, stake_remaining, close_reason, sym, direction, acc_id in pending_risk_updates:
-        record_trade_closed(pnl_usd, stake_remaining, account_id=acc_id or None)
+        # NF-4: 用 trade_account_id（包括 ''）让函数能区分"未指定"与"trade 自带"
+        record_trade_closed(pnl_usd, stake_remaining, trade_account_id=acc_id)
         logger.info(
             f"⚡ 实时平仓: {sym} | {direction} | "
             f"原因={close_reason} | PnL={pnl_usd:+.2f}U"
         )
     # M-1: TP1 半仓 stake 释放（不影响 daily_loss / consecutive_losses）
     for _ppnl, _pstake, _pacc in pending_risk_partials:
-        release_partial_stake(_pstake, account_id=_pacc or None)
+        # NF-4: 同上
+        release_partial_stake(_pstake, trade_account_id=_pacc)
     # 3) 再推送
     for msg in pending_alerts:
         send_tg(msg)
