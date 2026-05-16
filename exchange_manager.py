@@ -33,6 +33,67 @@ _binance_instance: Optional[ccxt.binance] = None
 _okx_instance: Optional[ccxt.okx] = None
 
 
+# H10: ccxt HTTP 超时（毫秒）。所有走 ccxt 的 fetch_*/create_order 调用
+# 都受这个限制，防止 OKX/Binance 抽风时把进程拖死到外层 600s 任务超时。
+DEFAULT_CCXT_TIMEOUT_MS = 8000
+
+
+def make_exchange(
+    name: str,
+    *,
+    api_key: str = '',
+    secret: str = '',
+    passphrase: str = '',
+    default_type: str = '',
+    enable_rate_limit: bool = True,
+    timeout_ms: int = DEFAULT_CCXT_TIMEOUT_MS,
+    extra_options: Optional[dict] = None,
+):
+    """
+    统一的 ccxt 实例工厂。所有创建 ccxt 实例的地方都应该走这里，
+    保证 `timeout` 必填，避免有人写出"无 timeout 的 ccxt 实例"。
+
+    Args:
+      name: 'binance' 或 'okx'
+      api_key/secret/passphrase: 凭证（留空 = 公共数据实例）
+      default_type: ccxt 的 options.defaultType
+        - Binance: 'future' 表示 USDT-M 永续合约
+        - OKX:    'swap'   表示 USDT 永续合约
+        - 留空:   交易所默认（一般是现货）
+      enable_rate_limit: 是否启用 ccxt 自带 rate limiter
+      timeout_ms: HTTP 请求超时（毫秒），默认 8000
+      extra_options: 合并到 ccxt.options 的额外配置
+
+    Returns:
+      ccxt.Exchange 实例
+    """
+    cfg: dict = {
+        'enableRateLimit': enable_rate_limit,
+        'timeout': timeout_ms,
+    }
+    if api_key:
+        cfg['apiKey'] = api_key
+    if secret:
+        cfg['secret'] = secret
+    if passphrase:
+        # OKX 用 'password' 字段表示 passphrase
+        cfg['password'] = passphrase
+
+    options: dict = {}
+    if default_type:
+        options['defaultType'] = default_type
+    if extra_options:
+        options.update(extra_options)
+    if options:
+        cfg['options'] = options
+
+    if name == 'binance':
+        return ccxt.binance(cfg)
+    if name == 'okx':
+        return ccxt.okx(cfg)
+    raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx'）")
+
+
 def get_binance(authenticated: bool = False) -> ccxt.binance:
     """获取 Binance 交易所实例
 
@@ -44,11 +105,9 @@ def get_binance(authenticated: bool = False) -> ccxt.binance:
     global _binance_instance
     if not authenticated:
         if _binance_instance is None:
-            # H10: 显式 timeout=8s，避免 OKX/Binance 抽风时子进程卡到父超时（600s）
-            _binance_instance = ccxt.binance({
-                'enableRateLimit': True,
-                'timeout': 8000,
-            })
+            # H10: make_exchange 强制 timeout，避免 OKX/Binance 抽风时
+            # 子进程卡到父超时（600s）
+            _binance_instance = make_exchange('binance')
         return _binance_instance
 
     # 认证版本：与 live_executor 统一凭证解析逻辑
@@ -66,13 +125,12 @@ def get_binance(authenticated: bool = False) -> ccxt.binance:
     if not api_key or not secret:
         logger.warning("Binance API 凭证未配置（admin_secrets 和 .env 都没有）")
 
-    return ccxt.binance({
-        'apiKey': api_key,
-        'secret': secret,
-        'enableRateLimit': True,
-        'timeout': 8000,
-        'options': {'defaultType': 'future'},
-    })
+    return make_exchange(
+        'binance',
+        api_key=api_key,
+        secret=secret,
+        default_type='future',
+    )
 
 
 def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
@@ -87,12 +145,10 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
     if not authenticated:
         if _okx_instance is None:
             try:
-                # H10: 显式 timeout=8s，避免 OKX 抽风时 fetch_ticker/load_markets
-                # 卡在 urllib3 socket read，导致子进程被父超时 600s 强杀
-                _okx_instance = ccxt.okx({
-                    'enableRateLimit': True,
-                    'timeout': 8000,
-                })
+                # H10: make_exchange 强制 timeout，避免 OKX 抽风时
+                # fetch_ticker/load_markets 卡在 urllib3 socket read，
+                # 导致子进程被父超时 600s 强杀
+                _okx_instance = make_exchange('okx')
             except Exception as e:
                 logger.warning(f"OKX 初始化失败: {e}")
                 return None
@@ -116,13 +172,12 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
         return None
 
     try:
-        return ccxt.okx({
-            'apiKey': api_key,
-            'secret': secret,
-            'password': passphrase,
-            'enableRateLimit': True,
-            'timeout': 8000,
-        })
+        return make_exchange(
+            'okx',
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+        )
     except Exception as e:
         logger.warning(f"OKX 认证实例创建失败: {e}")
         return None

@@ -337,7 +337,9 @@ def detect_volume_divergence(exchange, symbol: str) -> dict:
 def scan_daily():
     """扫描全市场，找日线 RSI > DAILY_RSI_MIN 的候选币"""
     logger.info("=== 开始日线扫描 ===")
-    exchange = ccxt.binance({'enableRateLimit': True})
+    # H10: 走 exchange_manager 单例，强制带 timeout，避免 fetch_tickers 卡死
+    from exchange_manager import get_binance
+    exchange = get_binance()
 
     # 获取快速预筛标记的热门币（优先处理）
     try:
@@ -572,7 +574,9 @@ def check_candidates():
         return
 
     candidates = [Candidate.from_dict(c) for c in candidates_list]
-    exchange = ccxt.binance({'enableRateLimit': True})
+    # H10: 走 exchange_manager 单例，强制带 timeout
+    from exchange_manager import get_binance
+    exchange = get_binance()
     logger.info(f"=== 检查候选池（{len(candidates)}个）| BTC 24h={btc_pct:+.1f}% ===")
 
     # 仅用于"是否已有持仓"的预过滤（真实开仓时会在锁内再校验一次，防竞态）

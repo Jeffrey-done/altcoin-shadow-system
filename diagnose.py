@@ -294,8 +294,8 @@ def check_market_conditions():
     section("6. 市场条件预检（需网络）")
 
     try:
-        import ccxt
-        exchange = ccxt.binance({'enableRateLimit': True})
+        from exchange_manager import make_exchange
+        exchange = make_exchange('binance')
         print("  正在获取全市场行情...")
         tickers = exchange.fetch_tickers()
 

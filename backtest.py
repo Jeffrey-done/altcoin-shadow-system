@@ -314,8 +314,8 @@ def fetch_historical_klines(symbol: str, timeframe: str = '1h',
       - 只有零星 1-2 根断点（可能因为停盘/下架），则保留但 logger.warning
     """
     try:
-        import ccxt
-        exchange = ccxt.binance({'enableRateLimit': True})
+        from exchange_manager import make_exchange
+        exchange = make_exchange('binance')
 
         since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
         all_ohlcv = []
