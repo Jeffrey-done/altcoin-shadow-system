@@ -141,6 +141,72 @@ def validate_change(key: str, value: Any) -> Tuple[bool, str]:
     return True, ""
 
 
+def validate_cross_field_consistency(overrides: dict, account_id: str = None) -> list:
+    """
+    跨字段一致性校验：检测参数组合是否会导致系统功能异常。
+
+    不阻止保存（返回警告列表），但会通过日志和 TG 通知管理员。
+    调用方（admin_panel）应在保存成功后把 warnings 展示给用户。
+
+    当前检查项：
+      1. DEFAULT_STAKE > ACCOUNT_BALANCE × RISK_MAX_POSITION_PCT
+         → 第一笔开仓就占满额度，第二笔永远无法开仓
+      2. DEFAULT_STAKE > ACCOUNT_BALANCE
+         → 保证金超过本金，风控 can_open_trade 永远拒绝
+
+    参数:
+      overrides: 即将保存的覆盖值 dict
+      account_id: 指定账户 ID；None 使用活跃账户（用于读取当前 config 值做合并）
+
+    返回: [warning_message, ...] 空列表表示无警告
+    """
+    import config as _config
+    warnings = []
+
+    # 合并：用 overrides 覆盖当前 config 值，得到"如果保存后"的生效值
+    balance = overrides.get('ACCOUNT_BALANCE', getattr(_config, 'ACCOUNT_BALANCE', 100))
+    stake = overrides.get('DEFAULT_STAKE', getattr(_config, 'DEFAULT_STAKE', 50))
+    pos_pct = overrides.get('RISK_MAX_POSITION_PCT', getattr(_config, 'RISK_MAX_POSITION_PCT', 0.5))
+
+    # 尝试从账户覆盖里读（如果指定了 account_id）
+    if account_id:
+        try:
+            acc_overrides = load_account_overrides(account_id)
+            balance = overrides.get('ACCOUNT_BALANCE', acc_overrides.get('ACCOUNT_BALANCE', balance))
+            stake = overrides.get('DEFAULT_STAKE', acc_overrides.get('DEFAULT_STAKE', stake))
+            pos_pct = overrides.get('RISK_MAX_POSITION_PCT', acc_overrides.get('RISK_MAX_POSITION_PCT', pos_pct))
+        except Exception:
+            pass
+
+    # 确保数值类型
+    try:
+        balance = float(balance)
+        stake = float(stake)
+        pos_pct = float(pos_pct)
+    except (TypeError, ValueError):
+        return warnings  # 类型有问题，单字段校验已经会报错
+
+    max_position = balance * pos_pct
+
+    if stake > balance:
+        warnings.append(
+            f"⚠️ DEFAULT_STAKE({stake:.0f}U) > ACCOUNT_BALANCE({balance:.0f}U)，"
+            f"保证金超过本金，风控将永远拒绝开仓"
+        )
+    elif stake > max_position:
+        warnings.append(
+            f"⚠️ DEFAULT_STAKE({stake:.0f}U) > 最大持仓上限({max_position:.0f}U = "
+            f"ACCOUNT_BALANCE {balance:.0f} × RISK_MAX_POSITION_PCT {pos_pct})，"
+            f"同时存在其他持仓时新开仓将被拒绝"
+        )
+
+    if warnings:
+        for w in warnings:
+            logger.warning(f"配置一致性警告: {w}")
+
+    return warnings
+
+
 # ══════════════════════════════════════════════════════════════════
 #  读写 runtime_config.json（v2 多账户格式）
 # ══════════════════════════════════════════════════════════════════
@@ -246,6 +312,9 @@ def save_overrides(overrides: dict) -> None:
             data.setdefault(active_id, {})[key] = value
 
     _save_raw_config(data)
+
+    # 跨字段一致性检查（保存后警告，不阻止）
+    validate_cross_field_consistency(overrides, account_id=active_id)
 
 
 def load_account_overrides(account_id: str) -> dict:

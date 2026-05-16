@@ -473,6 +473,14 @@ def scan_daily():
 
     logger.info(f"日线扫描完成，共检查 {checked} 个标的，候选池 {final_count} 个")
 
+    # 清空快速预筛标记：本轮扫描已经处理了所有热门币，
+    # 清空后下一轮 hot_scanner WS 会重新标记（避免旧标记累积干扰排序优先级）
+    try:
+        from hot_scanner import clear_hot_symbols
+        clear_hot_symbols()
+    except ImportError:
+        pass
+
 
 # ══════════════════════════════════════════════════════════════════
 #  第二阶段：4h 确认（每1小时）
@@ -791,15 +799,25 @@ def check_candidates():
     def _check_budget() -> bool:
         return (_time.monotonic() - _round_t0) < _budget
 
-    # 用 monkey-patch threading.Thread 让 ThreadPoolExecutor 创建的 worker 都是 daemon
+    # H11-fix: 用自定义 DaemonThreadPoolExecutor 代替全局 monkey-patch threading.Thread.__init__。
+    # 旧做法在 CLI 模式（主进程直接调用 check_candidates）下有竞态风险：
+    # 如果 hot_scanner / tg_bot 后台线程恰好在 patch 期间创建新线程，
+    # 这些无关线程会被错误标记为 daemon 而意外退出。
+    # 新做法：覆盖 ThreadPoolExecutor._adjust_thread_count 在 worker 启动后设 daemon，
+    # 作用域严格限制在 executor 实例内部。
     import threading as _threading
-    _original_thread_init = _threading.Thread.__init__
-    def _daemon_thread_init(self, *args, **kwargs):
-        _original_thread_init(self, *args, **kwargs)
-        # 仅 cand-eval 线程被强制 daemon（避免影响其它模块的线程）
-        if 'cand-eval' in (self.name or ''):
-            self.daemon = True
-    _threading.Thread.__init__ = _daemon_thread_init
+
+    class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+        """ThreadPoolExecutor whose worker threads are daemon threads.
+        Safe: only affects this executor instance, no global side effects."""
+        def _adjust_thread_count(self):
+            super()._adjust_thread_count()
+            for t in list(self._threads):
+                if not t.daemon:
+                    try:
+                        t.daemon = True
+                    except RuntimeError:
+                        pass  # 已启动的线程无法改 daemon，忽略
 
     try:
         for chunk_start in range(0, len(candidates), chunk_size):
@@ -824,7 +842,7 @@ def check_candidates():
                 timeout_break = True
                 break
 
-            executor = ThreadPoolExecutor(
+            executor = _DaemonThreadPoolExecutor(
                 max_workers=_max_workers, thread_name_prefix='cand-eval',
             )
             try:
@@ -873,8 +891,7 @@ def check_candidates():
                 # wait=False：不等已经在跑的 worker；线程是 daemon，进程退出时被 OS 清理
                 executor.shutdown(wait=False)
     finally:
-        # 恢复 threading.Thread.__init__
-        _threading.Thread.__init__ = _original_thread_init
+        pass  # No global state to restore (DaemonThreadPoolExecutor is instance-scoped)
 
     eval_elapsed = _time.monotonic() - _round_t0
     logger.info(

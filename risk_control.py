@@ -506,15 +506,24 @@ def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
         else:
             # M4: 用 parse_iso().date() 比较而不是 startswith
             # 防止时区漂移写入的 closed_at 字段（如本地时间串）绕过"同日已平仓"保护
+            #
+            # Fix: 只有亏损平仓才触发同日冷却。盈利平仓（TP1/TP2 止盈）不应
+            # 阻止当天再次捕捉同一币种的新信号（例如早盘 TP2 后下午出现第二波）。
+            # 原先所有平仓都冷却的设计过于保守，会浪费日内多次入场机会。
+            realized_pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            if realized_pnl >= 0:
+                # 盈利或持平平仓 → 不冷却，允许同日再开
+                continue
+
             try:
                 closed_date = parse_iso(closed_at).date()
                 if closed_date == today_dt:
-                    reason = "今日已平仓过（防止同日二次开仓亏损）"
+                    reason = "今日已亏损平仓过（防止同日二次开仓扩大亏损）"
                     return (True, reason)
             except Exception:
                 # 解析失败 → 退回到保守的 startswith 作为 fallback
                 if closed_at.startswith(now.strftime('%Y-%m-%d')):
-                    reason = "今日已平仓过（防止同日二次开仓亏损）"
+                    reason = "今日已亏损平仓过（防止同日二次开仓扩大亏损）"
                     return (True, reason)
 
     return (False, "")

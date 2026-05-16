@@ -504,28 +504,47 @@ def find_cross_exchange_arb_opportunities() -> list:
 # ══════════════════════════════════════════════════════════════════
 
 _okx_swap_symbols: Optional[set] = None
+_okx_swap_loaded_at: float = 0.0
+# TTL: OKX 合约列表缓存有效期（秒）。4小时刷新一次，兼顾新币上线感知和 API 节约。
+_OKX_SWAP_CACHE_TTL: float = 4 * 3600
+
+
+def _refresh_okx_swap_symbols() -> None:
+    """从 OKX 重新加载永续合约品种列表到内存缓存"""
+    global _okx_swap_symbols, _okx_swap_loaded_at
+    import time as _time
+    try:
+        okx = get_okx()
+        if okx:
+            okx.load_markets()
+            _okx_swap_symbols = {
+                m['symbol'] for m in okx.markets.values()
+                if m.get('swap') and m.get('quote') == 'USDT'
+            }
+        else:
+            _okx_swap_symbols = set()
+    except Exception as e:
+        logger.warning(f"加载 OKX 市场列表失败: {e}")
+        if _okx_swap_symbols is None:
+            _okx_swap_symbols = set()
+        # 加载失败时保留旧缓存，但把 loaded_at 设为当前时间的一半 TTL，
+        # 这样 2 小时后会重试（而不是每次调用都重试导致 API 洪水）
+        _okx_swap_loaded_at = _time.time() - _OKX_SWAP_CACHE_TTL / 2
+        return
+    _okx_swap_loaded_at = _time.time()
+    logger.info(f"OKX 合约列表已刷新: {len(_okx_swap_symbols)} 个永续品种")
 
 
 def okx_has_swap(symbol: str) -> bool:
-    """检查 OKX 是否有该币种的永续合约"""
-    global _okx_swap_symbols
+    """检查 OKX 是否有该币种的永续合约（带 TTL 缓存，每 4 小时刷新）"""
+    global _okx_swap_symbols, _okx_swap_loaded_at
+    import time as _time
     if not config.OKX_ENABLED:
         return False
 
-    if _okx_swap_symbols is None:
-        try:
-            okx = get_okx()
-            if okx:
-                okx.load_markets()
-                _okx_swap_symbols = {
-                    m['symbol'] for m in okx.markets.values()
-                    if m.get('swap') and m.get('quote') == 'USDT'
-                }
-            else:
-                _okx_swap_symbols = set()
-        except Exception as e:
-            logger.warning(f"加载 OKX 市场列表失败: {e}")
-            _okx_swap_symbols = set()
+    # 首次加载或缓存过期 → 刷新
+    if _okx_swap_symbols is None or (_time.time() - _okx_swap_loaded_at > _OKX_SWAP_CACHE_TTL):
+        _refresh_okx_swap_symbols()
 
     # ccxt OKX swap 格式: BTC/USDT:USDT
     swap_symbol = symbol.replace('/USDT', '/USDT:USDT')
