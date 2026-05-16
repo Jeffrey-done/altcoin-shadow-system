@@ -4,16 +4,51 @@
 提供：日志配置、TG推送、原子写JSON、环境变量加载、符号转换、时间工具
 """
 
-import fcntl
+import html as _html
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
+
+
+# ── 跨平台文件锁封装（L-1 修复）────────────────────────────────
+# Linux/Mac 用 fcntl.flock；Windows fallback 到 msvcrt.locking。
+# 生产部署还是 Linux Docker，本地 Windows 开发也能跑。
+if sys.platform == 'win32':
+    import msvcrt
+
+    class _LockShim:
+        """Windows 专用 flock 仿真层（仅 read-modify-write 临界区适用）"""
+        LOCK_EX = 1   # 独占锁
+        LOCK_SH = 2   # 共享锁（msvcrt 没有真正共享语义，退化为独占）
+        LOCK_UN = 0   # 解锁
+
+        @staticmethod
+        def flock(fd, op: int) -> None:
+            try:
+                fileno = fd.fileno()
+            except AttributeError:
+                fileno = fd  # 如果传入的是 fd 整数
+
+            if op == _LockShim.LOCK_UN:
+                try:
+                    msvcrt.locking(fileno, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass  # 已经解锁
+                return
+            # LOCK_EX / LOCK_SH 都退化为独占阻塞锁
+            # LK_LOCK 失败会自动重试 10 次后抛 OSError
+            msvcrt.locking(fileno, msvcrt.LK_LOCK, 1)
+
+    fcntl = _LockShim()  # 让下方代码 fcntl.flock(...) / fcntl.LOCK_EX 不变
+else:
+    import fcntl  # noqa: F401 (Linux/Mac 原生)
 
 # ── 路径常量 ─────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,21 +96,72 @@ def setup_logger(name: str) -> logging.Logger:
 
 
 # ── TG 推送 ──────────────────────────────────────────────────────
-def send_tg(msg: str) -> bool:
-    """发送 Telegram 消息，返回是否成功"""
+def tg_escape(value: Any) -> str:
+    """
+    把任意值（错误对象、交易所返回字符串、用户控制片段）转义成 Telegram HTML
+    parse_mode 安全的字符串。
+
+    Telegram HTML 解析对 < > & 极其严格：
+      - 未配对的 < / > 会让整条消息返回 400 'can't parse entities'
+      - 未实体化的 & 也会拒收
+    任何把"外部数据"嵌入 send_tg 字符串模板的地方都应该过这层。
+    """
+    if value is None:
+        return ''
+    return _html.escape(str(value), quote=False)
+
+
+def send_tg(msg: str, html: bool = True) -> bool:
+    """
+    发送 Telegram 消息。
+
+    H-1 修复（2026-05）:
+      1. parse_mode=HTML 解析失败时（外部数据混入 < & 等）自动降级成纯文本重发，
+         保证关键告警一定能送达，而不是因为字符问题被静默丢弃。
+      2. 调用方若主动调用 tg_escape() 包裹不可信片段，可避免触发降级重发。
+
+    返回是否成功（含降级路径成功）。
+    """
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         logging.warning("TG 配置缺失，跳过推送")
         return False
+
+    payload = {"chat_id": TG_CHAT_ID, "text": msg}
+    if html:
+        payload["parse_mode"] = "HTML"
+
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            json=payload,
             timeout=10,
         )
-        if resp.status_code != 200:
-            logging.warning(f"TG 推送返回非 200: {resp.status_code} {resp.text[:200]}")
-            return False
-        return True
+        if resp.status_code == 200:
+            return True
+
+        # 400 + can't parse entities → HTML 解析失败，降级为纯文本重发一次
+        body = resp.text or ''
+        if (
+            html
+            and resp.status_code == 400
+            and ("can't parse" in body.lower() or "entities" in body.lower())
+        ):
+            logging.warning(
+                "TG HTML 解析失败，降级为纯文本重发: %s", body[:200]
+            )
+            # 把可能误触发解析的标签 / 实体替换掉，保证 plaintext 至少可读
+            plain = (
+                msg.replace('<b>', '').replace('</b>', '')
+                   .replace('<code>', '').replace('</code>', '')
+                   .replace('<i>', '').replace('</i>', '')
+                   .replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+            )
+            return send_tg(plain, html=False)
+
+        logging.warning(
+            "TG 推送返回非 200: %s %s", resp.status_code, body[:200]
+        )
+        return False
     except Exception as e:
         logging.error(f"TG 推送失败: {e}")
         return False

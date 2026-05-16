@@ -372,6 +372,32 @@ def main_loop():
     except Exception as e:
         logger.error(f"启动对账异常: {e}")
 
+    # M-6: 启动时校验配置一致性，对致命组合（DEFAULT_STAKE > balance）告警
+    try:
+        from runtime_config import validate_cross_field_consistency
+        from common import send_tg, tg_escape
+        errors, warnings = validate_cross_field_consistency({})  # 空 overrides → 仅校验当前 config
+        if errors:
+            err_text = "\n".join(f"• {e}" for e in errors)
+            logger.error(f"启动配置一致性 ERROR:\n{err_text}")
+            send_tg(
+                f"🚫 <b>启动配置一致性致命错误</b>\n\n"
+                + "\n".join(f"• {tg_escape(e)}" for e in errors)
+                + "\n\n⚠️ 当前配置会让风控永远拒绝开仓。"
+                "请立即在 admin panel 调整后系统才能正常工作。"
+            )
+        if warnings:
+            warn_text = "\n".join(f"• {w}" for w in warnings)
+            logger.warning(f"启动配置一致性 WARNING:\n{warn_text}")
+            send_tg(
+                f"⚠️ <b>启动配置一致性警告</b>\n\n"
+                + "\n".join(f"• {tg_escape(w)}" for w in warnings)
+                + "\n\n建议在 admin panel 调整 DEFAULT_STAKE / RISK_MAX_POSITION_PCT / "
+                "ACCOUNT_BALANCE 三者关系。"
+            )
+    except Exception as e:
+        logger.debug(f"配置一致性校验异常（非致命）: {e}")
+
     # 启动快速预筛后台线程
     try:
         from hot_scanner import start_hot_scanner_thread

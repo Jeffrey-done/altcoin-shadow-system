@@ -39,7 +39,7 @@ from common import (
     setup_logger, send_tg, load_json, LockedJsonFile,
 )
 from models import Trade
-from risk_control import record_trade_closed
+from risk_control import record_trade_closed, release_partial_stake
 
 logger = setup_logger("realtime_monitor")
 
@@ -317,6 +317,7 @@ def check_main_trades(symbol: str, price: float):
     from altcoin_tracker import evaluate_trade, _perform_exchange_close
 
     pending_risk_updates = []   # [(pnl_usd, stake_remaining, close_reason, symbol, direction), ...]
+    pending_risk_partials = []  # M-1: TP1 半仓 risk 记账
     pending_alerts = []
     pending_exchange_closes = []  # [(trade_ref, action, amount), ...]
 
@@ -342,6 +343,11 @@ def check_main_trades(symbol: str, price: float):
             elif result.updated:
                 any_updated = True
 
+            # M-1: TP1 半仓 risk 记账
+            if result.pending_risk_partial:
+                _ppnl, _pstake = result.pending_risk_partial
+                pending_risk_partials.append((_ppnl, _pstake, trade.account_id))
+
             # 真实平仓动作（TP1 半仓 or 全仓）
             if result.pending_exchange_action and trade.exchange != 'shadow':
                 pending_exchange_closes.append((
@@ -366,6 +372,9 @@ def check_main_trades(symbol: str, price: float):
             f"⚡ 实时平仓: {sym} | {direction} | "
             f"原因={close_reason} | PnL={pnl_usd:+.2f}U"
         )
+    # M-1: TP1 半仓 stake 释放（不影响 daily_loss / consecutive_losses）
+    for _ppnl, _pstake, _pacc in pending_risk_partials:
+        release_partial_stake(_pstake, account_id=_pacc or None)
     # 3) 再推送
     for msg in pending_alerts:
         send_tg(msg)

@@ -30,11 +30,11 @@ import ccxt
 import config
 from common import (
     TRADES_FILE,
-    setup_logger, send_tg, load_json,
+    setup_logger, send_tg, load_json, tg_escape,
     utcnow_iso, hold_hours, LockedJsonFile,
 )
 from models import Trade, CloseType
-from risk_control import record_trade_closed
+from risk_control import record_trade_closed, release_partial_stake
 
 logger = setup_logger("altcoin_tracker")
 
@@ -60,6 +60,13 @@ class EvalResult:
     pending_exchange_action: Optional[str] = None
     pending_close_amount: float = 0.0
 
+    # M-1 修复：TP1 触发时的"半仓平仓"风控记账事件。
+    # 不为 None 表示上层应在出锁后调用 record_trade_closed(pnl, stake) 一次，
+    # 这样 risk_state.total_open_stake 在 TP1 时就同步减半，避免 TP1+TP2 流程
+    # 结束后留下"+50% 虚高"持仓。
+    # 元组语义：(pnl_usd, stake_to_release)
+    pending_risk_partial: Optional[tuple] = None
+
 
 def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     """
@@ -78,6 +85,14 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     """
     entry = trade.entry_price
     leverage = trade.leverage
+
+    # L-7 修复：异常价格守卫，防止 entry=0 / 数据迁移残留造成 ZeroDivisionError
+    if entry <= 0 or current_price <= 0:
+        logger.error(
+            f"⚠️ Trade {trade.id} 价格异常 entry={entry} current={current_price}，"
+            f"本轮跳过评估（不更新字段、不平仓）"
+        )
+        return EvalResult(pnl_pct=0.0, pnl_usd=0.0, current_price=current_price)
 
     # 方向盈亏
     if trade.direction == 'LONG':
@@ -193,6 +208,9 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         locked_notional = trade.stake * config.TP1_CLOSE_RATIO * leverage
         locked_pnl = locked_notional * pnl_pct / 100
         trade.tp1_locked_pnl = round(locked_pnl, 2)
+        # M-1 修复：TP1 平仓后，被释放的保证金 = stake × TP1_CLOSE_RATIO
+        # 上层在出锁后会用它调 record_trade_closed，更新 total_open_stake
+        tp1_released_stake = trade.stake * config.TP1_CLOSE_RATIO
         trade.stake_remaining = trade.stake * (1 - config.TP1_CLOSE_RATIO)
         # 真实平仓：TP1 半仓（发单前的全量 shares × TP1_CLOSE_RATIO）
         tp1_close_amount = trade.shares * config.TP1_CLOSE_RATIO
@@ -216,6 +234,10 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.pnl = round(remaining_pnl, 2)
         result.pnl_usd = round(trade.tp1_locked_pnl + remaining_pnl, 2)
         result.updated = True
+        # M-1 修复：让上层在出锁后通过 record_trade_closed 把这部分 stake 从
+        # total_open_stake 中扣减，避免 TP1+TP2 流程结束后 +50% 虚高漂移。
+        # 注意 pnl 是 TP1 实际锁定的盈利（正值），不会触发连亏计数。
+        result.pending_risk_partial = (round(locked_pnl, 2), round(tp1_released_stake, 4))
         result.alert_msg = (
             f"🎯 <b>第一档止盈触发（-{(1-config.TP1_MULTIPLIER)*100:.0f}%）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
@@ -503,10 +525,10 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
         except Exception as _e:
             logger.debug(f"标记 close_retry_pending 失败（非致命）: {_e}")
         send_tg(
-            f"🚨 <b>[{trade.exchange.upper()}] 自动平仓失败（已重试{max_retries}次，已排队下轮重试）</b>\n\n"
-            f"币种：{trade.symbol}\n"
-            f"动作：{action}\n"
-            f"原因：{error_msg}\n\n"
+            f"🚨 <b>[{tg_escape(trade.exchange.upper())}] 自动平仓失败（已重试{max_retries}次，已排队下轮重试）</b>\n\n"
+            f"币种：{tg_escape(trade.symbol)}\n"
+            f"动作：{tg_escape(action)}\n"
+            f"原因：{tg_escape(error_msg)}\n\n"
             f"⚠️ 系统会在下一轮 tracker/monitor 继续尝试平仓；\n"
             f"如果持续失败请立即手动到交易所平仓！"
         )
@@ -599,6 +621,7 @@ def run(check_only: bool = False):
 
     # 持锁 RMW：整段读-改-写在同一把锁里
     pending_risk_updates = []   # [(pnl_usd, stake_remaining), ...]
+    pending_risk_partials = []  # M-1: TP1 部分平仓的 risk 记账 [(pnl, stake, account_id), ...]
     pending_alerts = []         # [alert_msg, ...]
     pending_exchange_closes = []  # [(trade_ref, action, amount), ...] 出锁后下真单
     pending_retry_closes = []    # [(trade_ref, action, amount), ...] 上轮失败的重试
@@ -675,6 +698,10 @@ def run(check_only: bool = False):
             # 平仓时：把 risk 更新和推送推迟到 save 之后
             if result.closed:
                 pending_risk_updates.append((result.pnl_usd, trade.stake_remaining, trade.account_id))
+            # M-1: TP1 半仓平仓也要排队 risk 记账，避免 total_open_stake 漂移
+            if result.pending_risk_partial:
+                _ppnl, _pstake = result.pending_risk_partial
+                pending_risk_partials.append((_ppnl, _pstake, trade.account_id))
             if result.alert_msg:
                 pending_alerts.append(result.alert_msg)
 
@@ -756,6 +783,10 @@ def run(check_only: bool = False):
     # 2) 改 risk_state（在 trades 已经持久化之后）
     for pnl_usd, stake_remaining, acc_id in pending_risk_updates:
         record_trade_closed(pnl_usd, stake_remaining, account_id=acc_id or None)
+
+    # M-1: TP1 半仓的 stake 释放（不影响 daily_loss / consecutive_losses）
+    for _ppnl, _pstake, _pacc in pending_risk_partials:
+        release_partial_stake(_pstake, account_id=_pacc or None)
 
     # 3) 再推送 TG
     for msg in pending_alerts:

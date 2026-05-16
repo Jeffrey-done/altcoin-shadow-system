@@ -47,24 +47,8 @@ RATE_LIMIT_LOCKOUT_SEC = 30 * 60
 # ══════════════════════════════════════════════════════════════════
 #  IP 限速（跨进程持久化）
 # ══════════════════════════════════════════════════════════════════
-
-def _load_ratelimit() -> dict:
-    if not os.path.exists(RATE_LIMIT_FILE):
-        return {}
-    try:
-        with open(RATE_LIMIT_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError, OSError):
-        return {}
-
-
-def _save_ratelimit(data: dict) -> None:
-    tmp = RATE_LIMIT_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f)
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp, RATE_LIMIT_FILE)
-
+# L-4 修复（2026-05）：用 LockedJsonFile 上下文，防止两个失败请求并发时
+# 丢失增量；多个 dashboard 实例（多 worker）下也能正确累计。
 
 def _client_ip() -> str:
     xff = request.headers.get('X-Forwarded-For', '')
@@ -74,7 +58,8 @@ def _client_ip() -> str:
 
 
 def _is_ip_locked(ip: str) -> bool:
-    data = _load_ratelimit()
+    from common import load_json as _ljson
+    data = _ljson(RATE_LIMIT_FILE, {}) or {}
     entry = data.get(ip)
     if not entry:
         return False
@@ -88,31 +73,47 @@ def _is_ip_locked(ip: str) -> bool:
 
 
 def _record_failure(ip: str) -> None:
-    data = _load_ratelimit()
-    entry = data.get(ip, {'failures': 0, 'locked_until': 0})
-    entry['failures'] = entry.get('failures', 0) + 1
-    if entry['failures'] >= RATE_LIMIT_MAX_FAILURES:
-        entry['locked_until'] = time.time() + RATE_LIMIT_LOCKOUT_SEC
-        _audit('rate_limit.lockout', ip=ip, failures=entry['failures'])
+    from common import LockedJsonFile as _LJF
+    triggered_lockout = False
+    locked_until = 0
+    final_failures = 0
+    with _LJF(RATE_LIMIT_FILE, default={}) as (data, save):
+        if not isinstance(data, dict):
+            data = {}
+        entry = data.get(ip, {'failures': 0, 'locked_until': 0})
+        entry['failures'] = entry.get('failures', 0) + 1
+        if entry['failures'] >= RATE_LIMIT_MAX_FAILURES:
+            entry['locked_until'] = time.time() + RATE_LIMIT_LOCKOUT_SEC
+            triggered_lockout = entry.get('locked_until', 0) > 0
+            locked_until = entry['locked_until']
+        final_failures = entry['failures']
+        data[ip] = entry
+        save(data)
         try:
-            from common import send_tg
+            os.chmod(RATE_LIMIT_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+    if triggered_lockout:
+        _audit('rate_limit.lockout', ip=ip, failures=final_failures)
+        try:
+            from common import send_tg, tg_escape
             send_tg(
                 f"🚨 <b>Admin Panel 登录失败锁定</b>\n\n"
-                f"IP: <code>{ip}</code>\n"
-                f"连续失败: {entry['failures']} 次\n"
-                f"锁定至: {datetime.fromtimestamp(entry['locked_until'], tz=timezone.utc).isoformat()[:19]} UTC"
+                f"IP: <code>{tg_escape(ip)}</code>\n"
+                f"连续失败: {final_failures} 次\n"
+                f"锁定至: {datetime.fromtimestamp(locked_until, tz=timezone.utc).isoformat()[:19]} UTC"
             )
         except Exception:
             pass
-    data[ip] = entry
-    _save_ratelimit(data)
 
 
 def _clear_ip_failures(ip: str) -> None:
-    data = _load_ratelimit()
-    if ip in data:
-        del data[ip]
-        _save_ratelimit(data)
+    from common import LockedJsonFile as _LJF
+    with _LJF(RATE_LIMIT_FILE, default={}) as (data, save):
+        if isinstance(data, dict) and ip in data:
+            del data[ip]
+            save(data)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -320,6 +321,19 @@ def create_blueprint(url_secret: str) -> Blueprint:
     def setup():
         if admin_secrets.is_initialized():
             return redirect(url_for('admin.login'))
+
+        # M-8 修复：要求宿主机存在 .admin_setup_token 文件才允许访问 setup
+        # 防止 ADMIN_URL_SECRET 通过启动日志/共享终端泄露后攻击者抢先 setup。
+        # 用户首次部署需手动 `touch .admin_setup_token`，setup 成功后自动删除。
+        # 文件存在表示"运维明确允许此次 setup"。
+        setup_token_file = os.path.join(SCRIPT_DIR, '.admin_setup_token')
+        if not os.path.exists(setup_token_file):
+            logger.warning(
+                f"setup 被访问但 {setup_token_file} 不存在 - 拒绝。"
+                f"请运维 SSH 上服务器 `touch .admin_setup_token` 授权初始化"
+            )
+            return abort(404)
+
         if 'setup_totp_secret' not in session:
             session['setup_totp_secret'] = admin_secrets.generate_totp_secret()
 
@@ -337,6 +351,10 @@ def create_blueprint(url_secret: str) -> Blueprint:
     @bp.route('/setup', methods=['POST'])
     def setup_submit():
         if admin_secrets.is_initialized():
+            abort(404)
+        # M-8: 同时校验 setup_token 文件，防止绕过 GET 直接 POST
+        setup_token_file = os.path.join(SCRIPT_DIR, '.admin_setup_token')
+        if not os.path.exists(setup_token_file):
             abort(404)
         sent_csrf = request.form.get('csrf_token', '')
         if not secrets.compare_digest(sent_csrf, session.get('csrf_token', '')):
@@ -383,6 +401,12 @@ def create_blueprint(url_secret: str) -> Blueprint:
         admin_secrets.enable_totp()
         # 创建默认账户
         admin_secrets.create_account('主账户')
+
+        # M-8: setup 成功后立即删除 token 文件，下次 setup 需要运维重新授权
+        try:
+            os.unlink(setup_token_file)
+        except OSError:
+            pass
 
         session.pop('setup_totp_secret', None)
         _audit('setup.complete')
@@ -607,24 +631,69 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if errors:
             return jsonify({'error': 'validation', 'details': errors}), 400
 
+        # 跨字段一致性硬阻塞（2026-05 修复）：
+        # 致命组合（如 DEFAULT_STAKE > ACCOUNT_BALANCE）必须在保存前拦截，
+        # 否则会让风控永远拒绝开仓。warnings 不阻止保存，仅在响应里反馈让 UI 提示。
+        active_id = ''
+        try:
+            active_id = admin_secrets.get_active_account_id()
+        except Exception:
+            pass
+        merged_for_check = {**runtime_config.load_overrides(), **cleaned}
+        consistency_errors, consistency_warnings = (
+            runtime_config.validate_cross_field_consistency(
+                merged_for_check, account_id=active_id
+            )
+        )
+        if consistency_errors:
+            _audit('config.update.blocked', changes=cleaned,
+                   reason='cross_field_consistency', errors=consistency_errors)
+            try:
+                from common import send_tg, tg_escape
+                send_tg(
+                    f"🚫 <b>Admin 配置保存被拒</b>\n\n"
+                    f"IP: <code>{tg_escape(_client_ip())}</code>\n"
+                    + "\n".join(f"• {tg_escape(e)}" for e in consistency_errors)
+                )
+            except Exception:
+                pass
+            return jsonify({
+                'error': 'consistency',
+                'details': consistency_errors,
+                'warnings': consistency_warnings,
+            }), 400
+
         existing = runtime_config.load_overrides()
         merged = {**existing, **cleaned}
-        runtime_config.save_overrides(merged)
+        try:
+            runtime_config.save_overrides(merged)
+        except ValueError as ve:
+            # 防御纵深：save_overrides 内部最后一道关卡（理论上前面已经拦截）
+            return jsonify({'error': 'consistency', 'details': [str(ve)]}), 400
         applied = runtime_config.apply_overrides(force=True)
 
-        _audit('config.update', changes=cleaned)
+        _audit('config.update', changes=cleaned, warnings=consistency_warnings)
         try:
-            from common import send_tg
+            from common import send_tg, tg_escape
             lines = [f"• {k}: {v['old']} → {v['new']}" for k, v in applied.items()]
+            extra = ""
+            if consistency_warnings:
+                extra = "\n\n⚠️ 警告：\n" + "\n".join(
+                    f"• {tg_escape(w)}" for w in consistency_warnings
+                )
             send_tg(
                 f"⚙️ <b>Admin 修改运行时配置</b>\n\n"
-                f"IP: <code>{_client_ip()}</code>\n\n"
-                + "\n".join(lines[:10])
+                f"IP: <code>{tg_escape(_client_ip())}</code>\n\n"
+                + "\n".join(lines[:10]) + extra
             )
         except Exception:
             pass
 
-        return jsonify({'ok': True, 'applied': applied})
+        return jsonify({
+            'ok': True,
+            'applied': applied,
+            'warnings': consistency_warnings,
+        })
 
     # ══════════════════════════════════════════════════════════════════
     #  API：更新交易所凭证

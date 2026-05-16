@@ -110,17 +110,30 @@ def _add_static_cache(resp):
 #   - 互联网扫描器扫不到任何 admin 相关路径
 #   - 要访问面板必须：① 知道精确的 secret 前缀 ② 知道完整 URL
 # 生成 secret: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+#
+# 安全脱敏（2026-05 修复）：启动日志中**不打印** secret 的任何相关信息
+#   （包括长度、是否短、提示路径前缀等），避免在共享终端 / 日志聚合系统
+#   / 截图分享中无意泄露线索。强度告警转为 logger 级别（写文件 + stderr 但
+#   不带数值），运维需要时可在审计日志里查。
+import logging as _admin_log
 _admin_url_secret = os.environ.get('ADMIN_URL_SECRET', '').strip()
 if _admin_url_secret:
     if len(_admin_url_secret) < 16:
-        print(f"⚠️  ADMIN_URL_SECRET 长度仅 {len(_admin_url_secret)}，强烈建议 ≥32 字节随机串")
-        print("    生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        # 仅记录到 logger，不 print 到 stdout，且不暴露具体长度数值
+        _admin_log.getLogger("dashboard").warning(
+            "ADMIN_URL_SECRET 强度不足，建议至少 32 字节随机串："
+            "python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+        )
     try:
         from admin_panel import create_blueprint as _create_admin_bp
         app.register_blueprint(_create_admin_bp(_admin_url_secret))
-        print(f"🔐 Admin Panel 已挂载: /<ADMIN_URL_SECRET>/  (secret 长度={len(_admin_url_secret)})")
+        print("🔐 Admin Panel 已启用 ✓")
     except Exception as _e:
-        print(f"⚠️  Admin Panel 加载失败: {_e}")
+        # 加载失败信息可能含路径，谨慎处理：仅打印异常类型，不打印 _e 全文
+        print(f"⚠️  Admin Panel 加载失败: {type(_e).__name__}")
+        _admin_log.getLogger("dashboard").error(
+            "Admin Panel 加载失败", exc_info=True
+        )
 else:
     print("🔐 Admin Panel 未启用（ADMIN_URL_SECRET 未设置）")
 
@@ -345,22 +358,47 @@ def _get_risk_history(pnl_history: dict) -> list:
 #  Events System
 # ══════════════════════════════════════════════════════════════════
 
+# L-6 修复：events 缓存（mtime 失效）
+# 旧实现每次 /api/events 都全表扫一遍 trades + filter（虽 7 天窗口但仍 O(N)）。
+# 加 mtime 缓存：trades.json 不变时直接返回上次结果。
+_events_cache_lock = threading.Lock()
+_events_cache_mtime: float = 0.0
+_events_cache_account: str = ''
+_events_cache_data: list = []
+
+
 def _extract_events() -> list:
     """
     Extract events from trade files based on opened_at, closed_at timestamps.
     Returns last 50 events sorted by time (newest first).
 
     B8 优化：只扫最近 7 天的事件，不再每 30s 全量遍历交易历史。
-    随着 trades 增长（默认归档 30 天 + 多账户）这个端点 CPU 会逐月膨胀；
-    限制窗口后稳定在 O(7d × 多账户 × 多币) ≈ 几十到几百条。
+    L-6 优化：mtime 缓存 — 文件未变时复用上次结果。
     """
+    global _events_cache_mtime, _events_cache_account, _events_cache_data
+
     EVENT_WINDOW_DAYS = 7
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=EVENT_WINDOW_DAYS)
-    cutoff_iso = cutoff_dt.isoformat()  # ISO 字符串可以按字典序对比
+    cutoff_iso = cutoff_dt.isoformat()
+
+    account_id = get_current_account_id()
+
+    # 先看缓存
+    try:
+        current_mtime = os.path.getmtime(TRADES_FILE)
+    except OSError:
+        current_mtime = 0.0
+
+    with _events_cache_lock:
+        if (
+            _events_cache_mtime == current_mtime
+            and _events_cache_account == (account_id or '')
+            and _events_cache_data
+        ):
+            return list(_events_cache_data)
 
     events = []
     trades = load_json(TRADES_FILE, [])
-    account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
     risk_state = load_json(RISK_FILE, {})
 
@@ -406,7 +444,14 @@ def _extract_events() -> list:
 
     # Sort by time descending
     events.sort(key=lambda e: e.get('time', ''), reverse=True)
-    return events[:50]
+    result = events[:50]
+
+    with _events_cache_lock:
+        _events_cache_mtime = current_mtime
+        _events_cache_account = account_id or ''
+        _events_cache_data = list(result)
+
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -972,8 +1017,12 @@ if __name__ == '__main__':
     _token = os.environ.get('DASHBOARD_TOKEN', '')
     if _token:
         if len(_token) < 16:
-            print(f"   ⚠️  DASHBOARD_TOKEN 长度仅 {len(_token)}，建议 ≥32 字节随机串")
-            print("       生成: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+            # 安全脱敏：不打印具体长度，仅 logger 警告
+            import logging as _dlog
+            _dlog.getLogger("dashboard").warning(
+                "DASHBOARD_TOKEN 强度不足，建议 ≥32 字节随机串："
+                "python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
         print("   API认证: 已启用（X-Dashboard-Token，常量时间比较）")
     else:
         print("   API认证: ⚠️  未设置 DASHBOARD_TOKEN（开放访问，仅限局域网）")

@@ -35,7 +35,6 @@
 """
 
 import base64
-import fcntl
 import hashlib
 import hmac
 import json
@@ -44,12 +43,41 @@ import os
 import secrets
 import stat
 import struct
+import sys
 import tempfile
 import time as _time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
+
+
+# L-1: 跨平台文件锁兼容（与 common._LockShim 保持一致）
+if sys.platform == 'win32':
+    import msvcrt
+
+    class _LockShim:
+        LOCK_EX = 1
+        LOCK_SH = 2
+        LOCK_UN = 0
+
+        @staticmethod
+        def flock(fd, op: int) -> None:
+            try:
+                fileno = fd.fileno()
+            except AttributeError:
+                fileno = fd
+            if op == _LockShim.LOCK_UN:
+                try:
+                    msvcrt.locking(fileno, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+                return
+            msvcrt.locking(fileno, msvcrt.LK_LOCK, 1)
+
+    fcntl = _LockShim()
+else:
+    import fcntl  # noqa: F401
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SECRETS_FILE = os.path.join(SCRIPT_DIR, 'admin_secrets.json')

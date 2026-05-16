@@ -22,7 +22,7 @@ import requests
 import config
 from common import (
     CANDIDATES_FILE, TRADES_FILE,
-    setup_logger, send_tg, load_json,
+    setup_logger, send_tg, load_json, tg_escape,
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
     LockedJsonFile, get_compound_stake,
 )
@@ -400,6 +400,13 @@ def scan_daily():
             if funding > config.FUNDING_MAX:
                 logger.info(f"  ⛔ 跳过: {symbol} 资金费率过高({funding:.4f}%)")
                 continue
+            # M-2 修复：极端负费率 → 做空持仓成本过高，直接跳过
+            if funding < config.FUNDING_MIN:
+                logger.info(
+                    f"  ⛔ 跳过: {symbol} 资金费率极端负({funding:.4f}% < {config.FUNDING_MIN}%)，"
+                    f"做空持仓成本过高"
+                )
+                continue
 
             # ── OKX 交叉验证 ──
             okx_cross_info = ""
@@ -600,9 +607,13 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
         return ('skip', 'already_triggered_or_held')
 
     # 冷却期
-    in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
-    if in_cooldown:
-        return ('cooldown', cooldown_reason)
+    # M-7：按 config.COOLDOWN_SCOPE 决定全局/按账户作用域
+    #   'global'      → 这里全局检查（任一账户止损都会 block 整笔信号）
+    #   'per_account' → 跳过全局检查，由 _open_position_for_candidate 按账户单独检查
+    if getattr(config, 'COOLDOWN_SCOPE', 'global') == 'global':
+        in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
+        if in_cooldown:
+            return ('cooldown', cooldown_reason)
 
     def _expired() -> bool:
         return (_time.monotonic() - t0) > per_candidate_timeout_sec
@@ -652,11 +663,16 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
     if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
         funding_cv = cross_validate_funding(c.symbol, c.funding_rate)
         oi_cv = cross_validate_oi(c.symbol, c.oi_change / 100)
+        # L-5 修复：把总 BONUS 拆给两个维度时用上取整 + 下取整组合，保证两者之和 = BONUS
+        # 例如 BONUS=7 → funding 拿 4、oi 拿 3，总和 7（旧实现 3+3=6 损失 1 分）
+        _bonus_total = config.OKX_CROSS_VALIDATE_BONUS
+        _bonus_first = (_bonus_total + 1) // 2   # 上取整
+        _bonus_second = _bonus_total - _bonus_first  # 余下
         if funding_cv.get("signal_boost"):
-            cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+            cross_validate_bonus += _bonus_first
             okx_cv_info += "费率✓ "
         if oi_cv.get("signal_boost"):
-            cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+            cross_validate_bonus += _bonus_second
             okx_cv_info += "OI✓"
         if _expired():
             return ('skip', f'timeout_after_okx_cv (>{per_candidate_timeout_sec:.0f}s)')
@@ -1093,6 +1109,20 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                 )
                 continue
 
+            # M-7: 按账户冷却（仅当 COOLDOWN_SCOPE='per_account' 时）
+            # 'global' 模式已在 _evaluate_candidate 全局检查过，这里跳过避免重复
+            # 注意：is_in_cooldown 新语义下 None/'' 都是"全账户扫描"，
+            # 所以 acc_id 为空（旧单账户兼容）时 per-account 等价于 global，安全跳过避免重复检查。
+            if getattr(config, 'COOLDOWN_SCOPE', 'global') == 'per_account' and acc_id:
+                acc_in_cd, acc_cd_reason = is_in_cooldown(
+                    c.symbol, account_id=acc_id
+                )
+                if acc_in_cd:
+                    logger.info(
+                        f"  ❄️ 跳过账户 {account['name']}({acc_id})：{acc_cd_reason}"
+                    )
+                    continue
+
             if account.get('force_shadow_route'):
                 acc_routes = [('shadow', actual_stake)]
             else:
@@ -1179,9 +1209,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                     except Exception as _je:
                         logger.debug(f"journal mark_failed 失败: {_je}")
                 send_tg(
-                    f"❌ <b>[{route_exchange.upper()}][{acc_name}] 实盘下单失败</b>\n\n"
-                    f"币种：{c.symbol}\n"
-                    f"原因：{live_result['error']}\n"
+                    f"❌ <b>[{tg_escape(route_exchange.upper())}][{tg_escape(acc_name)}] 实盘下单失败</b>\n\n"
+                    f"币种：{tg_escape(c.symbol)}\n"
+                    f"原因：{tg_escape(live_result['error'])}\n"
                     f"本次跳过，不记录风控扣账。"
                 )
                 bucket['failed'].append({
@@ -1236,9 +1266,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             )
             send_tg(
                 f"🚨🚨 <b>紧急：持久化失败，交易所已成交订单</b>\n\n"
-                f"币种：{c.symbol}\n"
-                f"错误：{_se}\n\n"
-                f"已成交订单（需人工到交易所核对）：\n<code>{order_ids_summary}</code>\n\n"
+                f"币种：{tg_escape(c.symbol)}\n"
+                f"错误：{tg_escape(_se)}\n\n"
+                f"已成交订单（需人工到交易所核对）：\n<code>{tg_escape(order_ids_summary)}</code>\n\n"
                 f"日志和 journal 文件包含完整信息；请立即检查交易所持仓。"
             )
             raise
@@ -1308,10 +1338,10 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             else:
                 send_tg(
                     f"🚨 <b>对冲回滚失败，需人工处理</b>\n\n"
-                    f"币种：{rb_sym}\n"
-                    f"交易所：{rb_ex.upper()}\n"
+                    f"币种：{tg_escape(rb_sym)}\n"
+                    f"交易所：{tg_escape(rb_ex.upper())}\n"
                     f"数量：{rb_shares:.4f}\n"
-                    f"错误：{rb_result.get('error', '未知')}\n\n"
+                    f"错误：{tg_escape(rb_result.get('error', '未知'))}\n\n"
                     f"⚠️ 请立即手动到交易所核对并平仓。"
                 )
 

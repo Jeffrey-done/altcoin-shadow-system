@@ -178,6 +178,9 @@ def calculate_signal_score(
         grade = "SKIP"
         stake = 0
 
+    # L-3 修复：score 计算返回的 stake 实际不被 scanner 使用（scanner 走 compound_stake）。
+    # 保留字段是为向后兼容旧测试与 dashboard，但加注释明示——真实开仓 stake 看 scanner 实现。
+
     # 构建说明
     details = {
         "rsi": round(rsi_score, 1),
