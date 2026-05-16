@@ -180,6 +180,16 @@ SLIPPAGE_ALERT_PCT = 0.5
 CANDIDATE_EXPIRE_HOURS = 12    # 未触发候选过期时间（小时），超时说明超买窗口已过
 CANDIDATE_EXPIRE_DAYS = 1     # 向后兼容（不再使用，改用 HOURS）
 
+# H11: 候选确认（check_candidates）耗时控制
+# 候选池一旦扩大（比如降低 DAILY_RSI_MIN 后从 30 涨到 150+），原来的串行循环
+# 会累积成 4-5 分钟，叠加 Binance rate limit 把外层 600s 任务超时打爆。三层防御：
+#   1) 整轮预算 480s：留 120s 余量给收尾（写盘 + 推送）
+#   2) 单候选硬超时 30s：超过就跳过下一个，避免某个慢币种拖死整轮
+#   3) 评估阶段并发：评估期纯只读，可线程池并行（实际开仓仍串行加锁）
+CHECK_CANDIDATES_BUDGET_SEC = 480     # 整轮 evaluate 预算（秒）；到点优雅退出
+CHECK_CANDIDATES_PER_CANDIDATE_SEC = 30  # 单个候选硬超时（秒）；超过跳下一个
+CHECK_CANDIDATES_PARALLELISM = 4      # 候选评估的并发线程数（Binance 限速 ~10 RPS，4 比较安全）
+
 # ══════════════════════════════════════════════════════════════════
 #  回测滑点 & 手续费
 # ══════════════════════════════════════════════════════════════════
