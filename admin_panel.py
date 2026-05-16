@@ -770,6 +770,48 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return jsonify({'ok': True})
 
     # ══════════════════════════════════════════════════════════════════
+    #  API：系统自检 (Smoke Test)
+    # ══════════════════════════════════════════════════════════════════
+
+    @bp.route('/api/smoke-test', methods=['POST'])
+    @_require_login
+    @_require_csrf
+    def api_smoke_test():
+        """
+        端到端自检入口 —— 调用 smoke_test.run_phases。
+
+        Body (JSON):
+            {"phases": ["A","B","D"]}   # 默认 ABD（不带 C，避免触发实盘鉴权）
+
+        返回:
+            {"results": [...], "summary": {...}}
+        Phase 列表中包含 "C" 时会调用交易所 fetch_balance 验证凭证（仍不下单）。
+        """
+        import smoke_test  # 延迟 import，避免影响 admin panel 启动
+        data = request.get_json(silent=True) or {}
+        phases = data.get('phases') or list(smoke_test.DEFAULT_PHASES)
+        # 防止恶意巨大请求
+        if not isinstance(phases, list) or len(phases) > 10:
+            return jsonify({'error': 'phases 字段必须是长度 ≤ 10 的列表'}), 400
+        phases = [str(p).strip().upper() for p in phases]
+        invalid = [p for p in phases if p not in smoke_test.VALID_PHASES]
+        if invalid:
+            return jsonify({
+                'error': f'非法阶段: {",".join(invalid)}（合法值 {",".join(smoke_test.VALID_PHASES)}）'
+            }), 400
+
+        try:
+            payload = smoke_test.run_phases(phases)
+        except Exception as e:
+            logger.exception("smoke_test.run_phases 失败")
+            return jsonify({'error': f'内部错误: {e}'}), 500
+
+        _audit('smoke_test.run', phases=phases,
+               all_ok=payload['summary']['all_ok'],
+               total=payload['summary']['total'])
+        return jsonify(payload)
+
+    # ══════════════════════════════════════════════════════════════════
     #  API：实盘自检
     # ══════════════════════════════════════════════════════════════════
 

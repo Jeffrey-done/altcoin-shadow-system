@@ -134,6 +134,57 @@ select { cursor: pointer; }
     .account-bar { flex-direction: column; align-items: flex-start; }
     .main-container { padding: 16px; }
 }
+
+/* ── Smoke Test (系统自检) ──────────────────────────────── */
+.smoke-phase-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s, background 0.15s;
+}
+.smoke-phase-chip:hover { border-color: var(--accent); background: var(--bg-card-hover); }
+.smoke-phase-chip input[type=checkbox] { margin: 0; }
+.smoke-phase-chip .muted { color: var(--text-muted); }
+
+.smoke-banner { padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); }
+.smoke-banner.smoke-pass { background: var(--green-subtle); border-color: rgba(16,185,129,0.35); color: var(--green); }
+.smoke-banner.smoke-fail { background: var(--red-subtle);   border-color: rgba(239,68,68,0.35);  color: var(--red);   }
+
+.smoke-phase-block { margin-bottom: 18px; }
+.smoke-phase-title {
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--text-secondary); padding: 8px 4px; margin-top: 6px;
+}
+
+.smoke-table {
+    width: 100%; border-collapse: collapse;
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); overflow: hidden;
+    font-size: 0.78rem;
+}
+.smoke-table tr { border-bottom: 1px solid var(--border-subtle); }
+.smoke-table tr:last-child { border-bottom: none; }
+.smoke-table td { padding: 8px 10px; vertical-align: middle; }
+
+.smoke-cell-status { width: 1%; white-space: nowrap; }
+.smoke-cell-id     { width: 1%; white-space: nowrap; color: var(--text-muted); font-family: ui-monospace, monospace; }
+.smoke-cell-name   { color: var(--text-primary); white-space: nowrap; }
+.smoke-cell-detail { color: var(--text-secondary); }
+.smoke-cell-ms     { width: 1%; white-space: nowrap; color: var(--text-muted); text-align: right; }
+
+.smoke-pill {
+    display: inline-block; min-width: 64px; text-align: center;
+    padding: 3px 8px; border-radius: 999px; font-weight: 700; font-size: 0.7rem;
+    letter-spacing: 0.04em;
+}
+.smoke-pass { color: var(--green);  background: var(--green-subtle);  border: 1px solid rgba(16,185,129,0.3); }
+.smoke-fail { color: var(--red);    background: var(--red-subtle);    border: 1px solid rgba(239,68,68,0.3); }
+.smoke-warn { color: var(--yellow); background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.3); }
+.smoke-skip { color: var(--text-muted); background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.2); }
 </style>
 
 <!-- NAV BAR -->
@@ -181,6 +232,7 @@ select { cursor: pointer; }
     <button class="tab" onclick="switchTab('creds')"><i data-lucide="key"></i> 交易凭证</button>
     <button class="tab" onclick="switchTab('position')"><i data-lucide="sliders"></i> 仓位与风控</button>
     <button class="tab" onclick="switchTab('preflight')"><i data-lucide="stethoscope"></i> 预检</button>
+    <button class="tab" onclick="switchTab('smoke')"><i data-lucide="activity"></i> 系统自检</button>
   </div>
 
   <!-- TAB: Live Control -->
@@ -306,6 +358,40 @@ select { cursor: pointer; }
         <div id="preflight-routing" style="margin-bottom:14px;padding:16px;border-radius:var(--radius-md);background:var(--bg-elevated);border:1px solid var(--border-subtle);font-size:0.78rem;"></div>
         <div id="preflight-exchanges"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- TAB: Smoke Test (系统自检) -->
+  <div class="tab-content" id="tab-smoke">
+    <div class="card">
+      <div class="card-title"><i data-lucide="activity"></i> 系统自检</div>
+      <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:14px;">
+        端到端健康检查 —— 配置 / 网络 / 实盘凭证 / 运行时数据。<b>不会下任何订单</b>，但 Phase D 会发一条静默 TG 测试消息验证通路。
+      </p>
+
+      <!-- Phase selector -->
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;font-size:0.78rem;">
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="A" checked> <b>A</b> · 配置 (静态)</label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="B" checked> <b>B</b> · 网络可达</label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="C"> <b>C</b> · 实盘凭证 <span class="muted" style="font-size:0.7rem;">(需 API key)</span></label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="D" checked> <b>D</b> · 运行时数据</label>
+      </div>
+
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:18px;">
+        <button class="btn btn-primary" onclick="runSmokeTest()" id="btn-smoke">
+          <i data-lucide="play" style="width:14px;height:14px;"></i> 开始检测
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="runSmokeTestAll()" id="btn-smoke-all" title="勾选全部 4 个阶段并立即开跑（含 C）">
+          <i data-lucide="zap" style="width:12px;height:12px;"></i> 全部跑一遍
+        </button>
+        <span id="smoke-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
+      </div>
+
+      <!-- Summary banner -->
+      <div id="smoke-summary" style="display:none;margin-bottom:14px;padding:14px 16px;border-radius:var(--radius-md);font-size:0.82rem;"></div>
+
+      <!-- Results table -->
+      <div id="smoke-results" style="display:none;"></div>
     </div>
   </div>
 </div>
@@ -504,6 +590,108 @@ async function runPreflightCheck() {
     document.getElementById('preflight-status').textContent = r.ok ? '全部通过' : '发现问题';
   } catch (e) { alertBox('预检失败: ' + e.message, 'error'); document.getElementById('preflight-status').textContent = 'Error'; }
   document.getElementById('btn-preflight').disabled = false;
+}
+
+// ── 系统自检 (smoke test) ─────────────────────────────────────
+const SMOKE_PHASE_TITLES = {
+  A: '配置 (静态)',
+  B: '网络可达',
+  C: '实盘凭证',
+  D: '运行时数据',
+};
+const SMOKE_STATUS_META = {
+  pass: { glyph: '✓', cls: 'smoke-pass',  label: 'PASS' },
+  fail: { glyph: '✗', cls: 'smoke-fail',  label: 'FAIL' },
+  warn: { glyph: '!', cls: 'smoke-warn',  label: 'WARN' },
+  skip: { glyph: '·', cls: 'smoke-skip',  label: 'SKIP' },
+};
+
+function _escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _selectedSmokePhases() {
+  return Array.from(document.querySelectorAll('#tab-smoke input[data-phase]:checked'))
+    .map(el => el.getAttribute('data-phase'));
+}
+
+async function runSmokeTest() {
+  const phases = _selectedSmokePhases();
+  if (phases.length === 0) { alertBox('请至少选择一个阶段', 'warning'); return; }
+  await _runSmoke(phases);
+}
+
+async function runSmokeTestAll() {
+  document.querySelectorAll('#tab-smoke input[data-phase]').forEach(el => el.checked = true);
+  await _runSmoke(['A', 'B', 'C', 'D']);
+}
+
+async function _runSmoke(phases) {
+  const btn      = document.getElementById('btn-smoke');
+  const btnAll   = document.getElementById('btn-smoke-all');
+  const statusEl = document.getElementById('smoke-status');
+  const summary  = document.getElementById('smoke-summary');
+  const results  = document.getElementById('smoke-results');
+
+  btn.disabled = true; btnAll.disabled = true;
+  statusEl.textContent = `正在执行 ${phases.join(',')} ...`;
+  summary.style.display = 'none';
+  results.style.display = 'none';
+
+  try {
+    const r = await api('POST', 'api/smoke-test', { phases });
+    if (r.needTotp) { statusEl.textContent = '需要 TOTP 验证'; openTotpModal(() => _runSmoke(phases)); return; }
+
+    // ── Summary banner ──
+    const s = r.summary || {};
+    const okCls   = s.all_ok ? 'smoke-pass' : 'smoke-fail';
+    const okText  = s.all_ok ? '全部通过 ✓' : '存在失败项 ✗';
+    summary.className = '';
+    summary.classList.add('smoke-banner', okCls);
+    summary.innerHTML =
+      `<b>${okText}</b>` +
+      `<span style="margin-left:14px;font-size:0.78rem;">阶段=${(s.phases||[]).join(',')} ` +
+      `· 总计 ${s.total} 项 · ` +
+      `<span class="smoke-pass">pass=${s.pass}</span> · ` +
+      `<span class="smoke-fail">fail=${s.fail}</span> · ` +
+      `<span class="smoke-warn">warn=${s.warn}</span> · ` +
+      `<span class="smoke-skip">skip=${s.skip}</span></span>`;
+    summary.style.display = 'block';
+
+    // ── Group by phase ──
+    const byPhase = {};
+    (r.results || []).forEach(item => {
+      (byPhase[item.phase] = byPhase[item.phase] || []).push(item);
+    });
+
+    let html = '';
+    (s.phases || []).forEach(p => {
+      const rows = byPhase[p] || [];
+      html += `<div class="smoke-phase-block"><div class="smoke-phase-title">Phase ${p} · ${_escHtml(SMOKE_PHASE_TITLES[p] || p)} <span class="muted">(${rows.length})</span></div>`;
+      html += '<table class="smoke-table"><tbody>';
+      rows.forEach(row => {
+        const meta = SMOKE_STATUS_META[row.status] || SMOKE_STATUS_META.fail;
+        html += `<tr>` +
+                `<td class="smoke-cell-status"><span class="smoke-pill ${meta.cls}">${meta.glyph} ${meta.label}</span></td>` +
+                `<td class="smoke-cell-id">${_escHtml(row.id)}</td>` +
+                `<td class="smoke-cell-name">${_escHtml(row.name)}</td>` +
+                `<td class="smoke-cell-detail">${_escHtml(row.detail)}</td>` +
+                `<td class="smoke-cell-ms">${row.duration_ms}ms</td>` +
+                `</tr>`;
+      });
+      html += '</tbody></table></div>';
+    });
+    results.innerHTML = html;
+    results.style.display = 'block';
+    statusEl.textContent = s.all_ok ? '✓ 全部通过' : `✗ 失败 ${s.fail} 项`;
+  } catch (e) {
+    alertBox('自检失败: ' + e.message, 'error');
+    statusEl.textContent = 'Error';
+  } finally {
+    btn.disabled = false; btnAll.disabled = false;
+  }
 }
 
 // Account switcher event
