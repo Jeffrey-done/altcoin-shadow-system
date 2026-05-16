@@ -57,6 +57,7 @@ if sys.platform == 'win32':
     import msvcrt
 
     class _LockShim:
+        """Windows flock 仿真层（NF-1: 加 lseek(0) 让多进程锁同一 byte，与 common._LockShim 一致）"""
         LOCK_EX = 1
         LOCK_SH = 2
         LOCK_UN = 0
@@ -67,6 +68,11 @@ if sys.platform == 'win32':
                 fileno = fd.fileno()
             except AttributeError:
                 fileno = fd
+            # NF-1: 锁住固定的 byte 0，避免 'a' 模式打开的 fd 在 EOF 处加锁导致互斥失效
+            try:
+                os.lseek(fileno, 0, os.SEEK_SET)
+            except OSError:
+                pass
             if op == _LockShim.LOCK_UN:
                 try:
                     msvcrt.locking(fileno, msvcrt.LK_UNLCK, 1)

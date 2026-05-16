@@ -24,7 +24,14 @@ if sys.platform == 'win32':
     import msvcrt
 
     class _LockShim:
-        """Windows 专用 flock 仿真层（仅 read-modify-write 临界区适用）"""
+        """Windows 专用 flock 仿真层（仅 read-modify-write 临界区适用）
+
+        NF-1 修复：msvcrt.locking 锁的是"从当前文件指针起 N 字节"。
+        LockedJsonFile 用 open(..., 'a') 打开 .lock 文件，文件指针在 EOF；
+        如果两个进程在不同 EOF 位置加锁就互不冲突，互斥失效。
+        统一在加锁/解锁前 os.lseek(fileno, 0, SEEK_SET)，强制都锁 byte 0，
+        让 Windows 多进程之间的互斥语义和 Linux fcntl.flock 对齐。
+        """
         LOCK_EX = 1   # 独占锁
         LOCK_SH = 2   # 共享锁（msvcrt 没有真正共享语义，退化为独占）
         LOCK_UN = 0   # 解锁
@@ -35,6 +42,12 @@ if sys.platform == 'win32':
                 fileno = fd.fileno()
             except AttributeError:
                 fileno = fd  # 如果传入的是 fd 整数
+
+            # NF-1: 强制定位到文件开头，保证不同进程都锁同一个 byte
+            try:
+                os.lseek(fileno, 0, os.SEEK_SET)
+            except OSError:
+                pass  # 极端情况下 fd 不可 seek，退化为旧行为
 
             if op == _LockShim.LOCK_UN:
                 try:
