@@ -160,12 +160,15 @@
 <script defer src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
 <script defer src="{{ url_for('static', filename='js/funnel.js') }}"></script>
 <script defer src="{{ url_for('static', filename='js/compare.js') }}"></script>
-<script defer>
-// 整段逻辑包在 IIFE+DOMContentLoaded 里。
-// 因为上面的脚本现在是 defer 加载（HTML 解析完才执行），如果这里还是经典 inline
-// <script>，io() / PnlChart 等都会在 socket.io / chart.js 之前运行 → ReferenceError。
-// 用 defer 让本脚本和上面的脚本按文档顺序在 DOMContentLoaded 之前依次执行。
-(function () {
+<script>
+// 整段逻辑放在 DOMContentLoaded handler 里。
+// 上面的 chart.js / socket.io.min.js / binance-ws.js 等都是 defer 加载（HTML 解析完才执行），
+// 如果这里直接 const socket = io(); 会抢在 socket.io.min.js 之前跑 → ReferenceError。
+//
+// 注意：HTML 规范规定 inline <script> 上的 defer 属性是无效的（W3C: "must not be used
+// if the src attribute is absent"），所以不能用 <script defer> 来排队 inline 脚本。
+// 用 DOMContentLoaded 等所有 defer 链都跑完后再执行才是正解。
+document.addEventListener('DOMContentLoaded', function () {
 const socket = io();
 let lastDashboardData = null;
 let currentMode = 'all';
@@ -335,21 +338,21 @@ BinanceWS.onPriceUpdate = function(symbol, price) {
     PositionTable.updatePrice(symbol, price, lastDashboardData);
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-    PnlChart.init('pnl-chart', 'chart-tooltip');
-    CompareChart.init('compare-chart', 'compare-tooltip');
-    initModeFilter();
-    PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
-        if (lastDashboardData) {
-            const filtered = filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode);
-            PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
-        }
-    });
-    // 获取多账户总览
-    fetchAccountsOverview();
-    setInterval(fetchAccountsOverview, 15000);
-    lucide.createIcons();
+// 已经在外层 DOMContentLoaded handler 里，无需再嵌套监听（嵌套的话事件已触发，
+// 内层 listener 永远不会跑）。直接调用初始化函数。
+PnlChart.init('pnl-chart', 'chart-tooltip');
+CompareChart.init('compare-chart', 'compare-tooltip');
+initModeFilter();
+PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
+    if (lastDashboardData) {
+        const filtered = filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode);
+        PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
+    }
 });
+// 获取多账户总览
+fetchAccountsOverview();
+setInterval(fetchAccountsOverview, 15000);
+lucide.createIcons();
 
 // ── 账户卡片点击切换 ──
 function shortAccountLabel(id) {
@@ -497,6 +500,6 @@ function renderAccountsOverview(data) {
 
     lucide.createIcons();
 }
-})(); // end IIFE
+}); // end DOMContentLoaded handler
 </script>
 {% endblock %}
