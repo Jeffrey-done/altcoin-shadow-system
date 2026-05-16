@@ -3,6 +3,16 @@
 定时任务调度器 — 替代 crontab
 在 Docker 容器内按计划执行所有策略模块。
 
+v4.3 修复（彻底解决子进程 8 分钟启动延迟）：
+  - multiprocessing 启动方式从 fork 改成 spawn
+  - fork 在多线程父进程里不安全：hot_scanner / tg_bot 后台线程持有的
+    threading.Lock / ccxt SSL 连接池 / logging._lock 会被子进程"半继承"
+    （锁状态复制了，但持锁线程没复制）→ 子进程首次 import 网络模块
+    或 logger.info 时永久阻塞，直到 TCP 默认重传超时才"诈尸"。
+  - 实测：父进程"开始执行"日志 → 子进程内首条业务日志间隔 8 分钟。
+  - spawn 子进程从零启动新解释器，不继承父进程任何线程/锁/socket 状态。
+    代价：启动慢 ~500ms，对 10 分钟级别的任务完全可以接受。
+
 v4.2 改进（提升信号响应速度）：
   - check_candidates: 每小时 → 每 15 分钟（入场延迟从最差59分降到14分）
   - tracker_check: 每小时 → 每 10 分钟（止盈止损响应加快6倍）
@@ -29,18 +39,58 @@ from common import setup_logger
 logger = setup_logger("scheduler")
 
 
+# ══════════════════════════════════════════════════════════════════
+#  spawn 启动上下文（避免 fork-after-thread 死锁）
+# ══════════════════════════════════════════════════════════════════
+#  Linux 上 multiprocessing 默认 start_method='fork'。
+#  fork 只复制调用线程，但父进程的所有锁状态（threading.Lock、
+#  ccxt HTTPSConnectionPool、SSL session、logging._lock）都会被
+#  原样复制到子进程，造成"锁是 LOCKED 状态但没有持锁线程"的死锁。
+#
+#  我们已经知道父进程启动时会创建 hot_scanner / tg_bot 后台线程，
+#  所以 fork 在本项目里 100% 不安全。改用 spawn，子进程从零启动
+#  全新的 Python 解释器，不继承任何父进程状态。
+#
+#  注意：set_start_method 全局只能调一次；用 get_context('spawn')
+#  返回的上下文创建 Process 是更稳的做法（不污染全局，也不会与
+#  其他可能导入的库冲突）。
+# ══════════════════════════════════════════════════════════════════
+_MP_CTX = multiprocessing.get_context('spawn')
+
+
 def _process_target(module: str, func_name: str, args: tuple, kwargs: dict):
     """
     子进程入口：在新进程里 import 模块并执行函数。
-    子进程会继承一个全新的 Python 解释器，所以 fcntl.flock 锁会被 OS 在
-    进程退出时自动释放，避免线程终止时 flock 残留。
+    spawn 模式下子进程是全新解释器，所有 import / 锁 / 连接池都从零创建，
+    不会继承父进程的"半锁定"状态。
     """
     try:
         # 保证子进程也能找到工作目录的模块
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
+
+        # ── 诊断日志：子进程"实际开始执行"的时间戳 ──
+        # 父进程会先打 "开始执行（子进程模式...）"，再 fork/spawn。
+        # 这里立刻打 "[subprocess pid=X] entered"，两条日志的时间差
+        # 就是 spawn + import + 锁等待的真实开销。
+        # 如果这条日志距离父进程那条超过 5s，说明 spawn/import 卡了。
+        import time as _t
+        _t0 = _t.monotonic()
+        print(
+            f"[subprocess pid={os.getpid()}] entered _process_target "
+            f"target={module}.{func_name}",
+            file=sys.stderr, flush=True,
+        )
+
         mod = __import__(module, fromlist=[func_name])
+        _t_import = _t.monotonic() - _t0
+        print(
+            f"[subprocess pid={os.getpid()}] import done dt={_t_import:.3f}s "
+            f"-> calling {func_name}",
+            file=sys.stderr, flush=True,
+        )
+
         func = getattr(mod, func_name)
         func(*args, **kwargs)
     except Exception as e:
@@ -73,13 +123,18 @@ def run_task(name: str, func, timeout: int = None,
             use_process = False
 
     if use_process:
-        logger.info(f"[{name}] 开始执行（子进程模式，超时={timeout}s）")
-        p = multiprocessing.Process(
+        logger.info(f"[{name}] 开始执行（子进程模式 spawn，超时={timeout}s）")
+        _t_spawn = time.monotonic()
+        p = _MP_CTX.Process(
             target=_process_target,
             args=(process_module, process_func, process_args, process_kwargs or {}),
             daemon=True,
         )
         p.start()
+        _t_started = time.monotonic()
+        logger.info(
+            f"[{name}] spawn 完成 pid={p.pid} 启动耗时={_t_started - _t_spawn:.2f}s"
+        )
         p.join(timeout=timeout)
 
         if p.is_alive():
