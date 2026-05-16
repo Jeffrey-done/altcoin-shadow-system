@@ -479,6 +479,10 @@ def _account_param(account_id: str, key: str, fallback=None):
     return fallback
 
 
+# 公共别名：dashboard / tg_bot / 其它模块需要按账号读 ALLOWED 字段时用这个
+account_param = _account_param
+
+
 def get_compound_stake(account_id: str = None) -> float:
     """
     自动复利：根据累计已实现盈亏动态调整单笔保证金。

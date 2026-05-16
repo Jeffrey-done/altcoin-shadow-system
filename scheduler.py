@@ -425,25 +425,54 @@ def main_loop():
         logger.error(f"启动对账异常: {e}")
 
     # M-6: 启动时校验配置一致性，对致命组合（DEFAULT_STAKE > balance）告警
+    # 多账号修复：遍历所有账号分别校验，而不是只校验活跃账号；否则非活跃账号
+    # 的死配置（譬如 stake > balance）切换过去前不会被发现，切换瞬间风控全拒。
     try:
-        from runtime_config import validate_cross_field_consistency
+        from runtime_config import (
+            validate_cross_field_consistency, load_account_overrides,
+            load_global_overrides,
+        )
         from common import send_tg, tg_escape
-        errors, warnings = validate_cross_field_consistency({})  # 空 overrides → 仅校验当前 config
-        if errors:
-            err_text = "\n".join(f"• {e}" for e in errors)
+        from admin_secrets import list_accounts
+
+        all_errors: list = []
+        all_warnings: list = []
+        global_over = load_global_overrides()
+
+        accounts = list_accounts() or []
+        if not accounts:
+            # 单账号兼容：没有 admin_secrets 配置时，校验当前 config
+            errs, warns = validate_cross_field_consistency({})
+            all_errors.extend([f"(默认) {e}" for e in errs])
+            all_warnings.extend([f"(默认) {w}" for w in warns])
+        else:
+            for acc in accounts:
+                acc_id = acc['id']
+                acc_name = acc.get('name', acc_id)
+                # 用该账号的 overrides 合并到 _config 当前值做模拟"如果切到这个账号"
+                acc_over = load_account_overrides(acc_id) or {}
+                merged = {**global_over, **acc_over}
+                errs, warns = validate_cross_field_consistency(
+                    merged, account_id=acc_id
+                )
+                all_errors.extend([f"[{acc_name}] {e}" for e in errs])
+                all_warnings.extend([f"[{acc_name}] {w}" for w in warns])
+
+        if all_errors:
+            err_text = "\n".join(f"• {e}" for e in all_errors)
             logger.error(f"启动配置一致性 ERROR:\n{err_text}")
             send_tg(
                 f"🚫 <b>启动配置一致性致命错误</b>\n\n"
-                + "\n".join(f"• {tg_escape(e)}" for e in errors)
-                + "\n\n⚠️ 当前配置会让风控永远拒绝开仓。"
+                + "\n".join(f"• {tg_escape(e)}" for e in all_errors)
+                + "\n\n⚠️ 标注的账号配置会让风控永远拒绝开仓。"
                 "请立即在 admin panel 调整后系统才能正常工作。"
             )
-        if warnings:
-            warn_text = "\n".join(f"• {w}" for w in warnings)
+        if all_warnings:
+            warn_text = "\n".join(f"• {w}" for w in all_warnings)
             logger.warning(f"启动配置一致性 WARNING:\n{warn_text}")
             send_tg(
                 f"⚠️ <b>启动配置一致性警告</b>\n\n"
-                + "\n".join(f"• {tg_escape(w)}" for w in warnings)
+                + "\n".join(f"• {tg_escape(w)}" for w in all_warnings)
                 + "\n\n建议在 admin panel 调整 DEFAULT_STAKE / RISK_MAX_POSITION_PCT / "
                 "ACCOUNT_BALANCE 三者关系。"
             )

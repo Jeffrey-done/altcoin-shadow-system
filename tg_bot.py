@@ -27,7 +27,7 @@ from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
     setup_logger, load_json, today_str,
     get_dynamic_balance, get_compound_stake,
-    get_current_account_id, filter_trades_by_account,
+    get_current_account_id, filter_trades_by_account, account_param,
     TG_BOT_TOKEN, TG_CHAT_ID,
 )
 
@@ -77,6 +77,10 @@ def cmd_balance() -> str:
     wins = sum(1 for t in closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
 
+    # 多账号修复：本金 / 杠杆按当前活跃账号取，避免 apply_overrides 时序漂移
+    initial_balance = float(account_param(account_id, 'ACCOUNT_BALANCE', config.ACCOUNT_BALANCE))
+    leverage_x = int(account_param(account_id, 'LEVERAGE', config.LEVERAGE))
+
     # ── 实盘余额（LIVE_MODE / OKX_LIVE_MODE 任一开启时显示）──
     live_lines = []
     if config.LIVE_MODE:
@@ -119,12 +123,12 @@ def cmd_balance() -> str:
     return (
         f"💰 <b>账户概览</b>\n\n"
         f"动态余额：<b>{balance:.2f}U</b>\n"
-        f"初始本金：{config.ACCOUNT_BALANCE}U\n"
+        f"初始本金：{initial_balance:.0f}U\n"
         f"累计盈亏：<b>{total_pnl:+.2f}U</b>\n"
         f"今日盈亏：<b>{today_pnl:+.2f}U</b>\n"
         f"胜率：{win_rate}%（{wins}/{len(closed)}）\n"
         f"复利仓位：{compound_stake:.0f}U\n"
-        f"杠杆：{config.LEVERAGE}x\n"
+        f"杠杆：{leverage_x}x\n"
         f"{route_line}"
         f"{live_block}"
     )

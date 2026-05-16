@@ -51,7 +51,7 @@ from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
     WEEKLY_REPORT_FILE,
     load_json, utcnow_iso, today_str, get_dynamic_balance, get_compound_stake,
-    get_current_account_id, filter_trades_by_account,
+    get_current_account_id, filter_trades_by_account, account_param,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -273,7 +273,11 @@ def get_dashboard_data(account_id: str = None) -> dict:
     short_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_short)
     long_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_long)
     total_used = short_used + long_used
-    max_position = dynamic_balance * config.RISK_MAX_POSITION_PCT
+    # 多账号修复：用 account_param 取该账号自己的 RISK_MAX_POSITION_PCT，
+    # 而不是被 apply_overrides 写到 config 模块的活跃账号值
+    risk_max_pos_pct = float(account_param(account_id, 'RISK_MAX_POSITION_PCT',
+                                           config.RISK_MAX_POSITION_PCT))
+    max_position = dynamic_balance * risk_max_pos_pct
     available = max(0, max_position - total_used)
 
     pool_allocation = {
@@ -300,8 +304,8 @@ def get_dashboard_data(account_id: str = None) -> dict:
     return {
         'account': {
             'balance': round(dynamic_balance, 2),
-            'initial_balance': config.ACCOUNT_BALANCE,
-            'leverage': config.LEVERAGE,
+            'initial_balance': float(account_param(account_id, 'ACCOUNT_BALANCE', config.ACCOUNT_BALANCE)),
+            'leverage': int(account_param(account_id, 'LEVERAGE', config.LEVERAGE)),
             'today_pnl': round(today_pnl_short + today_pnl_long, 2),
             'total_pnl': round(total_pnl_short + total_pnl_long, 2),
             'win_rate': round(win_rate, 1),
@@ -324,13 +328,14 @@ def get_dashboard_data(account_id: str = None) -> dict:
         'pnl_chart': pnl_chart_data,
         'pool': pool_allocation,
         'config': {
-            'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 1),
-            'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 1),
-            'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+            # 多账号修复：每个 account 视图返回该账号自己的止盈止损 / 风控参数
+            'tp1_pct': round((1 - float(account_param(account_id, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))) * 100, 1),
+            'tp2_pct': round((1 - float(account_param(account_id, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))) * 100, 1),
+            'hard_stop_pct': float(account_param(account_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
             'trail_activate_pct': config.TRAIL_STOP_ACTIVATE_PCT,
             'max_hold_days': config.MAX_HOLD_DAYS,
-            'max_daily_loss': config.RISK_MAX_DAILY_LOSS,
-            'max_daily_trades': config.RISK_MAX_DAILY_TRADES,
+            'max_daily_loss': float(account_param(account_id, 'RISK_MAX_DAILY_LOSS', config.RISK_MAX_DAILY_LOSS)),
+            'max_daily_trades': int(account_param(account_id, 'RISK_MAX_DAILY_TRADES', config.RISK_MAX_DAILY_TRADES)),
         },
         'yesterday_pnl': round(yesterday_pnl, 2),
         'risk_history': risk_history,
