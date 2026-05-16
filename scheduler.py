@@ -63,7 +63,25 @@ def _process_target(module: str, func_name: str, args: tuple, kwargs: dict):
     子进程入口：在新进程里 import 模块并执行函数。
     spawn 模式下子进程是全新解释器，所有 import / 锁 / 连接池都从零创建，
     不会继承父进程的"半锁定"状态。
+
+    v4.4 修复（解决"子进程 2s 跑完业务但父进程仍等 600s"）：
+      根因：业务函数（altcoin_scanner.check_candidates 等）内部用了
+      ThreadPoolExecutor，worker 线程默认非 daemon。即便业务调用了
+      executor.shutdown(wait=False)，CPython 还是会在 _python_exit 这个
+      atexit hook 里强制 join 全局 _threads_queues 表里的所有 worker。
+      ccxt/requests 的 socket read 阻塞时，worker join 会一直等到 socket
+      timeout（默认很长），子进程 PID 不释放 → 父进程 p.join(600) 一直
+      等到超时 terminate。
+      shutdown(wait=False) 治不了这个，因为它只让"调用者不等"，没把
+      worker 从 _threads_queues 摘掉。
+
+      修复：业务函数 return 后立刻 os._exit(exitcode)，跳过整个 Python
+      解释器关闭流程（atexit / threading.shutdown / GC）。OS 层立刻
+      回收 PID，父进程 p.join() 秒级返回。
+      代价：丢失 stdio buffer 和 atexit handlers——已在 _exit 前显式
+      flush stderr/stdout 并 logging.shutdown()，所以日志不会丢。
     """
+    exitcode = 0
     try:
         # 保证子进程也能找到工作目录的模块
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -93,10 +111,36 @@ def _process_target(module: str, func_name: str, args: tuple, kwargs: dict):
 
         func = getattr(mod, func_name)
         func(*args, **kwargs)
+
+        _t_total = _t.monotonic() - _t0
+        print(
+            f"[subprocess pid={os.getpid()}] {module}.{func_name} returned "
+            f"total_dt={_t_total:.3f}s -> os._exit(0)",
+            file=sys.stderr, flush=True,
+        )
     except Exception as e:
         # 写到 stderr，父进程通过 logger 捕获不了子进程异常
-        print(f"[subprocess] {module}.{func_name} failed: {e}", file=sys.stderr)
+        print(f"[subprocess pid={os.getpid()}] {module}.{func_name} failed: {e}",
+              file=sys.stderr, flush=True)
         traceback.print_exc()
+        exitcode = 1
+    finally:
+        # ── 关键：跳过 Python 解释器关闭流程，OS 层立刻回收 PID ──
+        # 不能用 sys.exit(): sys.exit 抛 SystemExit，仍会触发 atexit。
+        # 必须 os._exit()，它直接走 _exit(2) syscall。
+        try:
+            sys.stderr.flush()
+            sys.stdout.flush()
+        except Exception:
+            pass
+        # logging.shutdown() 会按注册顺序 close 所有 handler（含 RotatingFileHandler 的
+        # 文件刷盘）。即便业务用了 BufferedHandler 也保证日志落盘。
+        try:
+            import logging
+            logging.shutdown()
+        except Exception:
+            pass
+        os._exit(exitcode)
 
 
 def run_task(name: str, func, timeout: int = None,
