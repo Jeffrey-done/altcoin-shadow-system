@@ -25,10 +25,12 @@ import json
 import logging
 import os
 import stat
+from contextlib import contextmanager
 from typing import Any, Callable, Dict, Tuple
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNTIME_CONFIG_FILE = os.path.join(SCRIPT_DIR, 'runtime_config.json')
+_RUNTIME_LOCK = RUNTIME_CONFIG_FILE + '.lock'
 
 logger = logging.getLogger("runtime_config")
 
@@ -267,6 +269,43 @@ def _save_raw_config(data: dict) -> None:
     os.replace(tmp, RUNTIME_CONFIG_FILE)
 
 
+@contextmanager
+def _locked_config():
+    """
+    NF2-1 修复：read-modify-write 上下文管理器，对 runtime_config.json 加排他锁。
+
+    用法:
+        with _locked_config() as (data, save):
+            data['_global']['LIVE_MODE'] = True
+            save(data)
+
+    背景:
+        admin panel 的 save_overrides / save_account_overrides / save_global_overrides
+        都是 RMW 操作 (load_raw → mutate → save_raw)。原实现没有锁，多 worker 并发
+        修改时会丢失更新（admin_secrets 已用 _locked_secrets 解决了同类问题，对齐设计）。
+
+    实现:
+        使用 common.fcntl (Linux=fcntl 真模块；Windows=common._LockShim 含 NF-1 lseek(0)
+        修复)，与 LockedJsonFile / admin_secrets._locked_secrets 行为一致。
+    """
+    # 延迟 import 避免循环依赖（common 不依赖 runtime_config，但保险起见仍延迟）
+    from common import fcntl as _fcntl
+    lock_fd = open(_RUNTIME_LOCK, 'a')
+    try:
+        _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+        data = _load_raw_config()
+
+        def save(new_data: dict) -> None:
+            _save_raw_config(new_data)
+
+        yield data, save
+    finally:
+        try:
+            _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+
+
 def load_overrides() -> dict:
     """
     读当前活跃账户的合并配置（_global + 活跃账户的覆盖）。
@@ -306,32 +345,32 @@ def save_overrides(overrides: dict) -> None:
     若发现致命组合（如 DEFAULT_STAKE > ACCOUNT_BALANCE）抛 ValueError 拒绝写盘。
     Admin panel 应当在调用本函数前先做 pre-flight 校验返回 400，
     本函数的检查是最后一道防线，避免直接调用方绕过 admin UI 写入坏配置。
-    """
-    data = _load_raw_config()
 
+    NF2-1: 整段 RMW 在 _locked_config() 排他锁内，避免多 worker 并发写丢字段。
+    """
     try:
         import admin_secrets
         active_id = admin_secrets.get_active_account_id()
     except Exception:
         active_id = ''
 
-    # 防御性拒绝：致命错误直接抛
+    # 防御性拒绝：致命错误直接抛（不需要持锁，纯校验）
     errors, _warnings = validate_cross_field_consistency(overrides, account_id=active_id)
     if errors:
         raise ValueError(
             "配置一致性校验失败，拒绝保存：\n" + "\n".join(errors)
         )
 
-    # 拆分并保存
-    for key, value in overrides.items():
-        if key not in ALLOWED:
-            continue
-        if key in GLOBAL_FIELDS:
-            data.setdefault('_global', {})[key] = value
-        elif active_id:
-            data.setdefault(active_id, {})[key] = value
-
-    _save_raw_config(data)
+    # 拆分并保存（持锁 RMW）
+    with _locked_config() as (data, save):
+        for key, value in overrides.items():
+            if key not in ALLOWED:
+                continue
+            if key in GLOBAL_FIELDS:
+                data.setdefault('_global', {})[key] = value
+            elif active_id:
+                data.setdefault(active_id, {})[key] = value
+        save(data)
 
 
 def load_account_overrides(account_id: str) -> dict:
@@ -341,16 +380,24 @@ def load_account_overrides(account_id: str) -> dict:
 
 
 def save_account_overrides(account_id: str, overrides: dict) -> None:
-    """保存指定账户的配置覆盖"""
-    data = _load_raw_config()
+    """
+    保存指定账户的配置覆盖。
+
+    NF2-1: 整段 RMW 在 _locked_config() 排他锁内。
+    NF2-2: 改为字段级合并 (update) 而不是整体替换，
+           否则调用方传 {'LEVERAGE': 5} 会清空该账户的 ACCOUNT_BALANCE 等其他字段。
+    """
     filtered = {}
     for key, value in overrides.items():
         if key in ACCOUNT_FIELDS:
             ok, _ = validate_change(key, value)
             if ok:
                 filtered[key] = value
-    data[account_id] = filtered
-    _save_raw_config(data)
+
+    with _locked_config() as (data, save):
+        # NF2-2: 合并而非替换 — 保留账户中既有的其他字段
+        data.setdefault(account_id, {}).update(filtered)
+        save(data)
 
 
 def load_global_overrides() -> dict:
@@ -360,16 +407,22 @@ def load_global_overrides() -> dict:
 
 
 def save_global_overrides(overrides: dict) -> None:
-    """保存全局配置"""
-    data = _load_raw_config()
-    global_data = data.setdefault('_global', {})
+    """
+    保存全局配置。
+
+    NF2-1: 整段 RMW 在 _locked_config() 排他锁内。
+    """
+    filtered = {}
     for key, value in overrides.items():
         if key in GLOBAL_FIELDS:
             ok, _ = validate_change(key, value)
             if ok:
-                global_data[key] = value
-    data['_global'] = global_data
-    _save_raw_config(data)
+                filtered[key] = value
+
+    with _locked_config() as (data, save):
+        global_data = data.setdefault('_global', {})
+        global_data.update(filtered)
+        save(data)
 
 
 # ══════════════════════════════════════════════════════════════════

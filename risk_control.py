@@ -565,7 +565,12 @@ def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
                 continue
 
             try:
-                closed_date = parse_iso(closed_at).date()
+                # NF2-4: 必须先 astimezone(UTC) 再 .date()
+                # parse_iso 不做时区转换，只给 naive 时间戳贴 UTC 标签；
+                # 老数据若写入了带本地时区的 ISO 串（如 +08:00），
+                # 直接 .date() 拿到的是本地日期，与 today_dt(UTC) 比较会漏冷却。
+                from datetime import timezone as _tz
+                closed_date = parse_iso(closed_at).astimezone(_tz.utc).date()
                 if closed_date == today_dt:
                     reason = "今日已亏损平仓过（防止同日二次开仓扩大亏损）"
                     return (True, reason)
