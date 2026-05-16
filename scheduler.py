@@ -176,25 +176,53 @@ def run_task(name: str, func, timeout: int = None,
         )
         p.start()
         _t_started = time.monotonic()
+        spawn_dt = _t_started - _t_spawn
         logger.info(
-            f"[{name}] spawn 完成 pid={p.pid} 启动耗时={_t_started - _t_spawn:.2f}s"
+            f"[{name}] spawn 完成 pid={p.pid} 启动耗时={spawn_dt:.2f}s"
         )
         p.join(timeout=timeout)
+
+        # 任务监控（task_metrics）：所有分支统一在 finally-style block 末尾记录一次
+        _metric_status = 'ok'
+        _metric_error: Optional[str] = None
 
         if p.is_alive():
             logger.error(f"[{name}] ⚠️ 子进程超时（>{timeout}s），terminate")
             p.terminate()
             p.join(timeout=5)
+            killed_force = False
             if p.is_alive():
                 logger.error(f"[{name}] 子进程 terminate 失败，强制 kill")
                 p.kill()
                 p.join(timeout=2)
+                killed_force = True
             from common import send_tg
             send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n子进程已强制终止，flock 已由 OS 释放")
+            _metric_status = 'killed' if killed_force else 'timeout'
+            _metric_error = f"超过 {timeout}s 被强杀" if killed_force else f"超过 {timeout}s"
         elif p.exitcode != 0:
             logger.error(f"[{name}] 子进程异常退出 exitcode={p.exitcode}")
+            _metric_status = 'error'
+            _metric_error = f"exitcode={p.exitcode}"
         else:
             logger.info(f"[{name}] 完成")
+
+        # 写一行任务监控事件（失败不抛，不影响主流程）
+        try:
+            import task_metrics
+            task_metrics.record({
+                'name': name,
+                'mode': 'process',
+                'status': _metric_status,
+                'duration_sec': round(time.monotonic() - _t_spawn, 2),
+                'timeout_sec': timeout,
+                'exitcode': p.exitcode,
+                'pid': p.pid,
+                'spawn_dt': round(spawn_dt, 3),
+                'error': _metric_error,
+            })
+        except Exception as _e:
+            logger.warning(f"[{name}] task_metrics.record 失败: {_e}")
         return
 
     exception = [None]
@@ -206,20 +234,44 @@ def run_task(name: str, func, timeout: int = None,
             exception[0] = e
 
     logger.info(f"[{name}] 开始执行（超时={timeout}s）")
+    _t_thread_start = time.monotonic()
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
 
+    _metric_status = 'ok'
+    _metric_error: Optional[str] = None
     if thread.is_alive():
         logger.error(f"[{name}] ⚠️ 超时（>{timeout}s），尝试终止线程")
         # 尝试向僵尸线程注入 SystemExit 异常
         _try_kill_thread(thread)
         from common import send_tg
         send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n已尝试终止线程")
+        _metric_status = 'timeout'
+        _metric_error = f"超过 {timeout}s（线程模式无法强杀）"
     elif exception[0]:
         logger.error(f"[{name}] 异常: {exception[0]}\n{traceback.format_exc()}")
+        _metric_status = 'error'
+        _metric_error = f"{exception[0].__class__.__name__}: {exception[0]}"
     else:
         logger.info(f"[{name}] 完成")
+
+    # 任务监控事件
+    try:
+        import task_metrics
+        task_metrics.record({
+            'name': name,
+            'mode': 'thread',
+            'status': _metric_status,
+            'duration_sec': round(time.monotonic() - _t_thread_start, 2),
+            'timeout_sec': timeout,
+            'exitcode': None,
+            'pid': None,
+            'spawn_dt': None,
+            'error': _metric_error,
+        })
+    except Exception as _e:
+        logger.warning(f"[{name}] task_metrics.record 失败: {_e}")
 
 
 def _try_kill_thread(thread: threading.Thread) -> bool:
