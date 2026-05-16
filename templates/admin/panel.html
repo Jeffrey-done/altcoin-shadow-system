@@ -233,6 +233,7 @@ select { cursor: pointer; }
     <button class="tab" onclick="switchTab('position')"><i data-lucide="sliders"></i> 仓位与风控</button>
     <button class="tab" onclick="switchTab('preflight')"><i data-lucide="stethoscope"></i> 预检</button>
     <button class="tab" onclick="switchTab('smoke')"><i data-lucide="activity"></i> 系统自检</button>
+    <button class="tab" onclick="switchTab('tasks')"><i data-lucide="timer"></i> 任务监控</button>
   </div>
 
   <!-- TAB: Live Control -->
@@ -394,6 +395,50 @@ select { cursor: pointer; }
       <div id="smoke-results" style="display:none;"></div>
     </div>
   </div>
+
+  <!-- TAB: Task Metrics (任务监控) -->
+  <div class="tab-content" id="tab-tasks">
+    <div class="card">
+      <div class="card-title"><i data-lucide="timer"></i> 任务监控</div>
+      <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:14px;">
+        scheduler 每个任务执行结束后写入 <code>task_metrics.jsonl</code>。这里
+        显示最近的执行时间线 + 按任务聚合的统计 —— 配合 TG 收到的"任务超时"
+        告警可以快速定位是哪个任务、什么时候、超时多少。
+      </p>
+
+      <!-- Toolbar -->
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px;font-size:0.78rem;">
+        <label>条数</label>
+        <select id="task-metrics-limit" style="width:auto;padding:6px 10px;">
+          <option value="20">20</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        <label>任务</label>
+        <select id="task-metrics-name" style="width:auto;padding:6px 10px;">
+          <option value="">全部</option>
+          <!-- 动态填充 -->
+        </select>
+        <button class="btn btn-primary" onclick="loadTaskMetrics()" id="btn-task-metrics">
+          <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> 刷新
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="autoRefreshTaskMetrics()" id="btn-task-auto">
+          <i data-lucide="play-circle" style="width:12px;height:12px;"></i> <span id="btn-task-auto-label">自动刷新</span>
+        </button>
+        <span id="task-metrics-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
+      </div>
+
+      <!-- Per-task summary -->
+      <div id="task-metrics-summary" style="margin-bottom:14px;display:none;"></div>
+
+      <!-- Timeline -->
+      <div id="task-metrics-timeline" style="display:none;"></div>
+      <div id="task-metrics-empty" style="display:none;padding:24px;text-align:center;color:var(--text-muted);font-size:0.82rem;">
+        暂无任务执行事件。等 scheduler 跑过几轮(15 分钟一轮的"候选确认"是最常见的)再回来,或检查 <code>task_metrics.jsonl</code> 文件路径。
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- TOTP Modal -->
@@ -457,6 +502,14 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelectorAll('.tab').forEach(t => { if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'" + name + "'")) t.classList.add('active'); });
+  // 进入"任务监控"立刻加载一次（首次切换时）
+  if (name === 'tasks' && typeof loadTaskMetrics === 'function') {
+    const tl = document.getElementById('task-metrics-timeline');
+    const em = document.getElementById('task-metrics-empty');
+    if (tl && em && tl.style.display === 'none' && em.style.display === 'none') {
+      loadTaskMetrics();
+    }
+  }
 }
 
 function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => document.getElementById('totp-code').focus(), 50); }
@@ -692,6 +745,162 @@ async function _runSmoke(phases) {
   } finally {
     btn.disabled = false; btnAll.disabled = false;
   }
+}
+
+// ── 任务监控 (task metrics) ─────────────────────────────────────
+const TASK_STATUS_META = {
+  ok:      { glyph: '✓',  cls: 'smoke-pass', label: 'OK' },
+  error:   { glyph: '✗',  cls: 'smoke-fail', label: 'ERROR' },
+  timeout: { glyph: '⏰', cls: 'smoke-warn', label: 'TIMEOUT' },
+  killed:  { glyph: '☠',  cls: 'smoke-fail', label: 'KILLED' },
+};
+
+let _taskAutoTimer = null;
+const _knownTaskNames = new Set();
+
+function _fmtTaskTs(ts) {
+  if (!ts) return '?';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth()+1) + '-' + pad(d.getUTCDate())
+       + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+}
+function _fmtTaskDuration(sec) {
+  if (sec === null || sec === undefined) return '—';
+  const n = Number(sec);
+  if (!isFinite(n)) return '?';
+  if (n < 60) return n.toFixed(1) + 's';
+  const m = Math.floor(n / 60);
+  const s = (n - m * 60).toFixed(1);
+  return m + 'm' + (s.length < 4 ? '0' : '') + s + 's';
+}
+
+async function loadTaskMetrics() {
+  const limit = document.getElementById('task-metrics-limit').value;
+  const name  = document.getElementById('task-metrics-name').value;
+  const btn   = document.getElementById('btn-task-metrics');
+  const statusEl  = document.getElementById('task-metrics-status');
+  const timeline  = document.getElementById('task-metrics-timeline');
+  const summaryEl = document.getElementById('task-metrics-summary');
+  const emptyEl   = document.getElementById('task-metrics-empty');
+
+  btn.disabled = true;
+  statusEl.textContent = '加载中...';
+
+  try {
+    const qs = new URLSearchParams({ limit });
+    if (name) qs.set('name', name);
+    const res = await fetch('api/task-metrics?' + qs.toString(), {
+      headers: { 'X-Admin-CSRF': CSRF_TOKEN }, credentials: 'same-origin',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+    const events = data.events || [];
+    const summary = data.summary || {};
+
+    // 维护任务名下拉
+    Object.keys(summary).forEach(n => _knownTaskNames.add(n));
+    events.forEach(e => { if (e.name) _knownTaskNames.add(e.name); });
+    _refreshTaskNameSelect(name);
+
+    if (events.length === 0) {
+      timeline.style.display = 'none';
+      summaryEl.style.display = 'none';
+      emptyEl.style.display = 'block';
+      statusEl.textContent = '0 条';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    // ── Per-task summary table ──
+    let summaryHtml = '<div class="smoke-phase-title">按任务聚合</div>';
+    summaryHtml += '<table class="smoke-table"><tbody>';
+    summaryHtml += '<tr style="background:var(--bg-elevated);font-weight:600;">' +
+                   '<td>任务</td><td>总数</td><td>成功</td><td>失败</td>' +
+                   '<td>超时</td><td>强杀</td><td>平均</td><td>最大</td><td>最近</td></tr>';
+    Object.keys(summary).sort().forEach(n => {
+      const b = summary[n];
+      const bad = (b.timeout||0) + (b.killed||0) + (b.error||0);
+      const cls = bad ? 'smoke-fail' : ((b.avg_duration_sec||0) > 60 ? 'smoke-warn' : 'smoke-pass');
+      summaryHtml += `<tr>` +
+        `<td><span class="smoke-pill ${cls}" style="min-width:auto;">${_escHtml(n)}</span></td>` +
+        `<td>${b.total||0}</td><td>${b.ok||0}</td><td>${b.error||0}</td>` +
+        `<td>${b.timeout||0}</td><td>${b.killed||0}</td>` +
+        `<td>${_fmtTaskDuration(b.avg_duration_sec)}</td>` +
+        `<td>${_fmtTaskDuration(b.max_duration_sec)}</td>` +
+        `<td>${b.last_ts ? _fmtTaskTs(b.last_ts) : '—'}</td>` +
+        `</tr>`;
+    });
+    summaryHtml += '</tbody></table>';
+    summaryEl.innerHTML = summaryHtml;
+    summaryEl.style.display = 'block';
+
+    // ── Timeline (倒序: 最新在最上) ──
+    let html = '<div class="smoke-phase-title">最近 ' + events.length + ' 条事件(最新在上)</div>';
+    html += '<table class="smoke-table"><tbody>';
+    html += '<tr style="background:var(--bg-elevated);font-weight:600;font-size:0.72rem;">' +
+            '<td>状态</td><td>时间 (UTC)</td><td>任务</td>' +
+            '<td>耗时</td><td>模式</td><td>退出码</td><td>诊断</td></tr>';
+    [...events].reverse().forEach(ev => {
+      const meta = TASK_STATUS_META[ev.status] || TASK_STATUS_META.error;
+      const diagParts = [];
+      const tos = ev.timeout_sec || 0;
+      if (tos && ev.duration_sec >= tos * 0.9) {
+        diagParts.push(`<span class="smoke-warn">${Math.floor(ev.duration_sec/tos*100)}% 接近超时</span>`);
+      }
+      if (ev.spawn_dt && ev.spawn_dt > 5) {
+        diagParts.push(`<span class="smoke-warn">spawn 慢 ${ev.spawn_dt.toFixed(1)}s</span>`);
+      }
+      if (ev.error) diagParts.push(_escHtml(String(ev.error).slice(0, 40)));
+      html += `<tr>` +
+              `<td><span class="smoke-pill ${meta.cls}">${meta.glyph} ${meta.label}</span></td>` +
+              `<td class="smoke-cell-id">${_escHtml(_fmtTaskTs(ev.ts))}</td>` +
+              `<td class="smoke-cell-name">${_escHtml(ev.name||'?')}</td>` +
+              `<td>${_fmtTaskDuration(ev.duration_sec)}</td>` +
+              `<td class="smoke-cell-id">${_escHtml(ev.mode||'?')}</td>` +
+              `<td class="smoke-cell-id">${ev.exitcode === null || ev.exitcode === undefined ? '—' : ev.exitcode}</td>` +
+              `<td class="smoke-cell-detail">${diagParts.join(' · ')}</td>` +
+              `</tr>`;
+    });
+    html += '</tbody></table>';
+    timeline.innerHTML = html;
+    timeline.style.display = 'block';
+
+    statusEl.textContent = `已加载 ${events.length} 条事件`;
+  } catch (e) {
+    alertBox('加载任务监控失败: ' + e.message, 'error');
+    statusEl.textContent = 'Error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _refreshTaskNameSelect(currentValue) {
+  const sel = document.getElementById('task-metrics-name');
+  if (!sel) return;
+  const existing = new Set(Array.from(sel.options).map(o => o.value));
+  const sorted = Array.from(_knownTaskNames).sort();
+  sorted.forEach(n => {
+    if (!existing.has(n)) {
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      sel.appendChild(opt);
+    }
+  });
+  if (currentValue) sel.value = currentValue;
+}
+
+function autoRefreshTaskMetrics() {
+  const label = document.getElementById('btn-task-auto-label');
+  if (_taskAutoTimer) {
+    clearInterval(_taskAutoTimer); _taskAutoTimer = null;
+    label.textContent = '自动刷新';
+    return;
+  }
+  loadTaskMetrics();
+  _taskAutoTimer = setInterval(loadTaskMetrics, 30000); // 30s
+  label.textContent = '停止自动';
 }
 
 // Account switcher event

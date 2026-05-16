@@ -812,6 +812,43 @@ def create_blueprint(url_secret: str) -> Blueprint:
         return jsonify(payload)
 
     # ══════════════════════════════════════════════════════════════════
+    #  API：任务监控 (task metrics) — 读 scheduler 写入的事件
+    # ══════════════════════════════════════════════════════════════════
+
+    @bp.route('/api/task-metrics', methods=['GET'])
+    @_require_login
+    def api_task_metrics():
+        """
+        返回最近 N 条任务执行事件 + 按任务名聚合的统计。
+
+        Query params:
+            limit:  返回事件数,默认 50,上限 500
+            name:   按任务名过滤,留空返回全部
+
+        Response:
+            {
+                "events": [{ts, name, mode, status, duration_sec, ...}, ...],
+                "summary": { "候选确认": {total, ok, timeout, ...}, ... }
+            }
+        """
+        try:
+            limit = int(request.args.get('limit', 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(500, limit))
+        name = (request.args.get('name') or '').strip() or None
+
+        try:
+            import task_metrics
+            events = task_metrics.read_recent(limit=limit, name=name)
+            summary = task_metrics.summary_by_task()
+        except Exception as e:
+            logger.exception("task_metrics 读取失败")
+            return jsonify({'error': f'读取 task_metrics 失败: {e}'}), 500
+
+        return jsonify({'events': events, 'summary': summary})
+
+    # ══════════════════════════════════════════════════════════════════
     #  API：实盘自检
     # ══════════════════════════════════════════════════════════════════
 
