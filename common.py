@@ -295,6 +295,36 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
 
 
 
+def _account_balance_for(account_id: str = None) -> float:
+    """
+    返回指定账户的本金 (ACCOUNT_BALANCE)。
+
+    B7 修复：之前所有账户都返回全局 config.ACCOUNT_BALANCE，但 admin panel
+    设计上每个账户可以独立设 ACCOUNT_BALANCE（runtime_config.json 的
+    {account_id: {"ACCOUNT_BALANCE": N}}）。
+    runtime_config.apply_overrides() 只把"当前活跃账户"的覆盖写到全局 config
+    模块，所以前端切到非活跃账户视图（/api/data?account_id=acc_B）时，原来
+    会用错的本金计算余额。
+
+    现在改成读 runtime_config.load_account_overrides(account_id) 拿那个账户
+    自己的 ACCOUNT_BALANCE；没设的话再 fallback 到全局值。
+    """
+    import config
+    fallback = float(getattr(config, 'ACCOUNT_BALANCE', 0))
+    if not account_id:
+        return fallback
+    try:
+        import runtime_config
+        overrides = runtime_config.load_account_overrides(account_id) or {}
+        val = overrides.get('ACCOUNT_BALANCE')
+        if val is not None:
+            return float(val)
+    except Exception:
+        # runtime_config.json 损坏 / 不存在 / admin 模块未加载都走 fallback
+        pass
+    return fallback
+
+
 def get_compound_stake(account_id: str = None) -> float:
     """
     自动复利：根据累计已实现盈亏动态调整单笔保证金。
@@ -351,7 +381,7 @@ def get_dynamic_balance(account_id: str = None) -> float:
     浮动 TP1 利润算进余额会让风控上限随浮动盈利扩大，形成"开仓→TP1→再开仓"
     的正反馈放大敞口（见 M2 修复）。
     """
-    import config
+    # 本金通过 _account_balance_for(account_id) 取，不再依赖全局 config.ACCOUNT_BALANCE
     trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
@@ -365,7 +395,7 @@ def get_dynamic_balance(account_id: str = None) -> float:
             # TP1已触发但交易未完全平仓：锁定利润计入余额
             total_pnl += t.get('tp1_locked_pnl', 0)
 
-    return config.ACCOUNT_BALANCE + total_pnl
+    return _account_balance_for(account_id) + total_pnl
 
 
 def get_realized_balance(account_id: str = None) -> float:
@@ -378,7 +408,7 @@ def get_realized_balance(account_id: str = None) -> float:
       - 防止 TP1 触发的"锁定浮动利润"让最大仓位上限立即扩大，
         形成 TP1 → 余额 +X → 持仓上限 +X/2 → 多开一笔 → 敞口翻倍的正反馈
     """
-    import config
+    # 本金通过 _account_balance_for(account_id) 取
     trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
@@ -388,7 +418,7 @@ def get_realized_balance(account_id: str = None) -> float:
         t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
         for t in trades if t.get('status') == 'closed'
     )
-    return config.ACCOUNT_BALANCE + realized_pnl
+    return _account_balance_for(account_id) + realized_pnl
 
 
 

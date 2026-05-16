@@ -64,44 +64,47 @@
     <a href="/signal-scores"><i data-lucide="target"></i>评分</a>
 </nav>
 
-<!-- Lucide Icons -->
-<script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
+<!-- Lucide Icons (defer：和后续脚本一起，等 HTML 解析完再按顺序执行，不阻塞首屏) -->
+<script defer src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
 <!-- Core Scripts -->
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
 <script>
-// Initialize Lucide icons
-lucide.createIcons();
-
-// Enhanced Theme Toggle (replaces emoji-based toggle)
-(function() {
-    const toggle = document.getElementById('theme-toggle');
-    const iconDark = document.getElementById('theme-icon-dark');
-    const iconLight = document.getElementById('theme-icon-light');
-    const saved = localStorage.getItem('dashboard-theme') || 'dark';
+// Theme Toggle —— 整段包在 DOMContentLoaded 里，等 lucide / app.js（都是 defer）执行完再跑。
+// 注意：inline <script> 上的 defer 属性会被浏览器忽略，必须用事件等待。
+document.addEventListener('DOMContentLoaded', function () {
+    var toggle = document.getElementById('theme-toggle');
+    var iconDark = document.getElementById('theme-icon-dark');
+    var iconLight = document.getElementById('theme-icon-light');
+    var saved = localStorage.getItem('dashboard-theme') || 'dark';
 
     function applyTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
         localStorage.setItem('dashboard-theme', theme);
-        if (theme === 'dark') {
-            iconDark.style.display = '';
-            iconLight.style.display = 'none';
-        } else {
-            iconDark.style.display = 'none';
-            iconLight.style.display = '';
+        if (iconDark && iconLight) {
+            if (theme === 'dark') {
+                iconDark.style.display = '';
+                iconLight.style.display = 'none';
+            } else {
+                iconDark.style.display = 'none';
+                iconLight.style.display = '';
+            }
         }
-        // Re-render icons after theme switch
-        lucide.createIcons();
+        // 重新渲染 icon（lucide 会把 <i data-lucide=...> 替换成 svg；
+        // 切换主题后某些 svg 内嵌色值需要重画一次）
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons();
+        }
     }
 
     applyTheme(saved);
 
     if (toggle) {
-        toggle.addEventListener('click', function() {
-            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        toggle.addEventListener('click', function () {
+            var current = document.documentElement.getAttribute('data-theme') || 'dark';
             applyTheme(current === 'dark' ? 'light' : 'dark');
         });
     }
-})();
+});
 </script>
 {% block scripts %}{% endblock %}
 </body>

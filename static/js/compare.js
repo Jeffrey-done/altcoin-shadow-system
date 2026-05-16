@@ -28,7 +28,19 @@ const CompareChart = {
         this.canvas.addEventListener('touchend', () => this.hideTooltip());
         window.addEventListener('resize', () => { if (this.data) this.draw(); });
         this.fetchData();
-        setInterval(() => this.fetchData(), 60000);
+        // 每 60s 拉一次对比数据，但只在 tab 可见时；
+        // 隐藏 tab / 锁屏 / 切到后台浏览器都不再请求，省后端遍历 trades 的成本。
+        setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                this.fetchData();
+            }
+        }, 60000);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && this.data == null) {
+                // 切回来时，如果上次失败 / 没数据，立刻补一次
+                this.fetchData();
+            }
+        });
     },
 
     setAccount(accountId) {
@@ -57,8 +69,8 @@ const CompareChart = {
         const diff = (l.total_pnl - s.total_pnl).toFixed(2);
         const diffColor = diff >= 0 ? 'green' : 'red';
         el.innerHTML = `
-            <span style="color:var(--yellow);">\u{1F311} 影子: ${s.total_pnl.toFixed(2)}U (${s.trade_count}笔)</span> &nbsp;|&nbsp;
-            <span style="color:var(--green);">\u26A1 实盘: ${l.total_pnl.toFixed(2)}U (${l.trade_count}笔)</span> &nbsp;|&nbsp;
+            <span style="color:var(--yellow);">🌑 影子: ${s.total_pnl.toFixed(2)}U (${s.trade_count}笔)</span> &nbsp;|&nbsp;
+            <span style="color:var(--green);">⚡ 实盘: ${l.total_pnl.toFixed(2)}U (${l.trade_count}笔)</span> &nbsp;|&nbsp;
             <span class="${diffColor}">差异: ${diff >= 0 ? '+' : ''}${diff}U</span>
         `;
     },
