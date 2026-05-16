@@ -52,7 +52,7 @@ class BacktestParams:
     trail_retrace_ratio: float = getattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4)
     max_hold_bars: int = 24  # 24根1h K线 = 24小时
     leverage: int = config.LEVERAGE
-    stake: float = config.DEFAULT_STAKE
+    stake: float = config.DEFAULT_STAKE   # 基础保证金（开仓时若启用复利会按状态调整）
     slippage_pct: float = config.BACKTEST_SLIPPAGE_PCT
     fee_pct: float = config.BACKTEST_FEE_PCT
     # M-3 修复：资金费率持仓成本（做空 → 正费率收钱、负费率付钱；按 8h 周期扣算）
@@ -60,6 +60,38 @@ class BacktestParams:
     # 默认 0.01%/8h ≈ 行业平均；保守起见在回测里把做空者支付的费率成本计入。
     # 调用方可通过传入实际历史 funding rate 进一步精确化。
     funding_rate_pct: float = 0.01
+
+    # ══════════════════════════════════════════════════════════════════
+    #  M-3 完整版：事件驱动主循环参数（2026-05）
+    # ══════════════════════════════════════════════════════════════════
+    # 启用后 run_backtest 走 run_backtest_event_driven，逐 bar 推进状态：
+    #   - 复利仓位（按当前已实现盈亏动态调整 stake）
+    #   - BTC 暴跌时跳过新开仓（与实盘 signal_score.check_btc_filter 同款逻辑）
+    #   - 单日亏损 / 单日开仓 / 连亏暂停 / 同币冷却（与实盘 risk_control 对齐）
+    #   - 资金费率成本（与旧版 _close_trade 内置算法相同，事件驱动里按 bar 累计）
+    # 关闭则走 v1 独立交易模式（旧测试 / grid_search 仍走 v1）。
+    use_event_driven_engine: bool = True
+
+    # ── 账户与复利 ──
+    account_balance: float = float(getattr(config, 'ACCOUNT_BALANCE', 100))
+    compound_enabled: bool = bool(getattr(config, 'AUTO_COMPOUND_ENABLED', True))
+    compound_step: float = float(getattr(config, 'COMPOUND_STEP', 50))
+    compound_increase: float = float(getattr(config, 'COMPOUND_INCREASE', 25))
+    compound_max_stake: float = float(getattr(config, 'COMPOUND_MAX_STAKE', 300))
+
+    # ── BTC 过滤 ──
+    btc_filter_enabled: bool = bool(getattr(config, 'BTC_FILTER_ENABLED', True))
+    btc_crash_threshold: float = float(getattr(config, 'BTC_CRASH_THRESHOLD', -5.0))
+    btc_pump_threshold: float = float(getattr(config, 'BTC_PUMP_THRESHOLD', 8.0))
+    btc_symbol: str = 'BTC/USDT'
+
+    # ── 风控（与 risk_control 对齐）──
+    max_daily_loss: float = float(getattr(config, 'RISK_MAX_DAILY_LOSS', 30))
+    max_daily_trades: int = int(getattr(config, 'RISK_MAX_DAILY_TRADES', 3))
+    consecutive_loss_pause: int = int(getattr(config, 'RISK_CONSECUTIVE_LOSS_PAUSE', 3))
+    pause_hours: int = int(getattr(config, 'RISK_PAUSE_HOURS', 24))
+    max_position_pct: float = float(getattr(config, 'RISK_MAX_POSITION_PCT', 0.5))
+    cooldown_hours: int = int(getattr(config, 'COOLDOWN_HOURS', 24))
 
 
 @dataclass
@@ -622,6 +654,515 @@ def simulate_trade(klines: List[dict], entry_idx: int,
     )
 
 
+# ══════════════════════════════════════════════════════════════════
+#  M-3 完整版：事件驱动主循环
+# ══════════════════════════════════════════════════════════════════
+#
+# 旧 simulate_trade 把每笔交易当独立计算，无法在交易间携带状态。
+# 新引擎以"bar 时间步"为基本单位，每根 K 线先推进开放仓位、再决定是否
+# 触发新开仓。开仓时基于 BacktestState 当前的：
+#   - realized_pnl  → 复利仓位（compute_compound_stake）
+#   - daily_loss / daily_trades_opened → 风控限频
+#   - consecutive_losses / paused_until → 连亏暂停
+#   - cooldown_until_ms[symbol] → 同币冷却期
+#   - total_open_stake → 持仓占比（防止 stake 总和超过 balance × max_position_pct）
+#   - btc_index 当前 24h 涨跌幅 → BTC 暴跌过滤
+# 这些是实盘 risk_control + signal_score + common.get_compound_stake 的对应物，
+# 让回测口径与实盘对齐（解决 M-3 audit 问题）。
+# ══════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class _OpenTrade:
+    """事件驱动主循环内的"在仓"交易，可逐 bar 演化状态"""
+    symbol: str
+    entry_idx: int            # 信号 bar 的索引（开仓 bar 是 entry_idx + 1）
+    entry_price: float        # 含滑点
+    entry_time: str
+    stake: float              # 该笔保证金（开仓时由复利决定）
+    leverage: int
+    notional: float
+    tp1_price: float
+    tp2_price: float
+    hard_stop_price: float
+    max_hold_bars: int
+    # 演化状态
+    tp1_triggered: bool = False
+    stake_remaining_ratio: float = 1.0
+    best_pnl_pct: float = 0.0
+    trail_stop_price: Optional[float] = None
+    bars_held: int = 0
+
+
+@dataclass
+class _BacktestState:
+    """事件驱动主循环的全局状态"""
+    initial_balance: float
+    realized_pnl: float = 0.0
+
+    # 风控
+    daily_loss: float = 0.0
+    daily_trades_opened: int = 0
+    last_day: str = ''
+    consecutive_losses: int = 0
+    paused_until_ms: int = 0
+    # 同币冷却到期时间（毫秒），仅在止损平仓时设置
+    cooldown_until_ms: dict = field(default_factory=dict)
+
+    # 持仓
+    open_trades: List[_OpenTrade] = field(default_factory=list)
+    closed_trades: List[BacktestTrade] = field(default_factory=list)
+
+    # 调试统计：每个跳过原因被命中多少次（便于审计回测口径与实盘是否对齐）
+    skip_counters: dict = field(default_factory=dict)
+
+    @property
+    def current_equity(self) -> float:
+        """当前净值 = 初始 + 已实现盈亏（不含浮动）"""
+        return self.initial_balance + self.realized_pnl
+
+    @property
+    def total_open_stake(self) -> float:
+        """所有持仓的剩余保证金合计"""
+        return sum(t.stake * t.stake_remaining_ratio for t in self.open_trades)
+
+    def bump_skip(self, reason: str) -> None:
+        self.skip_counters[reason] = self.skip_counters.get(reason, 0) + 1
+
+
+# ── 时间工具 ──────────────────────────────────────────────────────
+
+def _iso_to_ms(iso_str: str) -> int:
+    """ISO 时间字符串 → unix 毫秒"""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except Exception:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+# ── BTC 24h 涨跌幅索引 ────────────────────────────────────────────
+# 启动时一次性加载 BTC/USDT 1h K 线，按 bar 时间戳建索引；查询某 bar 时
+# 用 close[t] vs close[t-24h] 计算 24h 涨跌幅。
+
+def load_btc_index(days: int, symbol: str = 'BTC/USDT') -> dict:
+    """
+    加载 BTC 1h K 线并建索引。
+    返回 {time_ms: {'close': float, 'pct_24h': float or None}}
+    pct_24h 在前 24 根 K 线为 None（缺前 24h 数据）。
+
+    无法获取（网络/API 失败）时返回空 dict，调用方应跳过 BTC 过滤。
+    """
+    klines = load_cached_klines(symbol, '1h', days)
+    if not klines:
+        logger.warning(f"BTC 数据获取失败，BTC 过滤将被跳过")
+        return {}
+
+    # 按时间戳排序后建索引
+    sorted_kl = sorted(klines, key=lambda k: k['time'])
+    index = {}
+    closes = [k['close'] for k in sorted_kl]
+    times_ms = [_iso_to_ms(k['time']) for k in sorted_kl]
+    for i, k in enumerate(sorted_kl):
+        ts_ms = times_ms[i]
+        if i >= 24 and closes[i - 24] > 0:
+            pct_24h = (closes[i] - closes[i - 24]) / closes[i - 24] * 100
+        else:
+            pct_24h = None
+        index[ts_ms] = {'close': closes[i], 'pct_24h': pct_24h}
+    logger.info(f"BTC 索引已加载: {len(index)} 个 bar，覆盖 {days} 天")
+    return index
+
+
+def get_btc_24h_change_at(btc_index: dict, bar_time_ms: int,
+                          tolerance_ms: int = 3_600_000) -> Optional[float]:
+    """
+    在 BTC 索引中查询给定时间点的 24h 涨跌幅。
+    允许 tolerance_ms 容差（默认 1h），找最近的 BTC bar。
+    BTC index 为空 / 找不到匹配 bar 时返回 None（调用方应放行）。
+    """
+    if not btc_index:
+        return None
+    # 直接命中
+    if bar_time_ms in btc_index:
+        return btc_index[bar_time_ms]['pct_24h']
+    # 容差搜索：找最接近的 BTC bar
+    closest_ts = min(btc_index.keys(), key=lambda t: abs(t - bar_time_ms))
+    if abs(closest_ts - bar_time_ms) <= tolerance_ms:
+        return btc_index[closest_ts]['pct_24h']
+    return None
+
+
+# ── 复利仓位 ──────────────────────────────────────────────────────
+
+def compute_compound_stake(state: _BacktestState, params: BacktestParams) -> float:
+    """
+    根据当前已实现盈亏计算"应当用的 stake"。
+    与 common.get_compound_stake 同款平滑线性公式。
+
+    亏损或持平 → 返回基础 stake
+    盈利 → stake = base + (realized_pnl / step) * increase，封顶 max_stake
+    """
+    base = float(params.stake)
+    if not params.compound_enabled or state.realized_pnl <= 0:
+        return base
+    step = max(params.compound_step, 1)
+    ratio = state.realized_pnl / step
+    s = base + ratio * params.compound_increase
+    s = min(s, params.compound_max_stake)
+    return round(s)
+
+
+# ── 风控网关（与 risk_control.can_open_trade 对齐）─────────────────
+
+def _check_risk_gates(state: _BacktestState, params: BacktestParams,
+                      bar_time_ms: int, symbol: str,
+                      proposed_stake: float) -> tuple:
+    """
+    返回 (allowed: bool, reason: str)。
+    与实盘 risk_control.can_open_trade 检查项对齐：
+      1. 暂停期（连亏后 paused_until）
+      2. 单日亏损上限
+      3. 单日开仓次数上限
+      4. 同币冷却期
+      5. 持仓占比上限
+    """
+    if state.paused_until_ms > bar_time_ms:
+        return False, 'pause'
+    if state.daily_loss >= params.max_daily_loss:
+        return False, 'daily_loss_limit'
+    if state.daily_trades_opened >= params.max_daily_trades:
+        return False, 'daily_trades_limit'
+    cd = state.cooldown_until_ms.get(symbol, 0)
+    if cd > bar_time_ms:
+        return False, 'cooldown'
+    max_position = state.current_equity * params.max_position_pct
+    if state.total_open_stake + proposed_stake > max_position:
+        return False, 'position_pct'
+    return True, ''
+
+
+# ── 单 bar 事件循环：推进开放仓位 ──────────────────────────────────
+
+def _step_open_trade(ot: _OpenTrade, bar: dict,
+                     params: BacktestParams) -> Optional[tuple]:
+    """
+    将一笔开放仓位推进到下一根 bar（即"消费这根 K 线"），返回平仓事件
+    `(exit_price, reason)` 若触发，否则 None（继续持仓）。
+
+    路径假设与旧 simulate_trade 完全一致（H9）：
+      阳线 (close >= open): open → low → high → close
+      阴线 (close < open):  open → high → low → close
+    做空策略下：low 阶段触发 TP1/TP2/更新 best_pnl，high 阶段触发硬止损/移动止损。
+    """
+    bar_open = bar['open']
+    bar_high = bar['high']
+    bar_low = bar['low']
+    bar_close = bar['close']
+
+    # 推进 bar 计数
+    ot.bars_held += 1
+
+    bullish = bar_close >= bar_open
+    stages = ['low', 'high'] if bullish else ['high', 'low']
+
+    for stage in stages:
+        if stage == 'high':
+            # 硬止损
+            if bar_high >= ot.hard_stop_price:
+                return (ot.hard_stop_price, 'hard_stop')
+            # 移动止损
+            if (ot.trail_stop_price is not None
+                and bar_high >= ot.trail_stop_price
+                and ot.best_pnl_pct >= params.trail_activate_pct):
+                return (ot.trail_stop_price, 'trail_stop')
+        else:  # low
+            # TP1
+            if not ot.tp1_triggered and bar_low <= ot.tp1_price:
+                ot.tp1_triggered = True
+                ot.stake_remaining_ratio = 1 - params.tp1_close_ratio
+            # TP2
+            if ot.tp1_triggered and bar_low <= ot.tp2_price:
+                return (ot.tp2_price, 'tp2')
+            # 更新 best_pnl_pct + trail
+            current_pnl_pct = (ot.entry_price - bar_low) / ot.entry_price * 100
+            if current_pnl_pct > ot.best_pnl_pct:
+                ot.best_pnl_pct = current_pnl_pct
+                if ot.best_pnl_pct >= params.trail_activate_pct:
+                    trigger_pct = ot.best_pnl_pct * (1 - params.trail_retrace_ratio)
+                    ot.trail_stop_price = ot.entry_price * (1 - trigger_pct / 100)
+
+    # 时间止损
+    if ot.bars_held >= ot.max_hold_bars:
+        return (bar_close, 'time_stop')
+
+    return None
+
+
+def _finalize_open_trade(ot: _OpenTrade, exit_price_raw: float, exit_time: str,
+                         reason: str, params: BacktestParams) -> BacktestTrade:
+    """
+    把 _OpenTrade + 平仓事件 → BacktestTrade（用与 simulate_trade._close_trade 完全
+    一致的盈亏 + 滑点 + 手续费 + 资金费率公式，保证两个引擎数值口径对齐）。
+    """
+    # 滑点：做空平仓滑点 = 实际买回价更高
+    exit_price = exit_price_raw * (1 + params.slippage_pct / 100)
+    pnl_pct = (ot.entry_price - exit_price) / ot.entry_price * 100
+
+    tp1_pnl = 0.0
+    if ot.tp1_triggered:
+        tp1_pnl = ot.notional * params.tp1_close_ratio * params.tp1_pct / 100
+    remaining_pnl = ot.notional * ot.stake_remaining_ratio * pnl_pct / 100
+    fee = ot.notional * params.fee_pct / 100 * 2
+
+    # 资金费率持仓成本（与旧版同算法）
+    funding_periods = ot.bars_held / 8.0
+    funding_cost = abs(ot.notional) * (params.funding_rate_pct / 100) * funding_periods
+
+    pnl_usd = round(tp1_pnl + remaining_pnl - fee - funding_cost, 2)
+
+    return BacktestTrade(
+        symbol=ot.symbol,
+        entry_price=ot.entry_price,
+        entry_time=ot.entry_time,
+        exit_price=exit_price,
+        exit_time=exit_time,
+        pnl_pct=pnl_pct,
+        pnl_usd=pnl_usd,
+        exit_reason=reason,
+        hold_bars=ot.bars_held,
+        tp1_hit=ot.tp1_triggered,
+    )
+
+
+def _open_position(klines: List[dict], entry_idx: int, symbol: str,
+                   stake: float, params: BacktestParams) -> Optional[_OpenTrade]:
+    """信号触发 → 用 entry_idx+1 的 open 价开仓，返回 _OpenTrade（不含模拟）"""
+    if entry_idx + 1 >= len(klines):
+        return None
+    raw_entry = klines[entry_idx + 1]['open']
+    # 做空开仓滑点：成交价更高
+    entry_price = raw_entry * (1 + params.slippage_pct / 100)
+    notional = stake * params.leverage
+    return _OpenTrade(
+        symbol=symbol,
+        entry_idx=entry_idx,
+        entry_price=entry_price,
+        entry_time=klines[entry_idx + 1]['time'],
+        stake=stake,
+        leverage=params.leverage,
+        notional=notional,
+        tp1_price=entry_price * (1 - params.tp1_pct / 100),
+        tp2_price=entry_price * (1 - params.tp2_pct / 100),
+        hard_stop_price=entry_price * (1 + params.hard_stop_pct / 100),
+        max_hold_bars=params.max_hold_bars,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+#  事件驱动主循环
+# ══════════════════════════════════════════════════════════════════
+
+def run_backtest_event_driven(klines: List[dict], symbol: str,
+                              params: BacktestParams,
+                              btc_index: Optional[dict] = None,
+                              signals: Optional[List[int]] = None,
+                              window_from_idx: int = 0,
+                              window_to_idx: Optional[int] = None,
+                              score_filter_enabled: bool = False,
+                              vol_div_bonus_override: Optional[dict] = None,
+                              score_threshold: Optional[int] = None,
+                              ) -> tuple:
+    """
+    事件驱动主循环。
+
+    Args:
+      klines: 完整 1h K 线序列（含 RSI 热身段）
+      symbol: 交易对（用于冷却期 key 与 trade.symbol 标记）
+      params: 回测参数
+      btc_index: 由 load_btc_index() 生成的 BTC 24h 涨跌幅索引；None = 跳过 BTC 过滤
+      signals: 预计算的信号 idx 列表（不传则内部检测）
+      window_from_idx / window_to_idx: 仅在此范围内允许"开新仓"（出场可延伸到窗口外）
+      score_filter_enabled: 是否启用评分过滤
+      vol_div_bonus_override / score_threshold: 转发给 score_filter_signal
+
+    Returns:
+      (trades: List[BacktestTrade], state: _BacktestState)
+
+    主循环逻辑（每根 K 线）：
+      1. 跨日重置 daily_loss / daily_trades_opened
+      2. 推进所有 open_trades；触发平仓事件 → 更新 realized_pnl / 风控状态
+      3. 若 bar 在信号集合且窗口内：
+         - 风控前置（pause/daily_loss/daily_trades/cooldown/position_pct）
+         - BTC 过滤
+         - 评分过滤（可选；grade=B 时 stake 减半）
+         - 复利计算 actual_stake
+         - 开仓 → 加入 open_trades
+      4. 收尾：未平仓的强制按最后一根 close 出场（time_stop 兜底）
+    """
+    state = _BacktestState(initial_balance=params.account_balance)
+
+    if signals is None:
+        signals = detect_entry_signals(klines, params)
+    signal_set = set(s for s in signals if s + 1 < len(klines))
+
+    if window_to_idx is None:
+        window_to_idx = len(klines)
+
+    # 评分过滤的预计算（仅在启用时）
+    rsi_series_full = None
+    if score_filter_enabled:
+        closes = [k['close'] for k in klines]
+        rsi_series_full = calc_rsi_series(closes, params.rsi_period)
+
+    for bar_idx in range(len(klines)):
+        bar = klines[bar_idx]
+        bar_time_ms = _iso_to_ms(bar['time'])
+
+        # ── 1. 跨日重置 ──
+        bar_day = bar['time'][:10]
+        if bar_day != state.last_day:
+            state.last_day = bar_day
+            state.daily_loss = 0.0
+            state.daily_trades_opened = 0
+
+        # ── 2. 推进所有持仓 ──
+        still_open = []
+        for ot in state.open_trades:
+            close_event = _step_open_trade(ot, bar, params)
+            if close_event is None:
+                still_open.append(ot)
+                continue
+            exit_price, reason = close_event
+            bt = _finalize_open_trade(ot, exit_price, bar['time'], reason, params)
+            state.closed_trades.append(bt)
+
+            # 更新风控状态
+            state.realized_pnl += bt.pnl_usd
+            if bt.pnl_usd < 0:
+                state.daily_loss += abs(bt.pnl_usd)
+                state.consecutive_losses += 1
+                if state.consecutive_losses >= params.consecutive_loss_pause:
+                    state.paused_until_ms = bar_time_ms + params.pause_hours * 3600 * 1000
+            else:
+                state.consecutive_losses = 0
+
+            # 同币冷却：仅止损类（与实盘 CloseType.is_stop_loss 对齐）+ 亏损平仓
+            stop_kinds = ('hard_stop', 'trail_stop', 'time_stop')
+            if reason in stop_kinds and bt.pnl_usd < 0:
+                state.cooldown_until_ms[ot.symbol] = (
+                    bar_time_ms + params.cooldown_hours * 3600 * 1000
+                )
+
+        state.open_trades = still_open
+
+        # ── 3. 信号触发：仅当 bar 在信号集合且在窗口内 ──
+        if bar_idx not in signal_set:
+            continue
+        if bar_idx < window_from_idx or bar_idx >= window_to_idx:
+            continue
+
+        # 风控前置
+        proposed_stake = compute_compound_stake(state, params)
+
+        # 评分过滤（先做，决定 stake 是否减半）
+        if score_filter_enabled and rsi_series_full is not None:
+            sf = score_filter_signal(
+                klines, rsi_series_full, bar_idx, params,
+                vol_div_bonus_override=vol_div_bonus_override,
+                score_threshold=score_threshold,
+            )
+            if not sf['passed']:
+                state.bump_skip('score_skip')
+                continue
+            if sf.get('grade') == 'B':
+                proposed_stake = max(1, round(proposed_stake * 0.5))
+
+        # BTC 过滤
+        if params.btc_filter_enabled and btc_index:
+            btc_pct = get_btc_24h_change_at(btc_index, bar_time_ms)
+            if btc_pct is not None and btc_pct <= params.btc_crash_threshold:
+                state.bump_skip('btc_filter')
+                continue
+
+        # 风控网关
+        allowed, reason = _check_risk_gates(
+            state, params, bar_time_ms, symbol, proposed_stake
+        )
+        if not allowed:
+            state.bump_skip(reason)
+            continue
+
+        # 开仓
+        ot = _open_position(klines, bar_idx, symbol, proposed_stake, params)
+        if ot is None:
+            state.bump_skip('no_next_bar')
+            continue
+        state.open_trades.append(ot)
+        state.daily_trades_opened += 1
+
+    # ── 4. 收尾：未平仓的强制按最后一根 close 出场 ──
+    if state.open_trades:
+        last_bar = klines[-1]
+        for ot in state.open_trades:
+            bt = _finalize_open_trade(
+                ot, last_bar['close'], last_bar['time'], 'eos', params,
+            )
+            state.closed_trades.append(bt)
+            state.realized_pnl += bt.pnl_usd
+        state.open_trades = []
+
+    return state.closed_trades, state
+
+
+def _legacy_run_backtest(klines: List[dict], symbol: str, params: BacktestParams,
+                         signals: List[int],
+                         score_filter_enabled: bool = False,
+                         vol_div_bonus_override: Optional[dict] = None,
+                         score_threshold: Optional[int] = None) -> List[BacktestTrade]:
+    """
+    旧版独立交易模式（每笔信号单独 simulate_trade，不维护跨交易状态）。
+    保留用于：grid_search、向后兼容、与新引擎的口径对照。
+    """
+    trades = []
+    skipped_by_score = 0
+    rsi_series_full = None
+    if score_filter_enabled:
+        closes = [k['close'] for k in klines]
+        rsi_series_full = calc_rsi_series(closes, params.rsi_period)
+
+    original_stake = params.stake
+    try:
+        for sig_idx in signals:
+            if score_filter_enabled and rsi_series_full is not None:
+                sf = score_filter_signal(
+                    klines, rsi_series_full, sig_idx, params,
+                    vol_div_bonus_override=vol_div_bonus_override,
+                    score_threshold=score_threshold,
+                )
+                if not sf['passed']:
+                    skipped_by_score += 1
+                    continue
+                if sf.get('grade') == 'B':
+                    params.stake = round(original_stake * 0.5)
+                else:
+                    params.stake = original_stake
+            t = simulate_trade(klines, sig_idx, params)
+            t.symbol = symbol
+            trades.append(t)
+    finally:
+        params.stake = original_stake
+
+    if score_filter_enabled:
+        logger.info(
+            f"  📊 评分过滤(legacy): {len(signals)} 信号 → {len(trades)} 通过, "
+            f"{skipped_by_score} 跳过"
+        )
+    return trades
+
+
 
 # ══════════════════════════════════════════════════════════════════
 #  统计分析
@@ -736,7 +1277,8 @@ def run_backtest(symbol: str, days: int = 90,
                  date_to: Optional[str] = None,
                  score_filter: bool = False,
                  vol_div_bonus_override: Optional[dict] = None,
-                 score_threshold: Optional[int] = None) -> BacktestResult:
+                 score_threshold: Optional[int] = None,
+                 btc_index: Optional[dict] = None) -> BacktestResult:
     """
     对单个币种执行完整回测。
 
@@ -752,6 +1294,18 @@ def run_backtest(symbol: str, days: int = 90,
 
     给 date_from/date_to 时，days 会被自动放大到覆盖范围 + 30 天预热，
     保证 RSI 序列在窗口起点已经稳定。
+
+    ──────────────────────────────────────────────────────────────────
+    M-3 完整版（2026-05）：
+      - 默认走 run_backtest_event_driven 事件驱动引擎，与实盘口径对齐
+        （复利仓位 / BTC 过滤 / 单日亏损/开仓限频 / 连亏暂停 / 同币冷却 /
+         资金费率成本）
+      - 老用户若需对照 v1 行为，传 params.use_event_driven_engine=False
+    ──────────────────────────────────────────────────────────────────
+
+    btc_index 可以由调用方预先 load_btc_index() 一次然后传入（批量回测时
+    避免重复下载 BTC 数据）；不传时函数内部按需懒加载（仅当
+    params.btc_filter_enabled 时）。
     """
     if params is None:
         params = BacktestParams()
@@ -777,72 +1331,96 @@ def run_backtest(symbol: str, days: int = 90,
     signals_all = detect_entry_signals(klines_full, params)
     signals_all = [s for s in signals_all if s + 1 < len(klines_full)]
 
+    # 计算窗口边界（事件驱动引擎按 idx 范围内"开新仓"过滤）
+    window_from_idx = 0
+    window_to_idx = len(klines_full)
     if date_from or date_to:
         from_dt = _parse_date(date_from) if date_from else _parse_date(date_to)
-        to_dt_excl = (_parse_date(date_to) + timedelta(days=1)) if date_to else _parse_date(date_from) + timedelta(days=1)
-        signals = []
-        for s in signals_all:
+        to_dt_excl = ((_parse_date(date_to) + timedelta(days=1))
+                      if date_to else _parse_date(date_from) + timedelta(days=1))
+        # 找 from / to 对应的 idx
+        for i, k in enumerate(klines_full):
             try:
-                t = datetime.fromisoformat(klines_full[s + 1]['time'])
+                t = datetime.fromisoformat(k['time'])
             except Exception:
                 continue
-            if from_dt <= t < to_dt_excl:
-                signals.append(s)
-        klines = klines_full  # 模拟交易用完整序列（出场可能延伸到窗口外，符合实盘）
-        logger.info(
-            f"窗口 [{date_from or '...'}, {date_to or '...'}] 内检测到 {len(signals)} "
-            f"个入场信号（完整序列共 {len(signals_all)} 个）"
-        )
-    else:
-        klines = klines_full
-        signals = signals_all
-        logger.info(f"检测到 {len(signals)} 个入场信号")
-
-    # 模拟每笔交易（可选评分过滤）
-    trades = []
-    skipped_by_score = 0
-
-    if score_filter:
-        # 预计算 RSI 序列用于评分
-        closes = [k['close'] for k in klines]
-        rsi_series_full = calc_rsi_series(closes, params.rsi_period)
-
-    for sig_idx in signals:
-        # ── 评分过滤 ──
-        if score_filter:
-            sf = score_filter_signal(
-                klines, rsi_series_full, sig_idx, params,
-                vol_div_bonus_override=vol_div_bonus_override,
-                score_threshold=score_threshold,
-            )
-            if not sf["passed"]:
-                skipped_by_score += 1
-                continue
-            # 如果评分通过且为半仓（grade=B），调整stake
-            if sf["grade"] == "B":
-                # 临时修改 params.stake 用于该笔交易
-                original_stake = params.stake
-                params.stake = round(params.stake * 0.5)
-                trade = simulate_trade(klines, sig_idx, params)
-                params.stake = original_stake
+            if t < from_dt:
+                window_from_idx = i + 1
+            elif t < to_dt_excl:
+                window_to_idx = i + 1
             else:
-                trade = simulate_trade(klines, sig_idx, params)
+                break
+
+    # ── 选择引擎 ──
+    use_event_driven = bool(getattr(params, 'use_event_driven_engine', True))
+
+    if use_event_driven:
+        # BTC 索引：仅在启用过滤且未传入时加载
+        if btc_index is None and params.btc_filter_enabled:
+            btc_index = load_btc_index(fetch_days, symbol=params.btc_symbol)
+
+        # 窗口内信号数（仅日志用）
+        if date_from or date_to:
+            in_window_signals = sum(
+                1 for s in signals_all
+                if window_from_idx <= s < window_to_idx
+            )
+            logger.info(
+                f"窗口 [{date_from or '...'}, {date_to or '...'}] 内 "
+                f"{in_window_signals} 个候选信号，事件驱动引擎执行..."
+            )
         else:
-            trade = simulate_trade(klines, sig_idx, params)
+            logger.info(
+                f"检测到 {len(signals_all)} 个候选信号，事件驱动引擎执行..."
+            )
 
-        trade.symbol = symbol
-        trades.append(trade)
+        trades, state = run_backtest_event_driven(
+            klines_full, symbol, params,
+            btc_index=btc_index,
+            signals=signals_all,
+            window_from_idx=window_from_idx,
+            window_to_idx=window_to_idx,
+            score_filter_enabled=score_filter,
+            vol_div_bonus_override=vol_div_bonus_override,
+            score_threshold=score_threshold,
+        )
 
-    if score_filter:
+        # 日志：跳过原因分布（便于审计与实盘对齐）
+        if state.skip_counters:
+            skip_msg = ", ".join(
+                f"{k}={v}" for k, v in sorted(state.skip_counters.items(),
+                                              key=lambda kv: -kv[1])
+            )
+            logger.info(f"  ⏩ 跳过统计: {skip_msg}")
         logger.info(
-            f"  📊 评分过滤: {len(signals)}个信号 → {len(trades)}个通过 "
-            f"({skipped_by_score}个被跳过，阈值={score_threshold or config.SCORE_HALF_THRESHOLD}分)"
+            f"  ✅ 已平仓 {len(trades)} 笔 | 累计盈亏 {state.realized_pnl:+.2f}U"
+        )
+
+    else:
+        # ── 旧版独立交易引擎（兼容路径）──
+        if date_from or date_to:
+            signals_in_window = [
+                s for s in signals_all
+                if window_from_idx <= s < window_to_idx
+            ]
+            logger.info(
+                f"窗口内 {len(signals_in_window)} 个信号 (legacy 引擎)"
+            )
+        else:
+            signals_in_window = signals_all
+            logger.info(
+                f"检测到 {len(signals_in_window)} 个入场信号 (legacy 引擎)"
+            )
+
+        trades = _legacy_run_backtest(
+            klines_full, symbol, params, signals_in_window,
+            score_filter_enabled=score_filter,
+            vol_div_bonus_override=vol_div_bonus_override,
+            score_threshold=score_threshold,
         )
 
     # 统计
-    result = calculate_stats(trades, params)
-
-    return result
+    return calculate_stats(trades, params)
 
 
 def calculate_monthly_breakdown(trades: List[BacktestTrade]) -> dict:
@@ -1099,9 +1677,27 @@ def run_batch_backtest(symbols: List[str], days: int = 90,
                        score_filter: bool = False,
                        vol_div_bonus_override: Optional[dict] = None,
                        score_threshold: Optional[int] = None) -> List[BacktestResult]:
-    """对多个币种执行批量回测，返回每个币种的 BacktestResult"""
+    """对多个币种执行批量回测，返回每个币种的 BacktestResult
+
+    M-3 完整版：批量回测共享一份 BTC 索引（避免每个币种重复下载）。
+    BTC 索引只在事件驱动引擎 + BTC 过滤启用时才加载。
+    """
     if params is None:
         params = BacktestParams()
+
+    # 决定 fetch_days（足够覆盖 BTC 索引）
+    if date_from or date_to:
+        from_dt = _parse_date(date_from) if date_from else _parse_date(date_to)
+        now_utc = datetime.now(timezone.utc)
+        fetch_days = max(30, (now_utc - (from_dt - timedelta(days=30))).days + 1)
+    else:
+        fetch_days = days
+
+    # 共享 BTC 索引
+    shared_btc_index = None
+    use_event_driven = bool(getattr(params, 'use_event_driven_engine', True))
+    if use_event_driven and params.btc_filter_enabled:
+        shared_btc_index = load_btc_index(fetch_days, symbol=params.btc_symbol)
 
     results = []
     for symbol in symbols:
@@ -1112,7 +1708,8 @@ def run_batch_backtest(symbols: List[str], days: int = 90,
         result = run_backtest(symbol, days, params, date_from=date_from, date_to=date_to,
                               score_filter=score_filter,
                               vol_div_bonus_override=vol_div_bonus_override,
-                              score_threshold=score_threshold)
+                              score_threshold=score_threshold,
+                              btc_index=shared_btc_index)
         results.append(result)
 
     return results
@@ -1387,6 +1984,14 @@ if __name__ == '__main__':
                         help='量价背离加分覆盖，格式: "mild,medium,strong" 如 "6,8,12"（默认 3,5,8）')
     parser.add_argument('--compare-bonus', dest='compare_bonus', action='store_true',
                         help='对比模式：自动跑两次（原始权重 vs 新权重），输出对比报告')
+    # M-3：事件驱动主循环开关（默认开启；用此 flag 切回旧版独立交易模式做对照）
+    parser.add_argument('--legacy-engine', dest='legacy_engine', action='store_true',
+                        help='使用旧版独立交易引擎（不含复利/BTC过滤/风控限频/资金费率累计），'
+                             '主要用于和事件驱动引擎对照看口径差异')
+    parser.add_argument('--no-btc-filter', dest='no_btc_filter', action='store_true',
+                        help='关闭 BTC 暴跌过滤（默认开启；只对事件驱动引擎生效）')
+    parser.add_argument('--no-compound', dest='no_compound', action='store_true',
+                        help='关闭自动复利（默认开启；只对事件驱动引擎生效）')
 
     args = parser.parse_args()
 
@@ -1410,6 +2015,13 @@ if __name__ == '__main__':
             p.tp2_pct = args.tp2
         if args.hard_stop_pct is not None:
             p.hard_stop_pct = args.hard_stop_pct
+        # M-3 引擎开关
+        if args.legacy_engine:
+            p.use_event_driven_engine = False
+        if args.no_btc_filter:
+            p.btc_filter_enabled = False
+        if args.no_compound:
+            p.compound_enabled = False
         return p
 
     custom_params = _build_params()
@@ -1424,6 +2036,19 @@ if __name__ == '__main__':
               f"h4_rsi_enter={custom_params.h4_rsi_enter}, "
               f"tp1={custom_params.tp1_pct}%, tp2={custom_params.tp2_pct}%, "
               f"hard_stop={custom_params.hard_stop_pct}%")
+
+    # 引擎模式横幅
+    if custom_params.use_event_driven_engine:
+        feats = []
+        if custom_params.compound_enabled:
+            feats.append("复利")
+        if custom_params.btc_filter_enabled:
+            feats.append(f"BTC过滤(<{custom_params.btc_crash_threshold}%)")
+        feats.append(f"风控(日亏≤{custom_params.max_daily_loss}U/日开仓≤{custom_params.max_daily_trades})")
+        feats.append(f"funding={custom_params.funding_rate_pct}%/8h")
+        print(f"🚀 引擎: 事件驱动 (event-driven) | 启用: {' / '.join(feats)}")
+    else:
+        print("🐢 引擎: legacy 独立交易模式（不含复利/BTC过滤/风控限频）")
 
     # ── 解析量价背离加分覆盖 ──
     vol_div_bonus_override = None
