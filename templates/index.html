@@ -12,7 +12,8 @@
 {% endblock %}
 
 {% block head_extra %}
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+{# Socket.IO 客户端从同源加载，避免外网 CDN 在某些网络下卡住整页加载（30s 超时 → 长时间白屏） #}
+<script defer src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 {% endblock %}
 
 {% block content %}
@@ -154,13 +155,17 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/chart.js') }}"></script>
-<script src="{{ url_for('static', filename='js/positions.js') }}"></script>
-<script src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
-<script src="{{ url_for('static', filename='js/funnel.js') }}"></script>
-<script src="{{ url_for('static', filename='js/compare.js') }}"></script>
-<script>
-// SocketIO 连接
+<script defer src="{{ url_for('static', filename='js/chart.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/positions.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/funnel.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/compare.js') }}"></script>
+<script defer>
+// 整段逻辑包在 IIFE+DOMContentLoaded 里。
+// 因为上面的脚本现在是 defer 加载（HTML 解析完才执行），如果这里还是经典 inline
+// <script>，io() / PnlChart 等都会在 socket.io / chart.js 之前运行 → ReferenceError。
+// 用 defer 让本脚本和上面的脚本按文档顺序在 DOMContentLoaded 之前依次执行。
+(function () {
 const socket = io();
 let lastDashboardData = null;
 let currentMode = 'all';
@@ -492,5 +497,6 @@ function renderAccountsOverview(data) {
 
     lucide.createIcons();
 }
+})(); // end IIFE
 </script>
 {% endblock %}

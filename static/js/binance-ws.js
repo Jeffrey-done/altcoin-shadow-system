@@ -10,6 +10,11 @@ const BinanceWS = {
     reconnectTimer: null,
     lastData: null,
     onPriceUpdate: null, // callback(symbol, price)
+    // 指数退避：连接失败时间隔 5s → 10s → 20s ... 最大 60s
+    // 成功 onopen 后重置回 5s。Binance 临时拒绝时不会一直 5s/次重连刷
+    _reconnectAttempt: 0,
+    _baseReconnectMs: 5000,
+    _maxReconnectMs: 60000,
 
     updateSymbols(symbols) {
         const sorted = [...symbols].sort().join(',');
@@ -46,6 +51,11 @@ const BinanceWS = {
             return;
         }
 
+        this.ws.onopen = () => {
+            // 连接成功 → 重置指数退避计数器
+            this._reconnectAttempt = 0;
+        };
+
         this.ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
@@ -70,8 +80,14 @@ const BinanceWS = {
         };
 
         this.ws.onclose = () => {
-            // Auto-reconnect after 5 seconds
-            this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+            // 指数退避：5s, 10s, 20s, 40s, 60s（封顶），避免被 Binance 限流时
+            // 一直 5s/次重连刷
+            const delay = Math.min(
+                this._baseReconnectMs * Math.pow(2, this._reconnectAttempt),
+                this._maxReconnectMs
+            );
+            this._reconnectAttempt += 1;
+            this.reconnectTimer = setTimeout(() => this.connect(), delay);
         };
 
         this.ws.onerror = () => { /* onclose will handle reconnect */ };

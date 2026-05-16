@@ -75,6 +75,80 @@ _snapshot_mtime: float = 0.0
 _snapshot_version: int = 0
 
 
+# ══════════════════════════════════════════════════════════════════
+#  价格事件队列 + 工作线程（B6）
+# ══════════════════════════════════════════════════════════════════
+#
+# 之前 WS on_message 回调里直接调 check_main_trades，
+# 而 check_main_trades 会执行：
+#   - evaluate_trade()
+#   - _perform_exchange_close() ← 同步交易所 API 调用，2~10s
+#   - send_tg() ← 同步 HTTP
+# websocket-client 是单线程同步消费消息，平仓动作会把 WS 消息处理 loop 卡住
+# 几秒，期间所有币种的价格 tick 全部排队。如果同时另一个币也接近止损线，
+# 事件被堵几秒才被处理，止损延迟。
+#
+# 现在改成：
+#   - WS 回调只往 queue 里 put 一个 (symbol, price) 元组（O(1)，永远不阻塞）
+#   - 独立 worker 线程从 queue 里 get 并执行 check_main_trades
+#   - queue 满了（worker 跟不上）就丢最旧的 tick，保证最新价格优先处理
+#
+# 对每个 symbol 只保留**最新**价格：触发判断只关心当下价格，老价格丢弃即可。
+# 用 dict 而不是真正的 queue，配合 Event 通知 worker。
+# ══════════════════════════════════════════════════════════════════
+
+_pending_prices: dict = {}            # symbol -> latest price
+_pending_lock = threading.Lock()
+_pending_event = threading.Event()    # 有新价格时 set；worker 处理完 clear
+_worker_started = False
+_worker_lock = threading.Lock()
+
+
+def _enqueue_price(symbol: str, price: float):
+    """把价格事件入队（O(1)，永不阻塞 WS 回调线程）"""
+    with _pending_lock:
+        _pending_prices[symbol] = price
+    _pending_event.set()
+
+
+def _price_worker_loop():
+    """worker：从 _pending_prices 拉最新价格做触发判断 + 平仓。"""
+    while True:
+        # 等到有新价格再醒，没事件就一直阻塞
+        _pending_event.wait()
+        # 取一份当前 pending 的快照然后清空，让 WS 回调可以继续 put
+        with _pending_lock:
+            batch = dict(_pending_prices)
+            _pending_prices.clear()
+            # clear event 必须在拿走 batch 之后；如果 WS 在我们清空 dict 后到清
+            # event 之前 put 了新价格，event 仍然是 set 状态，下一轮立刻处理。
+            _pending_event.clear()
+
+        for sym, price in batch.items():
+            try:
+                _process_price_update(sym, price)
+            except Exception as e:
+                logger.error(f"价格 worker 处理 {sym} 异常: {e}")
+
+
+def _ensure_worker():
+    """惰性启动 worker 线程（main() 启动 / 测试导入都 OK）"""
+    global _worker_started
+    if _worker_started:
+        return
+    with _worker_lock:
+        if _worker_started:
+            return
+        t = threading.Thread(
+            target=_price_worker_loop,
+            name='price-worker',
+            daemon=True,
+        )
+        t.start()
+        _worker_started = True
+        logger.info("价格事件 worker 线程已启动（解耦 WS 回调与平仓动作）")
+
+
 def _current_trades_mtime() -> float:
     """读 TRADES_FILE 的 mtime，不存在时返回 0"""
     try:
@@ -325,8 +399,20 @@ def _maybe_refresh_on_mtime_change():
 
 def on_price_update(symbol: str, price: float):
     """
-    价格更新回调：先做内存快速判断，只有价格进入触发区间才抢锁做完整评估。
-    由 WebSocket 消息处理调用，每秒可能数次，必须零磁盘 IO 在无触发路径。
+    价格更新回调：WS / polling 都调这里。
+
+    B6: 之前在这里直接同步执行 check_main_trades（含交易所平仓 + TG 推送），
+    会把 WS 消息处理 loop 卡住几秒，期间其他币种价格 tick 全部排队。
+    现在改成入队（O(1)，永不阻塞），由独立 worker 线程异步消费。
+    """
+    _ensure_worker()
+    _enqueue_price(symbol, price)
+
+
+def _process_price_update(symbol: str, price: float):
+    """
+    内部：worker 线程里真正处理价格更新。
+    先做内存快速判断，只有价格进入触发区间才抢锁做完整评估。
 
     H4：入口增加 mtime 检查，感知其他进程（tracker / scanner / tg_bot）对
     trades.json 的修改，秒级同步新的 trail_stop_price / tp1_triggered 等关键阈值。
@@ -365,6 +451,7 @@ class BinanceWSMonitor:
 
     def __init__(self):
         self.ws = None
+        self.ws_thread = None  # B14: 持有当前 WS 线程引用，重连时 join
         self.current_symbols = []
         self.running = True
         self._lock = threading.Lock()
@@ -388,40 +475,30 @@ class BinanceWSMonitor:
     def _on_message(self, ws, message):
         """WebSocket 消息回调。
 
-        H8: 消息解析错误不再被静默吞掉；累计到阈值触发 TG 告警，
-        覆盖"连接正常但 Binance 改了字段格式 / 返回畸形数据 → 价格事件全部被丢
-        → 止损全部不触发"的幽灵失效场景。
+        B10: 解析阶段（json.loads + 字段抽取）和业务阶段（on_price_update 触发
+        止损评估）的异常分开统计。原来两阶段共用一个 try/except，业务异常
+        （锁冲突 / 磁盘满 / ccxt 限速）会被错误地报成"WS 消息解析异常 → Binance
+        改了字段格式"，掩盖真正问题。
+
+        H8: 真正的解析错误累计到阈值仍然触发 TG 告警。
         """
+        # ── 阶段一：解析（错误 = Binance 字段变化或畸形 JSON，需要 TG 告警）──
         try:
             msg = json.loads(message)
             data = msg.get('data', {})
             if not data or 's' not in data or 'c' not in data:
                 # 非价格消息（例如心跳 / 订阅响应 / 错误响应），不计入解析失败
                 return
-
             bin_sym = data['s']  # e.g. "PEPEUSDT"
             price = float(data['c'])  # 最新价
-
-            # 转回 ccxt 格式
-            ccxt_sym = None
-            for sym in self.current_symbols:
-                if sym.replace('/USDT', 'USDT').replace('/', '') == bin_sym:
-                    ccxt_sym = sym
-                    break
-
-            if ccxt_sym and price > 0:
-                on_price_update(ccxt_sym, price)
-                self._parse_success_count += 1
         except Exception as e:
             self._parse_error_count += 1
             self._last_parse_error_sample = f"{type(e).__name__}: {e}"
-            # 首次出错 & 每 100 次打印一条 debug，避免日志刷屏但保留可观测性
             if self._parse_error_count == 1 or self._parse_error_count % 100 == 0:
                 logger.warning(
                     f"WS 消息解析失败 (累计{self._parse_error_count}/"
                     f"成功{self._parse_success_count}): {self._last_parse_error_sample}"
                 )
-            # 达到阈值且距离上次告警超过冷却时间 → TG 告警
             if self._parse_error_count >= self.PARSE_ERROR_ALERT_THRESHOLD:
                 now_ts = time.time()
                 if now_ts - self._last_parse_alert_ts > self.PARSE_ERROR_ALERT_COOLDOWN_SEC:
@@ -438,8 +515,22 @@ class BinanceWSMonitor:
                         )
                     except Exception as _e:
                         logger.debug(f"TG 告警发送失败（非致命）: {_e}")
-                    # 告警后重置计数，避免一直卡在阈值之上
                     self._parse_error_count = 0
+            return
+
+        # ── 阶段二：业务（错误 = 锁冲突 / 队列满 / 异常逻辑，只打 log，不告警）──
+        try:
+            ccxt_sym = None
+            for sym in self.current_symbols:
+                if sym.replace('/USDT', 'USDT').replace('/', '') == bin_sym:
+                    ccxt_sym = sym
+                    break
+            if ccxt_sym and price > 0:
+                on_price_update(ccxt_sym, price)
+                self._parse_success_count += 1
+        except Exception as e:
+            # 业务异常不计入 _parse_error_count，避免误触发"消息解析异常" TG 告警
+            logger.error(f"价格事件投递异常 ({bin_sym}): {e}")
 
     def _on_error(self, ws, error):
         logger.warning(f"WebSocket 错误: {error}")
@@ -458,12 +549,22 @@ class BinanceWSMonitor:
         """连接或重连 WebSocket"""
         with self._lock:
             # 关闭旧连接
+            old_thread = None
             if self.ws:
                 try:
                     self.ws.close()
                 except Exception:
                     pass
                 self.ws = None
+                old_thread = self.ws_thread
+                self.ws_thread = None
+
+            # B14: 等旧线程退出再启动新连接，避免短暂存在两个 ws thread
+            # 同时往 _on_message 里 dispatch（虽然 _enqueue_price 是线程安全的，
+            # 但旧线程残留会造成 current_symbols 引用错乱，符号查找返回错币的事件）
+            if old_thread is not None and old_thread.is_alive():
+                # 给最多 2 秒让旧线程退出；超时就放弃，daemon 线程会被进程退出回收
+                old_thread.join(timeout=2.0)
 
             if not symbols:
                 logger.info("无持仓，等待...")
@@ -484,12 +585,13 @@ class BinanceWSMonitor:
             )
 
             # 在新线程中运行 WebSocket（阻塞式）
-            ws_thread = threading.Thread(
+            self.ws_thread = threading.Thread(
                 target=self.ws.run_forever,
                 kwargs={'ping_interval': 20, 'ping_timeout': 10},
+                name='binance-ws',
                 daemon=True,
             )
-            ws_thread.start()
+            self.ws_thread.start()
 
     def stop(self):
         """停止监控"""
@@ -559,6 +661,9 @@ def main():
 
     # 先做一次快照，否则首次 WebSocket 连接时拿不到 symbols
     refresh_snapshot()
+
+    # 启动价格事件 worker（B6：解耦 WS 回调与平仓动作）
+    _ensure_worker()
 
     if not websocket:
         # 无 WebSocket 库，使用轮询模式
