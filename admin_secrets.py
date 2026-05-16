@@ -205,7 +205,9 @@ def _save_raw(data: dict) -> None:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
         os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-        os.replace(tmp, SECRETS_FILE)
+        # bind-mount 兼容：见 common._replace_or_inplace_overwrite
+        from common import _replace_or_inplace_overwrite as _replace
+        _replace(tmp, SECRETS_FILE)
     except Exception:
         if os.path.exists(tmp):
             os.unlink(tmp)

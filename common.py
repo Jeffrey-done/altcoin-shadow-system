@@ -181,10 +181,60 @@ def send_tg(msg: str, html: bool = True) -> bool:
 
 
 # ── 原子写 JSON ──────────────────────────────────────────────────
+def _replace_or_inplace_overwrite(tmp_path: str, target_path: str) -> None:
+    """
+    把 tmp_path 移动覆盖到 target_path。
+
+    优先 os.replace（原子 rename）；当 target_path 是 docker 单文件
+    bind-mount（host 目录里的某个 .json 直接挂到容器内同名路径）时，
+    rename 会因为目标 inode 被 mount 锁住而抛 EBUSY/EXDEV。这里
+    fallback 到"打开 target，truncate + 写入新内容"——保留原 inode，
+    破坏了写时崩溃的原子性，但调用方都在 fcntl.flock 排他锁内，
+    并发读写的一致性仍受锁保护。
+
+    BUG 修复（2026-05）：
+      docker-compose.yml 把 7 个 JSON 文件做了单文件 bind mount，
+      容器内 atomic_write_json 全部因 EBUSY 失败，候选池/风控/交易
+      统统写不进去。fallback 模式让 scheduler 在 bind mount 部署下
+      也能正常持久化数据。
+    """
+    import errno as _errno
+    import shutil as _shutil
+    try:
+        os.replace(tmp_path, target_path)
+        return
+    except OSError as e:
+        # EBUSY (16): bind-mount 单文件; EXDEV (18): 跨设备 rename
+        # 其它错误直接抛
+        if e.errno not in (_errno.EBUSY, _errno.EXDEV):
+            raise
+
+    # Fallback: 保留 target 的 inode，原地覆盖
+    try:
+        with open(tmp_path, 'rb') as src, open(target_path, 'wb') as dst:
+            _shutil.copyfileobj(src, dst)
+            dst.flush()
+            try:
+                os.fsync(dst.fileno())
+            except OSError:
+                # 某些挂载（tmpfs / overlay）可能不支持 fsync，
+                # 失败仅丢失"立刻落盘"语义，文件已写入
+                pass
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def atomic_write_json(filepath: str, data: Any) -> None:
     """
     原子写入 JSON 文件：先写临时文件再 rename，防止崩溃时数据损坏。
     使用 fcntl.flock 排他锁保证并发安全。
+
+    bind-mount 兼容：rename 失败 (EBUSY/EXDEV) 时 fallback 到原地覆盖
+    （见 _replace_or_inplace_overwrite）。
     """
     dir_name = os.path.dirname(filepath)
     lockfile = filepath + '.lock'
@@ -197,7 +247,7 @@ def atomic_write_json(filepath: str, data: Any) -> None:
 
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, filepath)
+        _replace_or_inplace_overwrite(tmp_path, filepath)
     except Exception:
         # 清理临时文件
         if os.path.exists(tmp_path):
@@ -269,7 +319,7 @@ class LockedJsonFile:
             try:
                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
                     json.dump(new_data, f, indent=2, ensure_ascii=False)
-                os.replace(tmp_path, self.filepath)
+                _replace_or_inplace_overwrite(tmp_path, self.filepath)
             except Exception:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)

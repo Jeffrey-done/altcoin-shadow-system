@@ -131,7 +131,9 @@ def _maybe_truncate(path: str) -> None:
     try:
         with open(tmp, 'w', encoding='utf-8') as f:
             f.writelines(keep)
-        os.replace(tmp, path)
+        # bind-mount 兼容：见 common._replace_or_inplace_overwrite
+        from common import _replace_or_inplace_overwrite as _replace
+        _replace(tmp, path)
         logger.info(
             f"task_metrics 已截断: {len(lines)} → {len(keep)} 行"
         )

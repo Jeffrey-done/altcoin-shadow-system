@@ -366,7 +366,9 @@ def _save_raw_config(data: dict) -> None:
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
     os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp, RUNTIME_CONFIG_FILE)
+    # bind-mount 兼容：rename 失败 (EBUSY/EXDEV) 时 fallback 到原地覆盖
+    from common import _replace_or_inplace_overwrite as _replace
+    _replace(tmp, RUNTIME_CONFIG_FILE)
 
 
 @contextmanager
