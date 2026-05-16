@@ -60,28 +60,13 @@ const App = {
 };
 
 // ── Theme Toggle ─────────────────────────────────────────────────
+// NOTE: 主题切换的实际实现在 templates/base.html 的 inline <script> 里，
+// 那边正确地切换 #theme-icon-dark / #theme-icon-light 两个 lucide svg 图标。
+// 这里以前还有一个 ThemeManager，会用 textContent='☀️' 覆盖按钮内容把
+// lucide svg 直接抹掉，并和 base.html 的 click handler 双重绑定（点一次切两次）。
+// 已移除该实现，保留空对象避免老代码 import 时报 undefined。
 const ThemeManager = {
-    init() {
-        const saved = localStorage.getItem('dashboard-theme') || 'dark';
-        this.setTheme(saved);
-        const btn = document.getElementById('theme-toggle');
-        if (btn) {
-            btn.addEventListener('click', () => {
-                const current = document.documentElement.getAttribute('data-theme') || 'dark';
-                this.setTheme(current === 'dark' ? 'light' : 'dark');
-            });
-        }
-    },
-
-    setTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem('dashboard-theme', theme);
-        const btn = document.getElementById('theme-toggle');
-        if (btn) {
-            btn.textContent = theme === 'dark' ? '☀️' : '🌙';
-            btn.title = theme === 'dark' ? '切换亮色主题' : '切换暗色主题';
-        }
-    }
+    init() { /* deprecated: see templates/base.html */ }
 };
 
 // ── Notification Panel ───────────────────────────────────────────
@@ -101,8 +86,19 @@ const NotificationPanel = {
 
         // Load events
         this.fetchEvents();
-        // Refresh every 30s
-        setInterval(() => this.fetchEvents(), 30000);
+        // 每 30s 轮询一次 /api/events，但 tab 不可见时跳过：
+        // 没有用户在看的 tab 不需要持续刷事件，省后端 IO + 客户端电量
+        setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                this.fetchEvents();
+            }
+        }, 30000);
+        // 切回前台时立刻补一次，让用户看到最新状态
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this.fetchEvents();
+            }
+        });
     },
 
     toggle() {

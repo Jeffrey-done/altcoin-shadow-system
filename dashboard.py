@@ -17,6 +17,19 @@ Features:
 访问：http://localhost:8080
 """
 
+# ══════════════════════════════════════════════════════════════════
+#  eventlet monkey_patch 必须在 stdlib(socket/threading/time/...) 之前!
+# ══════════════════════════════════════════════════════════════════
+# requirements.txt 装了 eventlet，python-socketio 会自动选 eventlet 后端跑
+# socketio.run()。但如果不 monkey_patch，stdlib 的阻塞 IO（requests 走的
+# urllib3、threading.Lock、time.sleep）就还是真阻塞，会把 eventlet hub 卡死，
+# 表现就是：前端 SocketIO 心跳超时 → WiFi 图标变红 → 几分钟后才恢复。
+# 关闭 thread=False：业务代码里 ThreadPoolExecutor 仍要用真 OS 线程跑
+# ccxt 同步调用，不要把 threading 协程化（否则 ccxt 内部 socket 会和 eventlet
+# 的 greenlet hub 互锁）。
+import eventlet
+eventlet.monkey_patch(thread=False)
+
 import hashlib
 import hmac
 import json
@@ -28,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Flask, render_template, jsonify, request, make_response
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit as socketio_emit
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,7 +79,27 @@ if _cors_origins:
     _cors_list = [o.strip() for o in _cors_origins.split(',') if o.strip()]
 else:
     _cors_list = []  # 空列表 = 仅同源
-socketio = SocketIO(app, cors_allowed_origins=_cors_list if _cors_list else None)
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=_cors_list if _cors_list else None,
+    # 显式声明 eventlet：避免 python-socketio 在多个候选后端中自动选择时
+    # 因为 import 顺序选成 threading（threading 模式下 emit 跨线程是 unsafe 的）
+    async_mode='eventlet',
+)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  静态资源缓存（B12）
+# ══════════════════════════════════════════════════════════════════
+# 之前 /static/ 没有任何 Cache-Control，每次刷新都重新下载
+# lucide.min.js (~340KB) / chart.js / app.js 等。给一天缓存，刷新前端时
+# 用 hard reload (Ctrl+Shift+R) 跳过缓存即可。
+@app.after_request
+def _add_static_cache(resp):
+    if request.path.startswith('/static/'):
+        # public：允许 CDN/反代缓存；max-age=86400：一天
+        resp.headers.setdefault('Cache-Control', 'public, max-age=86400')
+    return resp
 
 # ══════════════════════════════════════════════════════════════════
 #  Admin Panel (挂载在 /<ADMIN_URL_SECRET>/ 下)
@@ -316,27 +349,37 @@ def _extract_events() -> list:
     """
     Extract events from trade files based on opened_at, closed_at timestamps.
     Returns last 50 events sorted by time (newest first).
+
+    B8 优化：只扫最近 7 天的事件，不再每 30s 全量遍历交易历史。
+    随着 trades 增长（默认归档 30 天 + 多账户）这个端点 CPU 会逐月膨胀；
+    限制窗口后稳定在 O(7d × 多账户 × 多币) ≈ 几十到几百条。
     """
+    EVENT_WINDOW_DAYS = 7
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=EVENT_WINDOW_DAYS)
+    cutoff_iso = cutoff_dt.isoformat()  # ISO 字符串可以按字典序对比
+
     events = []
     trades = load_json(TRADES_FILE, [])
     account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
     risk_state = load_json(RISK_FILE, {})
 
-    # Trade open/close events
+    # Trade open/close events（只看 7 天内的）
     for t in trades:
         symbol = t.get('symbol', '?')
         direction = t.get('direction', 'SHORT')
 
-        if t.get('opened_at'):
+        opened_at = t.get('opened_at') or ''
+        if opened_at and opened_at >= cutoff_iso:
             events.append({
-                'time': t['opened_at'],
+                'time': opened_at,
                 'type': 'open',
                 'level': 'info',
                 'message': f"📈 开仓 {direction} {symbol} @ {t.get('entry_price', 0):.6f}",
             })
 
-        if t.get('closed_at'):
+        closed_at = t.get('closed_at') or ''
+        if closed_at and closed_at >= cutoff_iso:
             pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
             reason = t.get('close_reason', '')
             level = 'success' if pnl > 0 else 'warning'
@@ -346,13 +389,13 @@ def _extract_events() -> list:
                 level = 'critical'
 
             events.append({
-                'time': t['closed_at'],
+                'time': closed_at,
                 'type': 'close',
                 'level': level,
                 'message': f"{'✅' if pnl > 0 else '❌'} 平仓 {direction} {symbol} | {pnl:+.2f}U | {reason}",
             })
 
-    # Risk pause events
+    # Risk pause events（无视窗口，只要还在 paused 状态就显示）
     if risk_state.get('paused_until'):
         events.append({
             'time': risk_state.get('last_paused_at', risk_state.get('paused_until', '')),
@@ -375,24 +418,53 @@ _price_lock = threading.Lock()
 
 
 def _fetch_live_prices(symbols: list) -> dict:
-    """从 Binance 获取多个币种的实时价格。"""
+    """从 Binance 获取持仓币种的实时价格。
+
+    重要修复（B3）：
+      1. 之前用 https://api.binance.com/api/v3/ticker/price 拉**整个现货市场**（几千个币
+         的 JSON，每次几 MB），即使只持仓 3 个币也是全量下载 → 5s timeout 经常被打穿。
+      2. 之前查的是**现货价**，但策略做的是**永续合约**，两边价格在快速行情时会
+         偏 0.1–0.3% → 前端显示的现价和实际持仓的合约市场不一致。
+      3. timeout 5s 在 SSL 握手 + TCP RTT 较高时容易超时，但这个调用阻塞了
+         background_push 的整个 loop，从而拖慢 SocketIO 心跳 → 前端"WiFi 图标变红"。
+
+    现在：
+      - 切到 fapi（永续合约）
+      - 只拉持仓里的 symbols（用 ?symbols=[...] 参数）
+      - timeout 收紧到 3s（拿不到就让前端 BinanceWS 自己直连 wss 拉，不要拖后端）
+    """
     import requests as _requests
     prices = {}
     if not symbols:
         return prices
+
+    # 把 ccxt 格式 (BTC/USDT) 转成 Binance API 格式 (BTCUSDT)
+    binance_syms = [s.replace('/USDT', 'USDT').replace('/', '') for s in symbols]
+    # ccxt -> binance 的反向映射，下面循环里查回 ccxt key
+    rev_map = dict(zip(binance_syms, symbols))
+
     try:
+        # fapi 的 ?symbols= 参数要 JSON-encoded array
+        params = {'symbols': json.dumps(binance_syms, separators=(',', ':'))}
         r = _requests.get(
-            "https://api.binance.com/api/v3/ticker/price",
-            timeout=5,
+            "https://fapi.binance.com/fapi/v1/ticker/price",
+            params=params,
+            timeout=3,
         )
         if r.status_code == 200:
-            all_prices = {item['symbol']: float(item['price']) for item in r.json()}
-            for sym in symbols:
-                binance_sym = sym.replace('/USDT', 'USDT').replace('/', '')
-                if binance_sym in all_prices:
-                    prices[sym] = all_prices[binance_sym]
+            payload = r.json()
+            # fapi 返回单个 dict（symbols=1）或 list（symbols=N）。统一成 list
+            items = payload if isinstance(payload, list) else [payload]
+            for item in items:
+                bsym = item.get('symbol')
+                if bsym in rev_map:
+                    try:
+                        prices[rev_map[bsym]] = float(item['price'])
+                    except (TypeError, ValueError):
+                        continue
     except Exception as e:
-        print(f"[Dashboard] 获取实时价格异常: {e}")
+        # 不打日志刷屏；fapi 偶发 5xx / 超时是常态，前端会用 wss 实时拉补齐
+        pass
     return prices
 
 
@@ -418,10 +490,20 @@ def _inject_live_prices(data: dict) -> dict:
 
 
 def background_push():
-    """每10秒推送最新数据到所有连接的客户端"""
+    """每 10 秒推送最新数据到所有连接的客户端。
+
+    重要修复（B3）：
+      - 之前用 time.sleep(10) → eventlet 不会 yield，hub 卡死，心跳延迟，前端
+        SocketIO 触发 disconnect（WiFi 图标变红）。改用 socketio.sleep() 让出协程。
+      - 之前用 threading.Thread 直接调 socketio.emit → 跨线程 emit 在 eventlet
+        下 unsafe。改用 socketio.start_background_task 在 eventlet 协程里跑。
+      - 之前每 10s 都拉 Binance 现货全市场（几 MB JSON）→ 网络抽风时一卡 5–30s
+        把推送 loop 拖死。现在 _fetch_live_prices 只拉持仓 symbols 而且 3s 超时；
+        即使失败前端有 wss 兜底，不影响主推送循环。
+    """
     while True:
-        time.sleep(10)
         try:
+            socketio.sleep(10)  # ← 不要 time.sleep
             data = get_dashboard_data()
 
             # 收集所有持仓中的币种
@@ -432,7 +514,7 @@ def background_push():
                 open_symbols.add(trade.get('symbol', ''))
             open_symbols.discard('')
 
-            # 获取实时价格
+            # 获取实时价格（只拉持仓里的 symbols；失败不阻塞主推送）
             if open_symbols:
                 prices = _fetch_live_prices(list(open_symbols))
                 if prices:
@@ -442,6 +524,7 @@ def background_push():
             data = _inject_live_prices(data)
             socketio.emit('update', data)
         except Exception as e:
+            # 任何异常都不能让推送 loop 退出，否则前端会一直显示离线
             print(f"[Dashboard] 推送异常: {e}")
 
 
@@ -548,11 +631,28 @@ def api_accounts_overview():
     active_id = get_active_account_id()
     all_trades = load_json(TRADES_FILE, [])
 
+    # B9 修复：之前对每个账户都遍历整个 all_trades 一遍 (O(账户数 × 交易数))，
+    # 现在单遍把 trades 按 account_id 分桶到 dict (O(交易数 + 账户数))。
+    # 注：filter_trades_by_account 把"无 account_id 的旧交易"归属影子账户，
+    #     这里也要保持同样的兼容语义。
+    buckets: dict = {}
+    legacy_unmarked: list = []  # account_id == '' 的旧交易
+    for t in all_trades:
+        acc = t.get('account_id', '')
+        if not acc:
+            legacy_unmarked.append(t)
+        else:
+            buckets.setdefault(acc, []).append(t)
+
+    today = today_str()
+
     accounts_data = []
     for acc in all_accounts:
         acc_id = acc['id']
-        # 按账户过滤交易
-        acc_trades = filter_trades_by_account(all_trades, acc_id)
+        # 按账户取桶；影子账户额外接收所有无标记的旧交易
+        acc_trades = list(buckets.get(acc_id, []))
+        if acc_id == SHADOW_ACCOUNT_ID and legacy_unmarked:
+            acc_trades.extend(legacy_unmarked)
 
         open_trades = [t for t in acc_trades if t.get('status') == 'open']
         closed_trades = [t for t in acc_trades if t.get('status') == 'closed']
@@ -561,7 +661,6 @@ def api_accounts_overview():
             t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
             for t in closed_trades
         )
-        today = today_str()
         today_pnl = sum(
             t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
             for t in closed_trades
@@ -845,10 +944,15 @@ def api_signal_scores():
 
 @socketio.on('connect')
 def handle_connect():
-    """新连接时立即推送一次数据"""
+    """新连接时立即推送一次数据（仅给当前 sid，不广播全员）。
+
+    修复 B4：之前用 socketio.emit 不带 to=，每个新连接会广播给所有现有客户端，
+    多人开页面时互相打扰，前端被迫整页 re-render。
+    用 flask_socketio.emit（在 socket 上下文里默认只发给当前连接）即可。
+    """
     data = get_dashboard_data()
     data = _inject_live_prices(data)
-    socketio.emit('update', data)
+    socketio_emit('update', data)  # 默认只发给 request.sid，不广播
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -876,8 +980,9 @@ if __name__ == '__main__':
     print("   实时推送间隔: 10秒")
     print("   按 Ctrl+C 停止")
 
-    # 后台推送线程
-    push_thread = threading.Thread(target=background_push, daemon=True)
-    push_thread.start()
+    # 后台推送任务：用 socketio.start_background_task 而不是 threading.Thread
+    # 才能跑在 eventlet 协程里，与 SocketIO 心跳协同；用真线程 + socketio.emit
+    # 是 unsafe 的（会偶尔与 hub 写出竞争）。
+    socketio.start_background_task(background_push)
 
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
