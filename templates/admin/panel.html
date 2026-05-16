@@ -522,7 +522,8 @@ let lastConfigState = {
   global_config: {},          // _global 段
   accounts_config: {},        // { acc_id: {...overrides} }
   fields_meta: {},            // { KEY: {type, label, scope: 'global'|'account'} }
-  config_active_snapshot: {}, // 当前已 apply 到 config 模块的快照（向后兼容）
+  config_active_snapshot: {}, // 当前已 apply 到 config 模块的快照（向后兼容；不能用作账号 fallback）
+  config_defaults: {},        // config.py 原始默认值，账号字段在没有 override 时的 fallback
   compound_per_account: {},   // { acc_id: {current_stake, dynamic_balance} }
 };
 // 仓位/止盈止损/风控/复利 tab 选择的"目标账号"（可能 != 后台活跃账号）
@@ -575,6 +576,7 @@ async function loadState() {
     lastConfigState.accounts_config = s.accounts_config || {};
     lastConfigState.fields_meta = s.fields_meta || {};
     lastConfigState.config_active_snapshot = s.config || {};
+    lastConfigState.config_defaults = s.config_defaults || {};
     lastConfigState.compound_per_account = s.compound_per_account || {};
 
     // 1. 全局字段：始终从 global_config 读（落到 #cfg-LIVE_MODE 等）
@@ -627,20 +629,40 @@ function rebuildCfgTargetAccountDropdown() {
 }
 
 // populate 仓位/止盈止损/风控/复利 表单为指定账号的值
+//
+// 关键修复：未覆盖字段的 fallback 是 config_defaults（config.py 原始值），
+// 而不是 config_active_snapshot（被 apply_overrides 污染过的当前活跃账号的值）。
+// 之前 fallback 走 config_active_snapshot 时，没设过的账号会显示活跃账号的值，
+// 看起来"改一个动全部"——这就是用户报告的 bug。
 function populateAccountFieldsForm() {
   const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
-  const globalSnap = lastConfigState.config_active_snapshot || {};
+  const defaults = lastConfigState.config_defaults || {};
   const meta = lastConfigState.fields_meta || {};
 
   Object.keys(meta).forEach(key => {
     if (meta[key].scope !== 'account') return;
     const el = document.getElementById('cfg-' + key);
     if (!el) return;
-    // 优先该账号的覆盖值，否则用 config 模块当前快照（来自 config.py 默认值或 _global 不会覆盖账号字段）
-    let val = accOverrides[key];
-    if (val === undefined) val = globalSnap[key];
+    const isOverridden = accOverrides[key] !== undefined;
+    let val;
+    if (isOverridden) {
+      val = accOverrides[key];
+    } else {
+      val = defaults[key];
+    }
+    // 视觉提示：用默认值的字段加柔和淡灰色边框，让用户知道是 fallback
+    if (el.parentElement && el.parentElement.classList.contains('form-row')) {
+      if (isOverridden) {
+        el.style.borderColor = '';
+        el.style.opacity = '';
+        el.title = '';
+      } else {
+        el.style.borderColor = 'var(--border-subtle)';
+        el.style.opacity = '0.6';
+        el.title = '该账号未设置此项，显示的是 config.py 默认值；保存后会成为该账号的覆盖值';
+      }
+    }
     if (val === undefined || val === null) {
-      // 没值就置空，让 placeholder/min 显示
       if (el.type !== 'checkbox') el.value = '';
       else el.checked = false;
       return;
@@ -663,12 +685,15 @@ function refreshCompoundDisplay() {
   const cs = (lastConfigState.compound_per_account || {})[cfgTargetAccountId];
   if (!cs) return;
   const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
-  const globalSnap = lastConfigState.config_active_snapshot || {};
+  const defaults = lastConfigState.config_defaults || {};
   const stake = cs.current_stake;
-  const baseStake = accOverrides.DEFAULT_STAKE !== undefined ? accOverrides.DEFAULT_STAKE : (globalSnap.DEFAULT_STAKE || 50);
+  // baseStake 也走 per-account → pristine 默认 这条路径，不能走 config_active_snapshot
+  const baseStake = accOverrides.DEFAULT_STAKE !== undefined
+    ? accOverrides.DEFAULT_STAKE
+    : (defaults.DEFAULT_STAKE !== undefined ? defaults.DEFAULT_STAKE : 50);
   const enabled = accOverrides.AUTO_COMPOUND_ENABLED !== undefined
     ? accOverrides.AUTO_COMPOUND_ENABLED
-    : (globalSnap.AUTO_COMPOUND_ENABLED !== undefined ? globalSnap.AUTO_COMPOUND_ENABLED : true);
+    : (defaults.AUTO_COMPOUND_ENABLED !== undefined ? defaults.AUTO_COMPOUND_ENABLED : true);
 
   document.getElementById('compound-current-stake').textContent = stake + 'U';
   document.getElementById('compound-half-stake').textContent = Math.round(stake * 0.5) + 'U';

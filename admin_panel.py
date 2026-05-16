@@ -533,9 +533,12 @@ def create_blueprint(url_secret: str) -> Blueprint:
 
         # ── 多账号配置：每账号一份 overrides + 全局 overrides ──
         # 前端切账号下拉时直接从这里 reload 表单，不需要再发请求。
-        # current 仍保留作为"已 apply 到 config 模块的当前生效值"快照（向后兼容）。
+        # current 仍保留作为"已 apply 到 config 模块的当前生效值"快照（向后兼容），
+        # 但前端不应该把它当作"未配置账号"的 fallback——会显示出活跃账号的值。
+        # 真正的 fallback 是 config_defaults：config.py 的原始默认值。
         global_config = runtime_config.load_global_overrides()
         accounts_config = runtime_config.load_all_account_overrides()
+        config_defaults = runtime_config.get_all_pristine_defaults()
 
         # 为每个账号补全：用 ALLOWED 中的字段名做模板，没覆盖过的字段返回 None
         # 让前端能区分"未设置（用全局默认）" vs "显式设了某个值"
@@ -585,6 +588,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
             'fields_meta': fields_meta,
             'global_config': global_config,
             'accounts_config': accounts_config,
+            'config_defaults': config_defaults,
             'compound': {
                 'current_stake': compound_stake,
                 'dynamic_balance': dynamic_balance,

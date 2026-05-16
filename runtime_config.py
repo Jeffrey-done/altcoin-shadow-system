@@ -114,6 +114,60 @@ GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCH
 ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
 
 
+# ══════════════════════════════════════════════════════════════════
+#  config.py 原始默认值快照
+# ══════════════════════════════════════════════════════════════════
+# 关键修复：apply_overrides() 会把当前活跃账号的覆盖值写到 config 模块属性，
+# 这之后再读 config.X 就拿不到 config.py 的原始默认值了。
+#
+# 但是 ACCOUNT_FIELDS 的 fallback 必须用原始默认值——否则"没设过覆盖的 B 账号"
+# 会 fallback 到 config 模块（已经被 A 账号污染），UI/后端都会以为
+# "A 改了之后 B 也跟着变"，正是用户报告的 bug。
+#
+# 解决方案：runtime_config 模块导入时立刻快照 config 模块所有 ALLOWED 键的值。
+# 因为 config.py 只有常量定义、没有副作用，所以模块导入完成时拿到的就是源文件
+# 写死的值。之后无论 apply_overrides 多少次，PRISTINE_DEFAULTS 都不会被覆盖。
+
+_PRISTINE_DEFAULTS: Dict[str, Any] = {}
+
+
+def _snapshot_pristine_defaults() -> None:
+    """
+    把 config 模块当前所有 ALLOWED 键的值复制到 _PRISTINE_DEFAULTS。
+    必须在 apply_overrides 第一次运行之前调用。
+    幂等：只在 _PRISTINE_DEFAULTS 为空时填充。
+    """
+    if _PRISTINE_DEFAULTS:
+        return
+    try:
+        import config as _config
+        for key in ALLOWED.keys():
+            _PRISTINE_DEFAULTS[key] = getattr(_config, key, None)
+    except Exception as e:
+        logger.error(f"_snapshot_pristine_defaults 失败: {e}")
+
+
+def get_pristine_default(key: str):
+    """
+    返回某个白名单字段的 config.py 原始默认值。
+    用于 ACCOUNT_FIELDS 在该账号没有覆盖时的 fallback，避免被 apply_overrides 污染。
+    """
+    if not _PRISTINE_DEFAULTS:
+        _snapshot_pristine_defaults()
+    return _PRISTINE_DEFAULTS.get(key)
+
+
+def get_all_pristine_defaults() -> dict:
+    """返回所有白名单字段的原始默认值字典（admin panel /api/state 下发到前端做 fallback）。"""
+    if not _PRISTINE_DEFAULTS:
+        _snapshot_pristine_defaults()
+    return dict(_PRISTINE_DEFAULTS)
+
+
+# 模块导入时立刻快照——在任何 apply_overrides 之前
+_snapshot_pristine_defaults()
+
+
 def validate_change(key: str, value: Any) -> Tuple[bool, str]:
     """
     单个字段的类型+范围校验。

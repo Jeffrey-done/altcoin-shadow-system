@@ -410,29 +410,52 @@ def _account_balance_for(account_id: str = None) -> float:
     return float(_account_param(account_id, 'ACCOUNT_BALANCE', fallback))
 
 
-def _account_param(account_id: str, key: str, fallback):
+def _account_param(account_id: str, key: str, fallback=None):
     """
-    通用：取指定账户对该字段的覆盖值；没有就 fallback。
+    通用：取指定账户对该字段的覆盖值；按优先级 fallback。
 
     所有 ACCOUNT_FIELDS（ACCOUNT_BALANCE / DEFAULT_STAKE / LEVERAGE / 复利参数 /
-    止盈止损 / 风控等）都走这个入口，统一 per-account 优先 → 全局 config fallback。
+    止盈止损 / 风控等）都走这个入口，统一 per-account 优先 → pristine config 默认值。
+
+    fallback 优先级（高 → 低）：
+        1. runtime_config.json[account_id][key]    ← 该账号显式覆盖
+        2. runtime_config.get_pristine_default(key) ← config.py 原始值（不会被
+           apply_overrides 污染）
+        3. 调用方传入的 fallback                     ← 最后兜底（可不传）
+
+    关键修复（2026-05-17）：之前 fallback 直接用调用方传入的 config.X，但
+    config 模块属性已被 apply_overrides 改成"当前活跃账号"的值。结果：
+    主账号设了 286 → apply 完 config.ACCOUNT_BALANCE = 286 → 查从未配置过的
+    其他账号时，fallback 也拿到 286，导致看起来"改一个动全部"。
+    现在 fallback 优先走 PRISTINE_DEFAULTS（模块加载时快照的 config.py 原始值），
+    不会被 apply_overrides 影响。
 
     参数:
-      account_id: 账户 ID；空字符串或 None 直接返回 fallback
+      account_id: 账户 ID；空字符串或 None → 跳过 per-account 查找
       key:        runtime_config.ALLOWED 中的字段名
-      fallback:   读不到时的回退值（通常是 config 模块对应属性）
+      fallback:   pristine default 也读不到时的最终兜底（可选）
     """
-    if not account_id:
-        return fallback
+    # 1. 该账号的显式覆盖
+    if account_id:
+        try:
+            import runtime_config
+            overrides = runtime_config.load_account_overrides(account_id) or {}
+            val = overrides.get(key)
+            if val is not None:
+                return val
+        except Exception:
+            pass
+
+    # 2. config.py 的原始默认值（绝不会被 apply_overrides 污染）
     try:
         import runtime_config
-        overrides = runtime_config.load_account_overrides(account_id) or {}
-        val = overrides.get(key)
-        if val is not None:
-            return val
+        pristine = runtime_config.get_pristine_default(key)
+        if pristine is not None:
+            return pristine
     except Exception:
-        # runtime_config.json 损坏 / 不存在 / admin 模块未加载都走 fallback
         pass
+
+    # 3. 最后兜底
     return fallback
 
 
