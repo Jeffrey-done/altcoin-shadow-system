@@ -73,18 +73,19 @@ def check_binance() -> bool:
     _pr_ok(f"API 凭证已配置（key 前缀={api_key[:6]}...）")
 
     try:
-        import ccxt
+        import ccxt  # noqa: F401  仅用于检测依赖
     except ImportError:
         _pr_fail("ccxt 未安装，pip install ccxt")
         return False
 
     try:
-        exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': secret,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'},
-        })
+        from exchange_manager import make_exchange
+        exchange = make_exchange(
+            'binance',
+            api_key=api_key,
+            secret=secret,
+            default_type='future',
+        )
     except Exception as e:
         _pr_fail(f"创建 Binance 实例失败: {e}")
         return False
@@ -160,18 +161,19 @@ def check_okx() -> bool:
     _pr_ok(f"API 凭证已配置（key 前缀={api_key[:6]}...）")
 
     try:
-        import ccxt
+        import ccxt  # noqa: F401  仅用于检测依赖
     except ImportError:
         _pr_fail("ccxt 未安装，pip install ccxt")
         return False
 
     try:
-        exchange = ccxt.okx({
-            'apiKey': api_key,
-            'secret': secret,
-            'password': passphrase,
-            'enableRateLimit': True,
-        })
+        from exchange_manager import make_exchange
+        exchange = make_exchange(
+            'okx',
+            api_key=api_key,
+            secret=secret,
+            passphrase=passphrase,
+        )
     except Exception as e:
         _pr_fail(f"创建 OKX 实例失败: {e}")
         return False

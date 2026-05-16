@@ -793,13 +793,14 @@ def create_blueprint(url_secret: str) -> Blueprint:
                        'msg': f'已配置（key 前缀={api_key[:6]}...）'})
 
         try:
-            import ccxt
-            exchange = ccxt.binance({
-                'apiKey': api_key,
-                'secret': secret_key,
-                'enableRateLimit': True,
-                'options': {'defaultType': 'future'},
-            })
+            import ccxt  # noqa: F401  仅用于检测依赖
+            from exchange_manager import make_exchange
+            exchange = make_exchange(
+                'binance',
+                api_key=api_key,
+                secret=secret_key,
+                default_type='future',
+            )
         except ImportError:
             checks.append({'name': '依赖库', 'status': 'fail', 'msg': 'ccxt 未安装'})
             return {'pass': False, 'checks': checks}
@@ -868,13 +869,14 @@ def create_blueprint(url_secret: str) -> Blueprint:
                        'msg': f'已配置（key 前缀={api_key[:6]}...）'})
 
         try:
-            import ccxt
-            exchange = ccxt.okx({
-                'apiKey': api_key,
-                'secret': secret_key,
-                'password': passphrase,
-                'enableRateLimit': True,
-            })
+            import ccxt  # noqa: F401  仅用于检测依赖
+            from exchange_manager import make_exchange
+            exchange = make_exchange(
+                'okx',
+                api_key=api_key,
+                secret=secret_key,
+                passphrase=passphrase,
+            )
         except ImportError:
             checks.append({'name': '依赖库', 'status': 'fail', 'msg': 'ccxt 未安装'})
             return {'pass': False, 'checks': checks}

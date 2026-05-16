@@ -556,7 +556,9 @@ def run(check_only: bool = False):
         logger.info("无持仓中的空单")
         return
 
-    binance = ccxt.binance({'enableRateLimit': True})
+    # H10: 走 exchange_manager 单例，强制带 timeout
+    from exchange_manager import get_binance
+    binance = get_binance()
 
     # 日报行
     lines = [

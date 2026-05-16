@@ -210,7 +210,8 @@ def main():
     print(f"  待评估阈值: {sorted(args.thresholds)}")
     print(f"{'='*78}\n")
 
-    exchange = ccxt.binance({'enableRateLimit': True})
+    from exchange_manager import make_exchange
+    exchange = make_exchange('binance')
 
     rows = []
 

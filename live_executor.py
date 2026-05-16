@@ -67,14 +67,14 @@ def get_live_exchange(account_id: Optional[str] = None):
         logger.error("BINANCE_API_KEY 或 BINANCE_SECRET 未设置！无法实盘交易")
         return None
 
-    exchange = ccxt.binance({
-        'apiKey': api_key,
-        'secret': secret,
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'future',  # 使用合约账户
-        },
-    })
+    # H10: 走 exchange_manager 工厂，强制带 timeout
+    from exchange_manager import make_exchange
+    exchange = make_exchange(
+        'binance',
+        api_key=api_key,
+        secret=secret,
+        default_type='future',
+    )
 
     return exchange
 
@@ -360,12 +360,14 @@ def get_okx_live_exchange(account_id: Optional[str] = None):
         if not api_key or not secret or not passphrase:
             return None
         try:
-            return ccxt.okx({
-                'apiKey': api_key,
-                'secret': secret,
-                'password': passphrase,
-                'enableRateLimit': True,
-            })
+            # H10: 走 exchange_manager 工厂，强制带 timeout
+            from exchange_manager import make_exchange
+            return make_exchange(
+                'okx',
+                api_key=api_key,
+                secret=secret,
+                passphrase=passphrase,
+            )
         except Exception as e:
             logger.warning(f"OKX 认证实例创建失败 (account={account_id}): {e}")
             return None
