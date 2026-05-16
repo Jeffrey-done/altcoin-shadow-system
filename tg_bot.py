@@ -435,6 +435,29 @@ def _poll_updates():
         return []
 
 
+def _prune_unauth_seen(unauth_seen: dict, now: float, max_age: float) -> dict:
+    """NF-3: 清理过期的未授权 chat_id 记录。
+
+    M-5 引入的 ``_unauth_seen`` dict 记录了"已经触达限速窗口的 chat_id"，
+    虽然有窗口过期的 *计数* 重置逻辑，但条目本身永不删除 —— bot token
+    泄露后被加入数千群组时 dict 会无限增长。本函数过滤掉所有 first_seen
+    比 ``max_age`` 还旧的条目；调用方负责按一定频率重新赋值给原 dict。
+
+    参数:
+        unauth_seen: 原 dict {chat_id: (count, first_seen_ts)}
+        now: 当前时间戳（注入参数方便测试）
+        max_age: 保留年龄上限（秒）；超过这个值的条目会被丢弃
+
+    返回:
+        新 dict，仅保留未过期的条目（不修改入参）。
+    """
+    return {
+        cid: (cnt, ts)
+        for cid, (cnt, ts) in unauth_seen.items()
+        if now - ts < max_age
+    }
+
+
 def run_bot():
     """TG Bot 主循环（阻塞式）"""
     global _last_update_id
@@ -451,9 +474,20 @@ def run_bot():
     _unauth_seen: dict = {}  # {chat_id: (count, first_seen_ts)}
     _UNAUTH_LOG_THRESHOLD = 50
     _UNAUTH_WINDOW_SEC = 3600
+    # NF-3: 定期清理 _unauth_seen 中过期条目（保留窗口的 2 倍冗余），避免无限增长
+    _UNAUTH_PRUNE_INTERVAL = 100  # 每 N 次主循环 prune 一次
+    _UNAUTH_PRUNE_MAX_AGE = _UNAUTH_WINDOW_SEC * 2
+    _loop_count = 0
 
     while True:
         try:
+            _loop_count += 1
+            # NF-3: 周期性清理过期的未授权 chat_id 条目
+            if _loop_count % _UNAUTH_PRUNE_INTERVAL == 0:
+                _unauth_seen = _prune_unauth_seen(
+                    _unauth_seen, time.time(), _UNAUTH_PRUNE_MAX_AGE
+                )
+
             updates = _poll_updates()
 
             for update in updates:

@@ -782,11 +782,14 @@ def run(check_only: bool = False):
 
     # 2) 改 risk_state（在 trades 已经持久化之后）
     for pnl_usd, stake_remaining, acc_id in pending_risk_updates:
-        record_trade_closed(pnl_usd, stake_remaining, account_id=acc_id or None)
+        # NF-4: 用 trade_account_id 让函数能区分"调用方未指定账户"与
+        # "trade 自带账户标记（含老数据的空字符串）"，避免回退到当前活跃账户错记账
+        record_trade_closed(pnl_usd, stake_remaining, trade_account_id=acc_id)
 
     # M-1: TP1 半仓的 stake 释放（不影响 daily_loss / consecutive_losses）
     for _ppnl, _pstake, _pacc in pending_risk_partials:
-        release_partial_stake(_pstake, account_id=_pacc or None)
+        # NF-4: 同上，用 trade_account_id 而不是 ``account_id=_pacc or None``
+        release_partial_stake(_pstake, trade_account_id=_pacc)
 
     # 3) 再推送 TG
     for msg in pending_alerts:

@@ -207,14 +207,32 @@ class TestNF1LockedJsonFileIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  admin_secrets._LockShim（NF-5 的代码重复目前还在，仍需独立验证）
+#  NF-5: admin_secrets 不再有自己的 _LockShim，直接共用 common.fcntl
 # ══════════════════════════════════════════════════════════════════
 
-@WINDOWS_ONLY
-class TestNF1AdminSecretsShim:
-    """admin_secrets.py 内嵌的 _LockShim 必须有同样的修复（NF-5 抽公共模块前不能漏）"""
+class TestNF5SharedFcntlShim:
+    """NF-5: fcntl shim 在 common 与 admin_secrets 不再重复 —— 单一真源"""
 
-    def test_admin_secrets_lock_seeks_to_zero(self, tmp_path, monkeypatch):
+    def test_admin_secrets_fcntl_is_common_fcntl(self):
+        """两个模块的 fcntl 必须是同一个对象，避免 NF-1 类修复需要改两处"""
+        import admin_secrets
+        import common
+        assert admin_secrets.fcntl is common.fcntl, (
+            "NF-5 回归：admin_secrets.fcntl 必须复用 common.fcntl，否则同一类修复"
+            "（如 NF-1 lseek(0)）需要在两个文件分别维护，容易遗漏。"
+        )
+
+    def test_admin_secrets_has_no_local_lockshim_class(self):
+        """确认 admin_secrets 不再定义本地 _LockShim 类（去重彻底完成）"""
+        import admin_secrets
+        # 顶层 dict 不应有 _LockShim；fcntl 是从 common 导入的，不是这里定义的类
+        assert '_LockShim' not in vars(admin_secrets), (
+            "NF-5 回归：admin_secrets 仍有本地 _LockShim 定义，未完全去重"
+        )
+
+    @WINDOWS_ONLY
+    def test_admin_secrets_fcntl_inherits_nf1_lseek_fix(self, tmp_path, monkeypatch):
+        """通过 admin_secrets.fcntl 调用也应该走到 common 的 lseek(0) 修复"""
         import admin_secrets
         import msvcrt as real_msvcrt
         positions = []
@@ -227,12 +245,12 @@ class TestNF1AdminSecretsShim:
         lock_path = tmp_path / "admin.lock"
         lock_path.write_bytes(b"Z" * 300)
         with open(lock_path, 'a') as fd:
-            admin_secrets._LockShim.flock(fd, admin_secrets._LockShim.LOCK_EX)
-            admin_secrets._LockShim.flock(fd, admin_secrets._LockShim.LOCK_UN)
+            admin_secrets.fcntl.flock(fd, admin_secrets.fcntl.LOCK_EX)
+            admin_secrets.fcntl.flock(fd, admin_secrets.fcntl.LOCK_UN)
 
         assert len(positions) == 2
         for mode, pos in positions:
             assert pos == 0, (
-                f"NF-1: admin_secrets._LockShim 仍在 EOF 加锁 (pos={pos}, mode={mode})，"
-                f"修复未同步到此模块"
+                f"通过 admin_secrets.fcntl 锁的 byte 不是 0 (pos={pos}, mode={mode})，"
+                f"NF-5 切换到共享 shim 后 NF-1 修复应该自动生效"
             )
