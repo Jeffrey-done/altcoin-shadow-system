@@ -433,6 +433,105 @@ DASHBOARD_SECRET_KEY=<另一个 32 字节随机串>
 - ❌ 不要在公网上跑 HTTP（必须 nginx/caddy 强制 HTTPS，否则登录密码会明文传输）
 - ❌ 不要把 dashboard 绑到 0.0.0.0 公网直接暴露；应该只绑 localhost，反向代理过来
 
+### 反向代理 access log 脱敏（NF-2 必读 runbook）
+
+> ⚠️ **强烈建议**：上线前完成本节配置，否则**反向代理的 access log 会原样记录完整 admin URL，间接泄露 `ADMIN_URL_SECRET`**。
+>
+> 即使你把 dashboard 自身的启动日志做了脱敏，nginx / caddy / Cloudflare 的访问日志仍会把这种请求记下来：
+>
+> ```
+> 1.2.3.4 - - [16/May/2026:10:30] "GET /Kx3mQ8-pLz2yH9rW5vNcE7bDgJ6fSu4AtT1oIkXzM0s/login HTTP/2" 200
+> ```
+>
+> 一旦日志被同步到 ELK / Loki / 云厂商日志服务，secret 就被多名运维 / 工单系统 / 备份系统看到。
+
+#### nginx 配置示例
+
+把 `ADMIN_URL_SECRET` 那一段在写日志前替换成 `/admin-redacted/`：
+
+```nginx
+http {
+    # 1. 把所有形如 /<32+ 字符 base64-url> 的前缀替换为占位符
+    map $request_uri $loggable_uri {
+        "~^/[A-Za-z0-9_-]{32,}/"  "/admin-redacted/";
+        default                    $request_uri;
+    }
+
+    # 2. 自定义 access log 格式，使用 $loggable_uri 而不是 $request_uri
+    log_format secure '$remote_addr - $remote_user [$time_local] '
+                      '"$request_method $loggable_uri $server_protocol" '
+                      '$status $body_bytes_sent '
+                      '"$http_referer" "$http_user_agent"';
+
+    access_log /var/log/nginx/access.log secure;
+
+    # 3. error_log 不会自动脱敏，建议保持 warn 级别避免记下完整 URI
+    error_log  /var/log/nginx/error.log warn;
+
+    server {
+        listen 443 ssl http2;
+        server_name your-domain.example;
+
+        # ... ssl 配置 ...
+
+        location / {
+            proxy_pass http://127.0.0.1:5000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+#### Caddy v2 配置示例
+
+```caddy
+your-domain.example {
+    # 自定义日志，把 admin secret 段替换为占位符
+    log {
+        output file /var/log/caddy/access.log
+        format transform `{request>uri}` {
+            replace `/[A-Za-z0-9_-]{32,}/` `/admin-redacted/`
+        }
+    }
+
+    reverse_proxy 127.0.0.1:5000
+}
+```
+
+> Caddy 老版本不支持 `transform` formatter，可以改用 `filter` + 正则 sub 模块；
+> 也可以选择 `format json` 后用日志收集端（vector / fluentbit）做脱敏。
+
+#### Cloudflare / CDN 用户
+
+Cloudflare 自身保留 7 天访问日志，免费版无法关闭也无法过滤 URI 字段。**不要**把启用了 admin 面板的域名直接暴露到 Cloudflare 后面，应该：
+
+1. Admin 面板单独走一个**未接 CF 的子域名**，DNS 直连到回源服务器（`A` 记录灰色云朵）
+2. 或者 admin 面板走**纯内网/VPN**（推荐）— 比如 Tailscale / WireGuard，反向代理只监听内网网卡
+
+#### 如何验证脱敏生效
+
+```bash
+# 触发一次正常的 admin 访问（替换成你自己的 secret）
+curl -k "https://your-domain.example/Kx3mQ8.../login"
+
+# 查看 access log，应该只看到 /admin-redacted/，不应看到 Kx3mQ8...
+tail -n 5 /var/log/nginx/access.log | grep -E "Kx3mQ8|admin-redacted"
+# 期望输出：…"GET /admin-redacted/ HTTP/2"…  ← 只有占位符
+# 失败输出：…"GET /Kx3mQ8…/login HTTP/2"…   ← 仍然有 secret，说明 map 没生效
+```
+
+#### 已经泄露怎么办
+
+如果检查后发现历史 access log 已经写过 secret：
+
+1. **立刻轮换 secret**：生成新的 `ADMIN_URL_SECRET`、`DASHBOARD_SECRET_KEY`，重启 dashboard
+2. **清理已写入的日志**：本机 `truncate -s 0`，远端日志系统（ELK/Loki/CloudWatch）走管理后台删除
+3. **检查日志备份**：S3 / 备份磁带里的副本一并清理或加密归档
+4. **审计 admin_audit.log**：确认没有未授权的访问记录
+
 ## 技术栈
 
 - **语言**: Python 3.9+
