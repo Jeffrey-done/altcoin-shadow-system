@@ -202,19 +202,35 @@ class TestM4CooldownByDate:
         assert in_cd is True
 
     def test_same_day_non_stop_still_blocks(self, isolated_files, mock_config):
-        """同日非止损平仓 → 仍然 block(防 same-day 二次开仓)"""
+        """同日非止损亏损平仓 → 仍然 block(防 same-day 二次开仓扩大亏损)
+        
+        Fix: 只有亏损平仓才触发同日冷却。盈利平仓（TP2）不阻止同日再开。
+        """
         now = datetime.now(timezone.utc)
-        # 今日较早 TP2 平仓(小时数 >= COOLDOWN_HOURS 也会挡,因为是同一日期)
         earlier_iso = now.replace(hour=0, minute=30, second=0, microsecond=0).isoformat()
-        trades = [{
+
+        # Case 1: 盈利 TP2 平仓 → 不冷却（允许同日再开）
+        trades_profit = [{
             'symbol': 'PEPE/USDT', 'status': 'closed',
             'closed_at': earlier_iso,
             'close_type': 'tp2', 'account_id': '',
+            'tp1_locked_pnl': 5.0, 'pnl': 3.0,  # 盈利
         }]
-        atomic_write_json(isolated_files['trades'], trades)
+        atomic_write_json(isolated_files['trades'], trades_profit)
+        in_cd, reason = risk_control.is_in_cooldown('PEPE/USDT')
+        assert in_cd is False, "盈利 TP2 不应触发同日冷却"
+
+        # Case 2: 亏损非止损平仓（如时间止损后仍亏损）→ 仍然冷却
+        trades_loss = [{
+            'symbol': 'PEPE/USDT', 'status': 'closed',
+            'closed_at': earlier_iso,
+            'close_type': 'tp2', 'account_id': '',
+            'tp1_locked_pnl': 0.0, 'pnl': -5.0,  # 亏损
+        }]
+        atomic_write_json(isolated_files['trades'], trades_loss)
         in_cd, reason = risk_control.is_in_cooldown('PEPE/USDT')
         assert in_cd is True
-        assert '今日已平仓' in reason
+        assert '今日已亏损平仓' in reason
 
     def test_yesterday_non_stop_no_cooldown(self, isolated_files, mock_config):
         """昨日的非止损平仓不再 block"""

@@ -167,8 +167,8 @@ class TestBackfillSlippage:
             exchange='binance',
             tp1_triggered=True,
             tp1_exit_ref_price=94.0,
-            tp1_closed_shares=5.0,
-            tp1_exit_price=94.0,
+            tp1_closed_shares=0.0,      # Not yet filled — dedup guard won't skip
+            tp1_exit_price=0.0,
             tp1_slippage_pct=0.0,
         )
 

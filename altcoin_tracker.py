@@ -411,6 +411,35 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     if trade.exchange == 'shadow':
         return
 
+    # ── 幂等防重：如果另一个进程/线程已经成功发过平仓单，跳过 ──
+    # 场景：realtime_monitor(WS 触发) 和 altcoin_tracker(10分钟定时) 可能在
+    # 短窗口内对同一笔 trade 同时调用 _perform_exchange_close。虽然交易所端
+    # 通过 client_order_id 幂等保护不会重复成交，但多余的 API 调用仍浪费资源
+    # 并产生多余的错误日志。这里通过检查 JSON 文件中的最新状态做前置去重。
+    try:
+        _latest_trades = load_json(TRADES_FILE, [])
+        for _t in _latest_trades:
+            if _t.get('id') != trade.id:
+                continue
+            # full_close: 如果已有 close_order_id，说明平仓单已成功发送
+            if action == 'full_close' and _t.get('close_order_id'):
+                logger.info(
+                    f"⏩ 跳过重复平仓 {trade.symbol}（已有 close_order_id="
+                    f"{_t['close_order_id']}，另一进程已处理）"
+                )
+                return
+            # tp1_partial: 如果 tp1_closed_shares > 0，说明 TP1 半仓已成功发送
+            if action == 'tp1_partial' and (_t.get('tp1_closed_shares') or 0) > 0:
+                logger.info(
+                    f"⏩ 跳过重复 TP1 平仓 {trade.symbol}（tp1_closed_shares="
+                    f"{_t['tp1_closed_shares']}，另一进程已处理）"
+                )
+                return
+            break
+    except Exception as _dedup_err:
+        # 去重检查失败不应阻塞平仓主流程（交易所端幂等键仍是最后防线）
+        logger.debug(f"平仓去重检查异常（非致命）: {_dedup_err}")
+
     from live_executor import execute_close, make_client_order_id
 
     # 幂等键：同一笔交易的同一次动作（tp1 vs close）用稳定 ID

@@ -158,6 +158,12 @@ def calculate_signal_score(
     heat_score = max(0, min(25, heat_score))
 
     # ── 总分（含 OKX 交叉验证加分 + 量价背离加分）──
+    # 设计说明：4 个基础维度各 0~25 分（总和上限 100）。
+    # cross_validate_bonus（0~8）和 vol_divergence_bonus（0~8）是"额外奖励"，
+    # 用于在多所数据一致或量价背离确认时把原本 B 级信号提升到 A 级。
+    # 原始总和可能超过 100（最高 116），但下面 min(100, ...) 确保最终评分
+    # 永远在 [0, 100] 范围内。这是有意设计：bonus 的作用是"把接近阈值的
+    # 信号推过线"，而非无限放大评分。
     total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus + vol_divergence_bonus)
     total_score = max(0, min(100, total_score))
 

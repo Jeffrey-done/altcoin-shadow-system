@@ -217,13 +217,18 @@ def cmd_candidates() -> str:
 
 def cmd_risk() -> str:
     """风控状态"""
-    risk = load_json(RISK_FILE, {})
+    # Fix: 使用 risk_control.load_risk_state() 而非直接 load_json()，
+    # 确保日期翻转时自动重置 daily_loss / daily_trades_opened。
+    # 否则如果 TG bot 是新一天第一个读取 risk_state 的模块，
+    # 用户会看到昨天的累计数据。
+    from risk_control import load_risk_state
+    state = load_risk_state()
 
-    daily_loss = risk.get('daily_loss', 0)
-    trades_opened = risk.get('daily_trades_opened', 0)
-    consec = risk.get('consecutive_losses', 0)
-    paused = risk.get('paused_until')
-    stake = risk.get('total_open_stake', 0)
+    daily_loss = state.daily_loss
+    trades_opened = state.daily_trades_opened
+    consec = state.consecutive_losses
+    paused = state.paused_until
+    stake = state.total_open_stake
 
     status = "🟢 正常"
     if paused:

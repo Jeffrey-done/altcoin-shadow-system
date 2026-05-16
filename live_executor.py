@@ -102,13 +102,24 @@ def _amount_to_precision(exchange, symbol: str, amount: float) -> float:
     """
     用 ccxt 的 amount_to_precision 裁剪下单数量到交易所 stepSize。
     裁剪后为 0 的返回 0（上层应拒单）。失败时返回原值（fallback）。
+
+    Fix: 如果首次调用失败（通常因为 exchange.markets 尚未加载），
+    自动调 load_markets() 后重试一次。这确保即使 get_live_exchange()
+    返回的实例还没加载过市场列表，精度裁剪仍能正常工作。
     """
     try:
         precise = float(exchange.amount_to_precision(symbol, amount))
         return precise if precise > 0 else 0.0
     except Exception as e:
-        logger.debug(f"amount_to_precision 失败 ({symbol}, {amount}): {e}")
-        return amount
+        logger.debug(f"amount_to_precision 首次失败 ({symbol}, {amount}): {e}，尝试 load_markets")
+        # 可能是 markets 未加载导致的 KeyError / NoneType，尝试加载后重试
+        try:
+            exchange.load_markets()
+            precise = float(exchange.amount_to_precision(symbol, amount))
+            return precise if precise > 0 else 0.0
+        except Exception as e2:
+            logger.debug(f"amount_to_precision 重试仍失败 ({symbol}, {amount}): {e2}，返回原值")
+            return amount
 
 
 def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
