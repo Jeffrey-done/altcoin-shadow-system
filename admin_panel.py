@@ -717,15 +717,26 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if not kwargs:
             return jsonify({'error': '没有要更新的字段'}), 400
 
+        # NF2-3: Binance 不需要 passphrase。如果调用方只传了 passphrase，
+        # 不能静默吞掉后回 'ok' —— 必须明确告知用户该字段不适用。
+        dropped_for_binance = False
         if exchange == 'binance' and 'passphrase' in kwargs:
             del kwargs['passphrase']
+            dropped_for_binance = True
+
+        if not kwargs:
+            # 删除 passphrase 后没字段可更新 → 必然是 binance + passphrase-only 的情况
+            return jsonify({
+                'error': 'Binance 不使用 passphrase 字段，请填写 api_key / secret 中至少一项'
+            }), 400
 
         try:
             admin_secrets.set_exchange_credentials(exchange, **kwargs)
         except Exception as e:
             return jsonify({'error': str(e)}), 400
 
-        _audit('credentials.update', exchange=exchange, fields=list(kwargs.keys()))
+        _audit('credentials.update', exchange=exchange, fields=list(kwargs.keys()),
+               dropped_passphrase_for_binance=dropped_for_binance)
         try:
             from common import send_tg
             send_tg(
@@ -736,7 +747,11 @@ def create_blueprint(url_secret: str) -> Blueprint:
         except Exception:
             pass
 
-        return jsonify({'ok': True})
+        # 提示：如果调用方提交的 passphrase 被丢弃，告诉前端用户
+        resp = {'ok': True, 'updated_fields': list(kwargs.keys())}
+        if dropped_for_binance:
+            resp['warning'] = 'passphrase 字段对 Binance 不适用，已忽略'
+        return jsonify(resp)
 
     @bp.route('/api/credentials/<exchange>', methods=['DELETE'])
     @_require_login

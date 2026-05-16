@@ -23,6 +23,13 @@ admin panel "任务监控" tab + ``diagnose_timeout.py`` 都从这里读。
 滚动策略:
     每次写入后,若文件 > 100 KB 才检查行数;超过 1000 行时
     截断为最后 500 行。这样 99% 的写入路径不做磁盘读。
+
+NF2-5 (并发安全):
+    record() 与 _maybe_truncate() 共用 task_metrics.jsonl.lock 排他锁。
+    Linux 上 < PIPE_BUF 的 append 虽 POSIX 原子,但 Windows 上多进程
+    append 不保证;truncate 与 append 之间也存在窗口竞争。统一加锁
+    把 append + 行数检查 + 可选 truncate 串行化,与项目其他模块
+    (LockedJsonFile / _locked_secrets) 保持一致。
 """
 
 from __future__ import annotations
@@ -31,12 +38,14 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from typing import List, Optional
 
 logger = logging.getLogger("task_metrics")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 METRICS_FILE = os.path.join(SCRIPT_DIR, 'task_metrics.jsonl')
+_METRICS_LOCK = METRICS_FILE + '.lock'
 
 # 滚动参数
 _TRUNCATE_KEEP = 500           # 截断时保留最后 N 行
@@ -45,11 +54,39 @@ _TRUNCATE_CHECK_BYTES = 100 * 1024  # 文件 < 100KB 直接跳过 truncate 检�
 
 
 # ══════════════════════════════════════════════════════════════════
+#  跨平台文件锁（与 common._LockShim / NF-1 lseek(0) 修复对齐）
+# ══════════════════════════════════════════════════════════════════
+
+@contextmanager
+def _locked_metrics(_path: Optional[str] = None):
+    """
+    NF2-5: 排他锁包裹 metrics 文件的 append + truncate 临界区。
+
+    复用 common.fcntl（含 NF-1 Windows lseek(0) 修复），保证多进程
+    append 不交错、truncate 不会让其他 writer 写到孤儿 inode。
+    """
+    from common import fcntl as _fcntl
+    lock_path = (_path + '.lock') if _path else _METRICS_LOCK
+    lock_fd = open(lock_path, 'a')
+    try:
+        _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+
+
+# ══════════════════════════════════════════════════════════════════
 #  写入
 # ══════════════════════════════════════════════════════════════════
 
 def record(event: dict, *, _path: Optional[str] = None) -> None:
     """追加一条任务事件。失败不抛(metrics 永远不能影响主流程)。
+
+    NF2-5: append + 行数检查 + truncate 串行化在 _locked_metrics() 临界区内,
+    避免 Windows 多进程 append 交错或与 truncate 之间的孤儿 inode 写入问题。
 
     Args:
         event: 事件 dict;``ts`` 字段如果缺失会自动补当前时间。
@@ -61,21 +98,21 @@ def record(event: dict, *, _path: Optional[str] = None) -> None:
         ev.setdefault('ts', time.time())
         line = json.dumps(ev, ensure_ascii=False, default=str) + '\n'
 
-        # append 是 POSIX 上 < PIPE_BUF (4096) 的小写入是原子的;
-        # 我们的事件 < 500 字节,多进程并发 append 也不会撕裂。
-        with open(path, 'a', encoding='utf-8') as f:
-            f.write(line)
+        with _locked_metrics(_path):
+            # 加锁后:append 与 truncate 都在同一把锁内
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write(line)
+
+            # 周期性 truncate(成功写入后才检查,避免每次都 stat)
+            try:
+                if os.path.getsize(path) >= _TRUNCATE_CHECK_BYTES:
+                    _maybe_truncate(path)
+            except OSError:
+                pass
     except Exception as e:
         # metrics 失败不应影响 scheduler;只记 logger
         logger.warning(f"task_metrics.record 失败: {e}")
         return
-
-    # 周期性 truncate(成功写入后才检查,避免每次都 stat)
-    try:
-        if os.path.getsize(path) >= _TRUNCATE_CHECK_BYTES:
-            _maybe_truncate(path)
-    except OSError:
-        pass
 
 
 def _maybe_truncate(path: str) -> None:
