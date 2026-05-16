@@ -726,7 +726,10 @@ def check_candidates():
             continue
 
         # ── 多交易所价格确认 ──
-        if config.OKX_CROSS_VALIDATE_ENABLED:
+        # H10: 先用 okx_has_swap 门禁（同 funding/OI 检查），避免对 OKX 上不存在
+        # 的币（如 CGPT）发起 fetch_ticker 调用 → 触发 ccxt 内部 load_markets +
+        # 重试，导致子进程在 600s 任务超时被父进程强杀
+        if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
             price_cv = cross_validate_price(c.symbol, price)
             if price_cv['available'] and not price_cv['pass']:
                 logger.warning(f"  ⚠️ 价格偏差过大 {c.symbol}: {price_cv['reason']}")

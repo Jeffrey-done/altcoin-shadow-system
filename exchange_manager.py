@@ -44,7 +44,11 @@ def get_binance(authenticated: bool = False) -> ccxt.binance:
     global _binance_instance
     if not authenticated:
         if _binance_instance is None:
-            _binance_instance = ccxt.binance({'enableRateLimit': True})
+            # H10: 显式 timeout=8s，避免 OKX/Binance 抽风时子进程卡到父超时（600s）
+            _binance_instance = ccxt.binance({
+                'enableRateLimit': True,
+                'timeout': 8000,
+            })
         return _binance_instance
 
     # 认证版本：与 live_executor 统一凭证解析逻辑
@@ -66,6 +70,7 @@ def get_binance(authenticated: bool = False) -> ccxt.binance:
         'apiKey': api_key,
         'secret': secret,
         'enableRateLimit': True,
+        'timeout': 8000,
         'options': {'defaultType': 'future'},
     })
 
@@ -82,7 +87,12 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
     if not authenticated:
         if _okx_instance is None:
             try:
-                _okx_instance = ccxt.okx({'enableRateLimit': True})
+                # H10: 显式 timeout=8s，避免 OKX 抽风时 fetch_ticker/load_markets
+                # 卡在 urllib3 socket read，导致子进程被父超时 600s 强杀
+                _okx_instance = ccxt.okx({
+                    'enableRateLimit': True,
+                    'timeout': 8000,
+                })
             except Exception as e:
                 logger.warning(f"OKX 初始化失败: {e}")
                 return None
@@ -111,6 +121,7 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
             'secret': secret,
             'password': passphrase,
             'enableRateLimit': True,
+            'timeout': 8000,
         })
     except Exception as e:
         logger.warning(f"OKX 认证实例创建失败: {e}")
@@ -538,6 +549,18 @@ def cross_validate_price(symbol: str, binance_price: float) -> dict:
 
     if not config.OKX_ENABLED:
         result['reason'] = 'OKX 未启用'
+        return result
+
+    # H10: 防御性门禁——OKX 没有该币种合约时直接返回，
+    # 不浪费一次（可能卡死的）网络调用。调用方应当先用 okx_has_swap 过滤，
+    # 这里是兜底，避免任何调用方漏掉门禁后又把整个子进程拖死。
+    try:
+        if not okx_has_swap(symbol):
+            result['reason'] = 'OKX 无该合约'
+            return result
+    except Exception as e:
+        result['reason'] = f'OKX 合约列表不可用: {type(e).__name__}: {e}'
+        logger.warning(f"cross_validate_price 合约列表查询失败 ({symbol}): {e}")
         return result
 
     try:
