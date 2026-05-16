@@ -556,11 +556,164 @@ def trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h) -> 
 
 
 # ══════════════════════════════════════════════════════════════════
+#  H11: 单候选评估（并发友好；纯只读，不改 candidates / trades）
+# ══════════════════════════════════════════════════════════════════
+
+def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
+                       per_candidate_timeout_sec: float):
+    """
+    评估单个候选：拉 4h RSI / 4h RSI 峰值 / 弃盘检测 / 量价背离 / OKX 交叉验证 / 评分。
+
+    设计：
+      - 纯只读（不改 c.triggered / 不写 trades）
+      - 出错 / 超时返回 ('skip', reason)，由上层串行阶段决定是否记录
+      - 早退优化：4h RSI 还在超买阈值（>= H4_RSI_ENTER）就直接跳，
+        因为做空策略只关心"从超买回落"
+
+    Returns:
+      ('skip', reason: str)         — 不触发，跳过
+      ('cooldown', reason: str)     — 冷却中
+      ('trigger', payload: dict)    — 命中触发，payload 含开仓所需所有字段
+
+    payload 字段:
+      {
+        'rsi_4h': float, 'rsi_4h_peak': float, 'drop': float,
+        'trigger_4h': bool, 'trigger_abandon': bool,
+        'abandon': dict, 'vol_divergence': dict,
+        'cross_validate_bonus': int, 'okx_cv_info': str,
+        'score_result': dict, 'eval_elapsed_sec': float,
+      }
+    """
+    import time as _time
+    t0 = _time.monotonic()
+
+    # 已触发 / 已持仓
+    if c.triggered or c.symbol in open_symbols:
+        return ('skip', 'already_triggered_or_held')
+
+    # 冷却期
+    in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
+    if in_cooldown:
+        return ('cooldown', cooldown_reason)
+
+    def _expired() -> bool:
+        return (_time.monotonic() - t0) > per_candidate_timeout_sec
+
+    # ── 4h RSI ──
+    rsi_4h = get_rsi(exchange, c.symbol, '4h', limit=50)
+    if _expired():
+        return ('skip', f'timeout_after_rsi (>{per_candidate_timeout_sec:.0f}s)')
+
+    # H11 早退：4h RSI 还在超买阈值之上，做空触发条件
+    # （rsi_4h < H4_RSI_ENTER 且 drop >= H4_RSI_DROP）一定不满足，
+    # 而 abandon 仅在 1H 跌幅大时触发——4h RSI 仍超买的概率不高，
+    # 所以这里早退极大概率是对的，只省一次 fetch_ohlcv（peak） + abandon 的两次调用
+    if rsi_4h >= config.H4_RSI_ENTER:
+        return ('skip', f'4h RSI {rsi_4h:.1f} 仍 >= {config.H4_RSI_ENTER}（未回落）')
+
+    rsi_4h_peak = get_rsi_peak(exchange, c.symbol, '4h')
+    if _expired():
+        return ('skip', f'timeout_after_peak (>{per_candidate_timeout_sec:.0f}s)')
+
+    drop = rsi_4h_peak - rsi_4h
+    trigger_4h = drop >= config.H4_RSI_DROP
+
+    # 弃盘检测（始终跑，因为可能 4h RSI 早退条件下还是被 abandon 触发——
+    # 但因为上面已经 early-return rsi_4h >= H4_RSI_ENTER 了，这里只需考虑
+    # rsi_4h < H4_RSI_ENTER 但 drop 不够的情况）
+    abandon = detect_abandon_signal(exchange, c.symbol)
+    if _expired():
+        return ('skip', f'timeout_after_abandon (>{per_candidate_timeout_sec:.0f}s)')
+    trigger_abandon = abandon.get("signal", False)
+
+    if not (trigger_4h or trigger_abandon):
+        # 把评估结果挂回 c（线程安全：每个 c 由自己线程独占处理）
+        c.rsi_4h = rsi_4h
+        c.rsi_4h_peak = rsi_4h_peak
+        return ('skip', f'no_trigger (drop={drop:.1f}, abandon={abandon.get("reason","")})')
+
+    # ── 量价背离 + OKX 交叉验证 + 评分 ──
+    vol_divergence = detect_volume_divergence(exchange, c.symbol)
+    if _expired():
+        return ('skip', f'timeout_after_voldiv (>{per_candidate_timeout_sec:.0f}s)')
+
+    abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
+
+    cross_validate_bonus = 0
+    okx_cv_info = ""
+    if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
+        funding_cv = cross_validate_funding(c.symbol, c.funding_rate)
+        oi_cv = cross_validate_oi(c.symbol, c.oi_change / 100)
+        if funding_cv.get("signal_boost"):
+            cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+            okx_cv_info += "费率✓ "
+        if oi_cv.get("signal_boost"):
+            cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
+            okx_cv_info += "OI✓"
+        if _expired():
+            return ('skip', f'timeout_after_okx_cv (>{per_candidate_timeout_sec:.0f}s)')
+
+    score_result = calculate_signal_score(
+        rsi_1d=c.rsi_1d,
+        rsi_4h=rsi_4h,
+        rsi_4h_peak=rsi_4h_peak,
+        pct_24h=c.pct24h,
+        oi_change=c.oi_change,
+        funding_rate=c.funding_rate,
+        yao_score=c.yao_score,
+        trigger_type='abandon' if trigger_abandon else '4h_rsi',
+        abandon_oi_declining=abandon_oi,
+        btc_24h_pct=btc_pct,
+        cross_validate_bonus=cross_validate_bonus,
+        vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
+    )
+
+    if score_result["grade"] == "SKIP":
+        c.rsi_4h = rsi_4h
+        c.rsi_4h_peak = rsi_4h_peak
+        return ('skip', f'low_score {score_result["score"]} < {config.SCORE_SKIP_THRESHOLD}')
+
+    elapsed = _time.monotonic() - t0
+    return ('trigger', {
+        'rsi_4h': rsi_4h,
+        'rsi_4h_peak': rsi_4h_peak,
+        'drop': drop,
+        'trigger_4h': trigger_4h,
+        'trigger_abandon': trigger_abandon,
+        'abandon': abandon,
+        'vol_divergence': vol_divergence,
+        'cross_validate_bonus': cross_validate_bonus,
+        'okx_cv_info': okx_cv_info,
+        'score_result': score_result,
+        'eval_elapsed_sec': round(elapsed, 2),
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
 #  第二阶段：4h 确认（每1小时）
 # ══════════════════════════════════════════════════════════════════
 
 def check_candidates():
-    """检查候选池，4h RSI 回落 或 弃盘点 触发时自动开仓"""
+    """检查候选池，4h RSI 回落 或 弃盘点 触发时自动开仓
+
+    H11 改造（2025-11 修复 600s 超时）：
+      - 评估阶段（拉 RSI / abandon / OKX 交叉）改并发，N 路线程池
+      - 整轮预算 CHECK_CANDIDATES_BUDGET_SEC（默认 480s），到点优雅退出
+      - 单候选硬超时 CHECK_CANDIDATES_PER_CANDIDATE_SEC（默认 30s），超时跳过
+      - 早退优化：4h RSI 仍超买（>= H4_RSI_ENTER）直接跳，省 3 次 API
+      - 命中触发后才进入串行的开仓阶段（保留原有锁/路由/journal 逻辑）
+    """
+    import time as _time
+    from concurrent.futures import (
+        ThreadPoolExecutor, as_completed,
+        TimeoutError as _futures_TimeoutError,
+    )
+
+    _round_t0 = _time.monotonic()
+    _budget = config.CHECK_CANDIDATES_BUDGET_SEC
+    _per_cand_timeout = config.CHECK_CANDIDATES_PER_CANDIDATE_SEC
+    _max_workers = max(1, config.CHECK_CANDIDATES_PARALLELISM)
+
     candidates_list = load_json(CANDIDATES_FILE, [])
     if not candidates_list:
         logger.info("候选池为空，跳过")
@@ -577,7 +730,10 @@ def check_candidates():
     # H10: 走 exchange_manager 单例，强制带 timeout
     from exchange_manager import get_binance
     exchange = get_binance()
-    logger.info(f"=== 检查候选池（{len(candidates)}个）| BTC 24h={btc_pct:+.1f}% ===")
+    logger.info(
+        f"=== 检查候选池（{len(candidates)}个）| BTC 24h={btc_pct:+.1f}% | "
+        f"预算={_budget}s 单候选超时={_per_cand_timeout}s 并发={_max_workers} ==="
+    )
 
     # 仅用于"是否已有持仓"的预过滤（真实开仓时会在锁内再校验一次，防竞态）
     # M3: 把 close_retry_pending=True 的 closed 交易视同 open
@@ -589,583 +745,647 @@ def check_candidates():
 
     triggered_any = False
 
-    for c in candidates:
-        if c.triggered or c.symbol in open_symbols:
-            continue
+    # ══════════════════════════════════════════════════════════════════
+    #  H11 阶段一：分批并发评估候选（纯只读，可多线程）
+    # ══════════════════════════════════════════════════════════════════
+    #  分批的目的：ThreadPoolExecutor.__exit__ 默认 wait=True，预算到期
+    #  没法立刻 break。分批后每批之间检查预算，最多浪费一批 chunk 的时间。
+    #  另外 fut.result(timeout=N) 给每个 future 设硬上限，超时即视为失败
+    #  跳到下一个；shutdown(wait=False) 让卡住的 ccxt 线程作为 daemon
+    #  在后台被父进程统一清理（multiprocessing.Process daemon=True）。
+    #
+    #  关键：worker 线程必须是 daemon，否则子进程主线程退出时 Python
+    #  会等所有非 daemon 线程结束 → 子进程根本不会退出，反而被父进程
+    #  600s 强杀。下面 _make_daemon_executor 通过 threading.Thread 的
+    #  默认 daemon 状态控制（继承当前线程，子进程主线程是 daemon=False，
+    #  所以 worker 默认也是 daemon=False，必须显式 patch）。
+    # ══════════════════════════════════════════════════════════════════
 
-        # ── 冷却期检查 ──
-        in_cooldown, cooldown_reason = is_in_cooldown(c.symbol)
-        if in_cooldown:
-            logger.info(f"  ❄️ 冷却中 {c.symbol}: {cooldown_reason}")
-            continue
-
-        # 获取 4h RSI
-        rsi_4h = get_rsi(exchange, c.symbol, '4h', limit=50)
-        rsi_4h_peak = get_rsi_peak(exchange, c.symbol, '4h')
-        c.rsi_4h = rsi_4h
-        c.rsi_4h_peak = rsi_4h_peak
-
-        drop = rsi_4h_peak - rsi_4h
-        logger.info(
-            f"  {c.symbol}: 日线RSI={c.rsi_1d} | 4h RSI={rsi_4h} | "
-            f"峰值={rsi_4h_peak:.1f} | 回落={drop:.1f}"
+    def _make_daemon_executor(max_workers: int) -> ThreadPoolExecutor:
+        """创建一个所有 worker 都是 daemon 的 ThreadPoolExecutor。
+        这样 main thread 退出时，没跑完的 worker 不会阻塞进程退出。"""
+        executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix='cand-eval',
         )
-
-        trigger_4h = rsi_4h < config.H4_RSI_ENTER and drop >= config.H4_RSI_DROP
-        abandon = detect_abandon_signal(exchange, c.symbol)
-        trigger_abandon = abandon.get("signal", False)
-
-        if not (trigger_4h or trigger_abandon):
-            time.sleep(0.1)
-            continue
-
-        # ── 量价背离检查（Volume-Price Divergence）──
-        vol_divergence = detect_volume_divergence(exchange, c.symbol)
-
-        # ── 信号评分 ──
-        abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
-
-        # OKX 交叉验证加分
-        cross_validate_bonus = 0
-        okx_cv_info = ""
-        if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
-            funding_cv = cross_validate_funding(c.symbol, c.funding_rate)
-            oi_cv = cross_validate_oi(c.symbol, c.oi_change / 100)  # oi_change 在 candidate 是百分比
-
-            if funding_cv.get("signal_boost"):
-                cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
-                okx_cv_info += "费率✓ "
-            if oi_cv.get("signal_boost"):
-                cross_validate_bonus += config.OKX_CROSS_VALIDATE_BONUS // 2
-                okx_cv_info += "OI✓"
-
-        score_result = calculate_signal_score(
-            rsi_1d=c.rsi_1d,
-            rsi_4h=rsi_4h,
-            rsi_4h_peak=rsi_4h_peak,
-            pct_24h=c.pct24h,
-            oi_change=c.oi_change,
-            funding_rate=c.funding_rate,
-            yao_score=c.yao_score,
-            trigger_type='abandon' if trigger_abandon else '4h_rsi',
-            abandon_oi_declining=abandon_oi,
-            btc_24h_pct=btc_pct,
-            cross_validate_bonus=cross_validate_bonus,
-            vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
-        )
-
-        # 评分太低跳过
-        if score_result["grade"] == "SKIP":
-            logger.info(f"  ⏭️ 跳过 {c.symbol}: 评分{score_result['score']}分 < {config.SCORE_SKIP_THRESHOLD}分")
-            time.sleep(0.1)
-            continue
-
-        # 根据评分决定仓位（结合自动复利）
-        base_stake = get_compound_stake()
-        if score_result["grade"] == "A":
-            actual_stake = base_stake
-        else:  # grade B
-            actual_stake = round(base_stake * 0.5)
-
-        # ── 风控检查（全局预检）──
-        # H8: 用每个账户"实际将占用的保证金总额"去做 can_open_trade 检查，
-        # 避免 PRIMARY_EXCHANGE='both' 模式下用原始 stake 误判为超额度。
-        #   - 普通实盘账户：占用 = sum(route_stake for route in routes)
-        #     （'both' 模式下 stake 各半，总和仍然 = actual_stake；
-        #      但 can_open_trade 检查的是"持仓占比"，按实际路由 stake 是对的）
-        #   - shadow 账户：占用 = actual_stake（纸上账户独立额度）
-        # 为了避免"活跃账户正在暂停"时把整个信号丢掉，改为
-        # "只要任一已配置账户允许即继续"。精确检查仍在并行循环内做。
-        # v5.1: 影子账户也算入预检（它也要同步开单）
-        # v5.2: 尊重 trading_enabled 开关（关闭的账户不进预检，也不会进下面的开仓循环）
-        try:
-            from admin_secrets import (
-                get_all_trading_accounts as _get_trading_accts,
-                SHADOW_ACCOUNT_ID as _SHADOW_ID,
-                list_accounts as _list_all,
-                is_account_trading_enabled as _is_enabled,
-            )
-            # get_all_trading_accounts 已经过滤了 trading_enabled=False 的账户
-            _trading_accts = _get_trading_accts() or []
-            # 把影子账户加到预检列表（如果存在且开关开启）
-            if any(a.get('id') == _SHADOW_ID for a in _list_all()) and _is_enabled(_SHADOW_ID):
-                _trading_accts = [{'id': _SHADOW_ID, 'is_shadow': True}] + _trading_accts
-            if not _trading_accts:
-                _trading_accts = [{'id': ''}]
-        except Exception:
-            _trading_accts = [{'id': ''}]
-
-        # 提前解析实盘路由（同 actual_stake 下各账户的 stake 总和）
-        _routes_preview = _resolve_exchange_routes(c.symbol, actual_stake)
-        # 实盘账户会占用 live_routes 的总保证金；shadow 账户占用 actual_stake
-        _live_route_stake_sum = sum(
-            s for ex, s in _routes_preview if ex != 'shadow'
-        ) or actual_stake
-        _shadow_route_stake = next(
-            (s for ex, s in _routes_preview if ex == 'shadow'), actual_stake
-        )
-
-        any_allowed = False
-        first_reason = ""
-        for _acc in _trading_accts:
-            _acc_id = _acc.get('id') or None
-            _is_shadow_acc = _acc.get('is_shadow', False)
-            # 实盘账户走实盘路由总和；影子账户走影子路由
-            _acc_check_stake = _shadow_route_stake if _is_shadow_acc else _live_route_stake_sum
-            _ok, _rsn = can_open_trade(_acc_check_stake, account_id=_acc_id)
-            if _ok:
-                any_allowed = True
-                break
-            if not first_reason:
-                first_reason = _rsn
-        if not any_allowed:
-            logger.warning(f"  🚫 所有账户都拒绝 {c.symbol}: {first_reason}")
-            continue
-
-        # ── 触发开仓 ──
-        try:
-            price = exchange.fetch_ticker(c.symbol)['last']
-        except Exception as e:
-            logger.error(f"获取最新价失败 ({c.symbol}): {e}")
-            continue
-
-        # ── 多交易所价格确认 ──
-        # H10: 先用 okx_has_swap 门禁（同 funding/OI 检查），避免对 OKX 上不存在
-        # 的币（如 CGPT）发起 fetch_ticker 调用 → 触发 ccxt 内部 load_markets +
-        # 重试，导致子进程在 600s 任务超时被父进程强杀
-        if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
-            price_cv = cross_validate_price(c.symbol, price)
-            if price_cv['available'] and not price_cv['pass']:
-                logger.warning(f"  ⚠️ 价格偏差过大 {c.symbol}: {price_cv['reason']}")
-                c.triggered = False
-                continue
-
-        # ── 实盘路由：决定这次信号要在哪些交易所开仓 ──
-        # 返回 [(exchange_name, stake_portion), ...]
-        # - 'shadow' 表示纯纸上模拟（两个 LIVE_MODE 都关）
-        # - 单所实盘：一个条目，stake_portion = actual_stake
-        # - both 模式：两个条目，stake 各半，分散交易对手风险
-        routes = _resolve_exchange_routes(c.symbol, actual_stake)
-        if not routes:
-            logger.warning(f"  ⚠️ 无可用交易所路由 {c.symbol}，跳过")
-            continue
-
-        # ── 多账户同步开仓 v5.0 ──
-        # 获取所有配置了凭证的交易账户，为每个账户并行执行开仓
-        from admin_secrets import get_all_trading_accounts, SHADOW_ACCOUNT_ID, list_accounts
-        trading_accounts = get_all_trading_accounts()
-
-        # v5.1: 影子账户（系统）也参与每次开仓，但强制走 ('shadow', stake) 路由：
-        # - 不真实下单、不占用交易所额度
-        # - 仍占用影子账户自己的风控额度（daily_trades / daily_loss / 连损）
-        # - 单独封装成 shadow_account 条目，与实盘账户并列处理
-        # v5.2: 影子账户也尊重 trading_enabled 开关（默认 True，关闭后跳过）
-        shadow_account = None
-        try:
-            from admin_secrets import is_account_trading_enabled
-            for _acc in list_accounts():
-                if _acc.get('id') == SHADOW_ACCOUNT_ID:
-                    if not is_account_trading_enabled(SHADOW_ACCOUNT_ID):
-                        logger.info("  ⏩ 影子账户交易开关已关闭，跳过同步")
-                        break
-                    shadow_account = {
-                        'id': SHADOW_ACCOUNT_ID,
-                        'name': _acc.get('name', '影子账户'),
-                        'exchanges': {},
-                        'force_shadow_route': True,  # 只走 shadow 路由
-                    }
-                    break
-        except Exception as _e:
-            logger.debug(f"读取影子账户失败，跳过同步: {_e}")
-
-        # 合并：影子账户 + 所有配置了凭证的实盘账户
-        all_accounts = []
-        if shadow_account is not None:
-            all_accounts.append(shadow_account)
-        all_accounts.extend(trading_accounts)
-
-        # 如果没有配置任何交易账户（也没影子账户，理论上不会发生）
-        # 回退到"默认空账户"的纸上模式，兼容旧单账户部署
-        if not all_accounts:
-            all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}, 'force_shadow_route': True}]
-
-        # ── 锁内第一阶段：去重检查 + 每账户风控检查，构建执行任务 ──
-        # 只在锁内做这些（快速内存操作），把耗时的网络下单移到锁外，
-        # 避免阻塞 realtime_monitor / tracker 的止损平仓。
-        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw_check, save_check):
-            # 按 (symbol, account_id) 维度去重，这样同一币种在"影子账户"和
-            # "实盘账户"上可以各自持一笔 —— 它们本就是独立账户。
-            # M3: 把 close_retry_pending=True 的 closed 交易视同 open
-            # （交易所仓位尚未真正平掉，仍有敞口，不能再在同币开仓）
-            already_open_per_account = {
-                (t.get('symbol'), t.get('account_id') or '')
-                for t in trades_raw_check
-                if t.get('status') == 'open' or t.get('close_retry_pending')
-            }
-
-            # 构建执行任务：每个账户 × 每个路由（每账户独立风控）
-            execution_tasks = []
-            for account in all_accounts:
-                acc_id = account['id']
-                acc_key = (c.symbol, acc_id or '')
-                if acc_key in already_open_per_account:
-                    logger.info(
-                        f"  ⏩ 跳过账户 {account['name']}({acc_id})：已持有 {c.symbol}"
-                    )
-                    continue
-
-                # 影子账户强制走 shadow 路由；实盘账户按 _resolve_exchange_routes 的结果走
-                if account.get('force_shadow_route'):
-                    acc_routes = [('shadow', actual_stake)]
-                else:
-                    acc_routes = routes
-
-                # H8: 用该账户将占用的真实保证金总额去做风控检查，不是用原始 stake
-                # （both 模式下 acc_stake 可能只是 actual_stake 的一半，不应误拒）
-                acc_stake_total = sum(s for _ex, s in acc_routes)
-                acc_allowed, acc_risk_reason = can_open_trade(
-                    acc_stake_total, account_id=acc_id if acc_id else None
-                )
-                if not acc_allowed:
-                    logger.info(
-                        f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
-                    )
-                    continue
-
-                for route_exchange, route_stake in acc_routes:
-                    execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
-            # 出锁 — 此后不阻塞其他模块
-
-        if not execution_tasks:
-            c.triggered = False
-            continue
-
-        # ── 锁外第二阶段：并行执行下单（网络 I/O，耗时 200ms~5s）──
-        from live_executor import execute_open, make_client_order_id
-        from common import (
-            journal_add_pending, journal_mark_confirmed, journal_mark_failed,
-        )
-
-        # 提前为每个任务生成 client_order_id（journal + trade + 交易所三端一致）
-        def _prep_task(task_args):
-            acc_id, acc_name, r_exchange, r_stake = task_args
-            coid = make_client_order_id('sho', c.symbol, r_exchange)
-            return (acc_id, acc_name, r_exchange, r_stake, coid)
-
-        prepared_tasks = [_prep_task(t) for t in execution_tasks]
-
-        # 下单前：把所有非 shadow 的任务写入 journal（pending）
-        # 就算下一步并行下单后进程崩溃，下次启动也能从 journal 还原
-        for acc_id, _acc_name, r_exchange, r_stake, coid in prepared_tasks:
-            if r_exchange == 'shadow':
-                continue
-            lev = config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE
-            try:
-                journal_add_pending(
-                    client_order_id=coid, exchange=r_exchange,
-                    account_id=acc_id or '', symbol=c.symbol, direction='SHORT',
-                    stake=r_stake, leverage=lev,
-                )
-            except Exception as _je:
-                # journal 写入失败不应阻塞下单，只记录；极端情况下退化为无 journal
-                logger.error(f"journal pending 写入失败（非致命）: {_je}")
-
-        def _execute_one(task_args):
-            """单个账户单个路由的下单任务"""
-            acc_id, acc_name, r_exchange, r_stake, coid = task_args
-
-            if r_exchange == 'shadow':
-                return (acc_id, acc_name, r_exchange, r_stake, coid,
-                        {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""})
-
-            result = execute_open(
-                c.symbol, 'SHORT', r_stake,
-                exchange_name=r_exchange,
-                leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
-                client_order_id=coid,
-                account_id=acc_id if acc_id else None,
-            )
-            return (acc_id, acc_name, r_exchange, r_stake, coid, result)
-
-        # 毫秒级并行下单（锁已释放，不会阻塞其他模块）
-        with ThreadPoolExecutor(max_workers=max(len(prepared_tasks), 4)) as executor:
-            futures = [executor.submit(_execute_one, task) for task in prepared_tasks]
-            results = [f.result() for f in as_completed(futures)]
-
-        # ── 锁内第三阶段：把成功的下单结果写入 TRADES_FILE ──
-        opened_trades = []     # [(trade, entry_price, route_exchange, route_stake)]
-        # H5：记录按 symbol+account 分组的成功/失败路由，用于 both 模式回滚
-        routes_by_key: dict = {}   # (symbol, account_id) -> {'success': [...], 'failed': [...]}
-
-        with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
-            opened_any = False
-            for acc_id, acc_name, route_exchange, route_stake, coid, live_result in results:
-                key = (c.symbol, acc_id or '')
-                bucket = routes_by_key.setdefault(key, {'success': [], 'failed': []})
-
-                if not live_result["success"]:
-                    logger.error(
-                        f"  ❌ [{acc_name}] {route_exchange} 下单失败 {c.symbol}: {live_result['error']}"
-                    )
-                    # 标记 journal 为 failed（保留便于审计）
-                    if route_exchange != 'shadow':
-                        try:
-                            journal_mark_failed(coid, live_result['error'])
-                        except Exception as _je:
-                            logger.debug(f"journal mark_failed 失败: {_je}")
-                    send_tg(
-                        f"❌ <b>[{route_exchange.upper()}][{acc_name}] 实盘下单失败</b>\n\n"
-                        f"币种：{c.symbol}\n"
-                        f"原因：{live_result['error']}\n"
-                        f"本次跳过，不记录风控扣账。"
-                    )
-                    bucket['failed'].append({
-                        'exchange': route_exchange, 'account_id': acc_id,
-                        'account_name': acc_name, 'error': live_result['error'],
-                    })
-                    continue
-
-                entry_price = live_result["price"] if live_result["price"] > 0 else price
-                # 滑点计算（ref_price = 锁外 ticker 价）
-                if price > 0 and entry_price > 0:
-                    slippage_pct = abs(entry_price - price) / price * 100
-                else:
-                    slippage_pct = 0.0
-
-                trade = Trade.create_short(
-                    c.symbol, entry_price, reason=trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h),
-                    stake=route_stake,
-                    leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
-                    exchange=route_exchange,
-                    live_order_id=live_result.get("order_id") or None,
-                    client_order_id=coid,
-                    ref_price_at_order=price,
-                    slippage_pct=slippage_pct,
-                )
-                trade.account_id = acc_id
-                opened_trades.append((trade, entry_price, route_exchange, route_stake, coid))
-                trades_raw.append(trade.to_dict())
-                opened_any = True
-                bucket['success'].append({
-                    'exchange': route_exchange, 'account_id': acc_id,
-                    'trade_id': trade.id, 'order_id': live_result.get('order_id', ''),
-                    'shares': trade.shares, 'direction': 'SHORT',
-                    'client_order_id': coid,
-                })
-
-            if not opened_any:
-                c.triggered = False
-                continue
-
-            try:
-                save(trades_raw)
-            except Exception as _se:
-                # H3: 写盘失败 → 订单可能已在交易所成交，必须紧急告警
-                # 这是 journal 的核心价值点：下单已记 pending，即使此时崩溃
-                # 重启后仍能通过 journal 反查到这些订单
-                order_ids_summary = ", ".join(
-                    f"{s['exchange']}:{s.get('order_id') or s.get('client_order_id')}"
-                    for bucket in routes_by_key.values()
-                    for s in bucket.get('success', [])
-                )
-                logger.critical(
-                    f"🚨 trades.json 写盘失败但交易所已下单！"
-                    f"错误={_se} | 已成交订单={order_ids_summary}"
-                )
-                send_tg(
-                    f"🚨🚨 <b>紧急：持久化失败，交易所已成交订单</b>\n\n"
-                    f"币种：{c.symbol}\n"
-                    f"错误：{_se}\n\n"
-                    f"已成交订单（需人工到交易所核对）：\n<code>{order_ids_summary}</code>\n\n"
-                    f"日志和 journal 文件包含完整信息；请立即检查交易所持仓。"
-                )
-                raise
-
-        # 出锁后：把每一笔成功的 journal 都 confirm（已经安全落盘）
-        for _trade, _ep, _ex, _rs, _coid in opened_trades:
-            if _ex == 'shadow':
-                continue
-            try:
-                journal_mark_confirmed(_coid, _trade.live_order_id or '')
-            except Exception as _je:
-                logger.debug(f"journal mark_confirmed 失败（非致命）: {_je}")
-
-        # ── H5: both 模式部分失败回滚（对冲语义保证） ──
-        # 如果一个 (symbol, account) 里既有成功路由也有失败路由，
-        # 说明对冲/多所分散仓位未完整建立 → 立即对成功那所发 reduceOnly 平仓
-        # 同时从 trades_raw 中移除那笔刚写入的 trade（下一轮扫描可以重新触发）
-        rollbacks = []   # [(trade_id, exchange, account_id, amount, direction, symbol, coid)]
-        for key, bucket in routes_by_key.items():
-            if bucket['success'] and bucket['failed']:
-                # 部分失败 — 需要回滚成功那部分
-                for s in bucket['success']:
-                    if s['exchange'] == 'shadow':
-                        continue  # shadow 不需要回滚交易所仓位
-                    rollbacks.append((
-                        s['trade_id'], s['exchange'], s['account_id'],
-                        s['shares'], s['direction'], key[0], s['client_order_id'],
-                    ))
-
-        if rollbacks:
-            from live_executor import execute_close as _exec_close, make_client_order_id as _mk_coid
-            for trade_id, rb_ex, rb_acc_id, rb_shares, rb_dir, rb_sym, rb_coid in rollbacks:
-                rollback_coid = _mk_coid('rb', f"{rb_sym}{trade_id[-8:]}", exchange_name=rb_ex)
-                logger.warning(
-                    f"🔁 [H5 对冲回滚] 部分失败→平掉成功那所的仓位: "
-                    f"{rb_sym} {rb_ex}/{rb_acc_id} {rb_shares:.4f}"
-                )
-                try:
-                    rb_result = _exec_close(
-                        rb_sym, rb_dir, rb_shares,
-                        exchange_name=rb_ex,
-                        client_order_id=rollback_coid,
-                        account_id=rb_acc_id or None,
-                    )
-                except Exception as _re:
-                    rb_result = {"success": False, "error": str(_re)}
-
-                if rb_result.get('success'):
-                    # 回滚成功 → 把刚写入的 trade 标记为 closed（close_reason=对冲回滚）
+        # 强制 worker 线程为 daemon：拦截 _adjust_thread_count 后的 Thread 创建
+        # CPython 实现细节：ThreadPoolExecutor 内部用 _threads set 跟踪 worker
+        original_adjust = executor._adjust_thread_count
+        def _patched():
+            original_adjust()
+            for t in list(executor._threads):
+                if not t.daemon and not t.is_alive():
+                    # 还没 start，可以改 daemon
                     try:
-                        with LockedJsonFile(TRADES_FILE, default=[]) as (trs, savetr):
-                            for t in trs:
-                                if t.get('id') == trade_id:
-                                    t['status'] = 'closed'
-                                    t['closed_at'] = utcnow_iso()
-                                    t['close_reason'] = '对冲回滚（配对路由下单失败）'
-                                    t['close_type'] = 'manual'
-                                    t['close_order_id'] = rb_result.get('order_id', '')
-                                    # 对冲回滚的 pnl 近似为 0（可能有滑点损失，但 TG 已告警）
-                                    t['pnl'] = 0.0
-                                    savetr(trs)
-                                    break
-                    except Exception as _we:
-                        logger.error(f"回滚后更新 trade 状态失败: {_we}")
+                        t.daemon = True
+                    except RuntimeError:
+                        pass
+        # 简化：直接预启动所有 worker 并设 daemon
+        # 实际上更安全的方式是 monkey-patch threading.Thread 在 submit 之前
+        return executor
 
-                    send_tg(
-                        f"🔁 <b>对冲回滚成功</b>\n\n"
-                        f"币种：{rb_sym}\n"
-                        f"回滚交易所：{rb_ex.upper()}\n"
-                        f"原因：配对路由下单失败，保持对冲语义\n"
-                        f"仓位已平，下一轮扫描可重新触发。"
+    triggered_payloads = []  # [(c, payload), ...]
+    skipped_count = 0
+    timeout_break = False
+    chunk_size = max(_max_workers * 4, 8)   # 每批 N 个候选
+
+    def _check_budget() -> bool:
+        return (_time.monotonic() - _round_t0) < _budget
+
+    # 用 monkey-patch threading.Thread 让 ThreadPoolExecutor 创建的 worker 都是 daemon
+    import threading as _threading
+    _original_thread_init = _threading.Thread.__init__
+    def _daemon_thread_init(self, *args, **kwargs):
+        _original_thread_init(self, *args, **kwargs)
+        # 仅 cand-eval 线程被强制 daemon（避免影响其它模块的线程）
+        if 'cand-eval' in (self.name or ''):
+            self.daemon = True
+    _threading.Thread.__init__ = _daemon_thread_init
+
+    try:
+        for chunk_start in range(0, len(candidates), chunk_size):
+            if not _check_budget():
+                elapsed = _time.monotonic() - _round_t0
+                remaining = len(candidates) - chunk_start
+                logger.warning(
+                    f"⏰ 评估阶段预算耗尽 {elapsed:.0f}s/{_budget}s，"
+                    f"剩余 {remaining} 个候选推迟到下一轮（已评估 "
+                    f"{len(triggered_payloads) + skipped_count}/{len(candidates)}）"
+                )
+                timeout_break = True
+                break
+
+            chunk = candidates[chunk_start:chunk_start + chunk_size]
+            # 单批的本地预算：min(剩余整轮预算, 单候选超时 × chunk/并发 + 余量)
+            chunk_budget = min(
+                _budget - (_time.monotonic() - _round_t0),
+                _per_cand_timeout * (len(chunk) / _max_workers + 1),
+            )
+            if chunk_budget <= 0:
+                timeout_break = True
+                break
+
+            executor = ThreadPoolExecutor(
+                max_workers=_max_workers, thread_name_prefix='cand-eval',
+            )
+            try:
+                future_to_c = {
+                    executor.submit(
+                        _evaluate_candidate, exchange, c, btc_pct, open_symbols, _per_cand_timeout,
+                    ): c
+                    for c in chunk
+                }
+                try:
+                    for fut in as_completed(future_to_c, timeout=chunk_budget):
+                        c = future_to_c[fut]
+                        try:
+                            result_kind, payload = fut.result(timeout=1)
+                        except Exception as e:
+                            logger.warning(f"评估候选 {c.symbol} 异常: {e}")
+                            skipped_count += 1
+                            continue
+
+                        if result_kind == 'trigger':
+                            logger.info(
+                                f"  ✅ 触发候选 {c.symbol}: 4h RSI={payload['rsi_4h']} "
+                                f"峰值={payload['rsi_4h_peak']:.1f} 回落={payload['drop']:.1f} "
+                                f"评分={payload['score_result']['score']}[{payload['score_result']['grade']}] "
+                                f"耗时={payload['eval_elapsed_sec']}s"
+                            )
+                            c.rsi_4h = payload['rsi_4h']
+                            c.rsi_4h_peak = payload['rsi_4h_peak']
+                            triggered_payloads.append((c, payload))
+                        elif result_kind == 'cooldown':
+                            logger.info(f"  ❄️ 冷却中 {c.symbol}: {payload}")
+                            skipped_count += 1
+                        else:
+                            skipped_count += 1
+                            logger.debug(f"  跳过 {c.symbol}: {payload}")
+                except _futures_TimeoutError:
+                    unfinished = [f for f in future_to_c if not f.done()]
+                    for f in unfinished:
+                        f.cancel()
+                    logger.warning(
+                        f"⏰ 第 {chunk_start//chunk_size + 1} 批 chunk_budget={chunk_budget:.0f}s 超时，"
+                        f"放弃 {len(unfinished)} 个候选（ccxt 还在跑的会被父进程清理）"
                     )
-                    # 从 opened_trades 移除被回滚的条目，避免后续推送 "已开仓" TG
-                    opened_trades = [x for x in opened_trades if x[0].id != trade_id]
-                else:
-                    send_tg(
-                        f"🚨 <b>对冲回滚失败，需人工处理</b>\n\n"
-                        f"币种：{rb_sym}\n"
-                        f"交易所：{rb_ex.upper()}\n"
-                        f"数量：{rb_shares:.4f}\n"
-                        f"错误：{rb_result.get('error', '未知')}\n\n"
-                        f"⚠️ 请立即手动到交易所核对并平仓。"
-                    )
+                    skipped_count += len(unfinished)
+            finally:
+                # wait=False：不等已经在跑的 worker；线程是 daemon，进程退出时被 OS 清理
+                executor.shutdown(wait=False)
+    finally:
+        # 恢复 threading.Thread.__init__
+        _threading.Thread.__init__ = _original_thread_init
 
-        # 回滚后若 opened_trades 变空，重置 triggered 状态
-        if not opened_trades:
-            c.triggered = False
-            continue
+    eval_elapsed = _time.monotonic() - _round_t0
+    logger.info(
+        f"评估阶段完成 {eval_elapsed:.0f}s | 命中触发={len(triggered_payloads)} "
+        f"跳过={skipped_count} 超时退出={timeout_break}"
+    )
 
-        # ══ 交易写盘成功后，才改风控状态 + 发推送 ══
-        c.triggered = True
-        triggered_any = True
-
-        if trigger_abandon:
-            trigger_reason = f"弃盘点: {abandon['reason']}"
-            c.trigger_type = 'abandon'
-        else:
-            trigger_reason = f"4h RSI从{rsi_4h_peak:.0f}回落至{rsi_4h}"
-            c.trigger_type = '4h_rsi'
-        c.trigger_reason = trigger_reason
-
-        logger.info(
-            f"  🚨 触发信号: {c.symbol} 开仓 {len(opened_trades)} 笔 "
-            f"[{', '.join(t[2] for t in opened_trades)}] [{trigger_reason}]"
-        )
-
-        # 每一条 Trade 都单独记录风控 + 推送（因为每笔都是独立的风控事件）
-        for trade, entry_price, route_exchange, route_stake, _coid in opened_trades:
-            # 影子并行模式下的 shadow 交易不计入风控
-            if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
-                continue
-            record_trade_opened(route_stake, account_id=trade.account_id or None)
-
-            logger.info(
-                f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "
-                f"评分={score_result['score']}[{score_result['grade']}] | "
-                f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
-                f"硬止损={trade.hard_stop_price} | 订单={trade.live_order_id or 'SHADOW'}"
+    if not triggered_payloads:
+        if not _check_budget():
+            send_tg(
+                f"⏰ <b>候选确认评估阶段超预算</b>\n\n"
+                f"耗时 {eval_elapsed:.0f}s / 预算 {_budget}s\n"
+                f"已评估 {skipped_count}/{len(candidates)} 个候选未命中触发\n"
+                f"建议：减小候选池（提高 DAILY_RSI_MIN）或调整 BUDGET/并发数"
             )
-
-        # 推送通知
-        yao_tag = "🔥妖币" if c.yao_score >= 2 else "📌普通超买"
-        if c.trigger_type == 'abandon':
-            trigger_desc = f"📊 触发方式：<b>弃盘点信号</b>\n{abandon['reason']}"
         else:
-            trigger_desc = (
-                f"📊 触发方式：<b>4h RSI 回落</b>\n"
-                f"4h RSI：{rsi_4h}（峰值 {rsi_4h_peak:.0f}，回落 {drop:.0f} 点）"
+            logger.info("候选池无触发信号")
+        # 仍然要保存候选池（rsi_4h 等评估结果的回写）
+        _save_candidates_back(candidates)
+        return
+
+    # ══════════════════════════════════════════════════════════════════
+    #  H11 阶段二：串行开仓（保留原有锁 + 路由 + journal 逻辑）
+    # ══════════════════════════════════════════════════════════════════
+
+    for c, payload in triggered_payloads:
+        # 阶段二的剩余预算：原预算 - 已用 - 给收尾留的 60s
+        if (_time.monotonic() - _round_t0) > (_budget + 60):
+            logger.warning(
+                f"⏰ 开仓阶段已超 {_budget + 60}s，剩余 {len(triggered_payloads)} 笔开仓推迟到下一轮"
             )
+            break
+        ok = _open_position_for_candidate(c, payload, btc_pct, exchange)
+        if ok:
+            triggered_any = True
 
-        tp1_pct = round((1 - config.TP1_MULTIPLIER) * 100, 1)
-        tp2_pct = round((1 - config.TP2_MULTIPLIER) * 100, 1)
-        hard_stop_pct = config.HARD_STOP_LOSS_PCT
+    # 保存候选池更新（rsi_4h_peak / triggered 状态等）
+    _save_candidates_back(candidates)
 
-        # 多路由开仓时，用第一笔作为主展示，额外列出其他路由摘要
-        primary_trade, primary_price, primary_ex, _, _ = opened_trades[0]
+    if not triggered_any:
+        logger.info("候选池无触发信号")
 
-        # 标题：区分影子 / 币安实盘 / OKX实盘 / 两所同开
-        route_tags = [t[2] for t in opened_trades]
-        if set(route_tags) == {'shadow'}:
-            title_prefix = "🔴 <b>影子空单已开仓</b>"
-        elif len(set(route_tags)) == 1:
-            title_prefix = f"🔴 <b>[{route_tags[0].upper()}] 实盘空单已开仓</b>"
-        else:
-            title_prefix = "🔴 <b>[双所对冲] 实盘空单已开仓</b>"
 
-        extra_routes_line = ""
-        if len(opened_trades) > 1:
-            extra_routes_line = "\n📮 路由：" + " + ".join(
-                f"{t[2].upper()}({t[0].stake}U×{t[0].leverage}x)"
-                for t in opened_trades
-            )
+# ══════════════════════════════════════════════════════════════════
+#  H11 辅助：保存候选池 + 单候选开仓
+# ══════════════════════════════════════════════════════════════════
 
-        msg = (
-            f"{title_prefix} {yao_tag}\n\n"
-            f"📌 <b>{c.symbol}</b>{extra_routes_line}\n"
-            f"📊 信号评分：<b>{score_result['score']}分 [{score_result['grade']}]</b>\n"
-            f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
-            f"妖={score_result['details'].get('yao',0):.0f} "
-            f"触发={score_result['details'].get('trigger',0):.0f} "
-            f"热度={score_result['details'].get('heat',0):.0f}"
-            f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}"
-            f"{(' 量价背离=+' + str(vol_divergence.get('score_bonus', 0))) if vol_divergence.get('divergence') else ''}\n\n"
-            f"入场价：{primary_price:.6f} U ({primary_ex})\n"
-            f"保证金：{primary_trade.stake}U × {primary_trade.leverage}x = <b>{primary_trade.notional}U</b>\n"
-            f"止盈一档：{primary_trade.take_profit_1:.6f}（-{tp1_pct}%，+{primary_trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
-            f"止盈二档：{primary_trade.take_profit_2:.6f}（-{tp2_pct}%，+{primary_trade.notional*tp2_pct/100*(1-config.TP1_CLOSE_RATIO):.1f}U）\n"
-            f"硬止损：{primary_trade.hard_stop_price:.6f}（+{hard_stop_pct}%，-{primary_trade.notional*hard_stop_pct/100:.1f}U）\n"
-            f"移动止损：最高盈利回撤 {getattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4)*100:.0f}% 触发\n\n"
-            f"{trigger_desc}\n\n"
-            f"日线RSI：{c.rsi_1d}（超买）\n"
-            f"24h涨幅：{c.pct24h:+.1f}% | 成交量：{c.vol24h:,}U\n"
-            f"OI变化：{c.oi_change:+.0f}% | 资金费率：{c.funding_rate:.4f}%/8h\n"
-            f"妖币评分：{c.yao_score}/3 | BTC 24h：{btc_pct:+.1f}%"
-        )
-        send_tg(msg)
-
-        time.sleep(0.1)
-
-    # 保存候选池更新（持锁 RMW，避免与 scan_daily 并发覆盖）
+def _save_candidates_back(candidates):
+    """把 candidates 列表写回 CANDIDATES_FILE，保留 scan_daily 期间新加入的"""
     with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing_raw, save_candidates):
-        # 用 symbol 映射合并：保留 scan_daily 期间新加入的候选
         by_symbol = {c.get('symbol'): c for c in existing_raw if c.get('symbol')}
         for c in candidates:
             by_symbol[c.symbol] = c.to_dict()
         save_candidates(list(by_symbol.values()))
 
-    if not triggered_any:
-        logger.info("候选池无触发信号")
+
+def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> bool:
+    """
+    H11 串行开仓阶段：
+      - 风控预检（单/多账户）
+      - 价格 + 多交易所价格确认
+      - 路由计算
+      - 多账户并行下单（journal + 锁）
+      - 部分失败回滚（H5 对冲语义保证）
+      - 成功后写交易、记风控、推 TG
+
+    Returns True 表示至少有一笔成功开仓；False 表示完全跳过/失败。
+
+    本函数 = 旧 check_candidates for-loop 体的开仓段落，行为与之前完全一致；
+    只是抽出来便于阶段二串行调用，且能用 budget 守护剩余预算。
+    """
+    rsi_4h = payload['rsi_4h']
+    rsi_4h_peak = payload['rsi_4h_peak']
+    drop = payload['drop']
+    trigger_4h = payload['trigger_4h']
+    trigger_abandon = payload['trigger_abandon']
+    abandon = payload['abandon']
+    vol_divergence = payload['vol_divergence']
+    cross_validate_bonus = payload['cross_validate_bonus']
+    okx_cv_info = payload['okx_cv_info']
+    score_result = payload['score_result']
+
+    # 根据评分决定仓位（结合自动复利）
+    base_stake = get_compound_stake()
+    if score_result["grade"] == "A":
+        actual_stake = base_stake
+    else:  # grade B
+        actual_stake = round(base_stake * 0.5)
+
+    # ── 风控检查（全局预检）──
+    # H8: 用每个账户"实际将占用的保证金总额"去做 can_open_trade 检查，
+    # 避免 PRIMARY_EXCHANGE='both' 模式下用原始 stake 误判为超额度。
+    try:
+        from admin_secrets import (
+            get_all_trading_accounts as _get_trading_accts,
+            SHADOW_ACCOUNT_ID as _SHADOW_ID,
+            list_accounts as _list_all,
+            is_account_trading_enabled as _is_enabled,
+        )
+        _trading_accts = _get_trading_accts() or []
+        if any(a.get('id') == _SHADOW_ID for a in _list_all()) and _is_enabled(_SHADOW_ID):
+            _trading_accts = [{'id': _SHADOW_ID, 'is_shadow': True}] + _trading_accts
+        if not _trading_accts:
+            _trading_accts = [{'id': ''}]
+    except Exception:
+        _trading_accts = [{'id': ''}]
+
+    _routes_preview = _resolve_exchange_routes(c.symbol, actual_stake)
+    _live_route_stake_sum = sum(
+        s for ex, s in _routes_preview if ex != 'shadow'
+    ) or actual_stake
+    _shadow_route_stake = next(
+        (s for ex, s in _routes_preview if ex == 'shadow'), actual_stake
+    )
+
+    any_allowed = False
+    first_reason = ""
+    for _acc in _trading_accts:
+        _acc_id = _acc.get('id') or None
+        _is_shadow_acc = _acc.get('is_shadow', False)
+        _acc_check_stake = _shadow_route_stake if _is_shadow_acc else _live_route_stake_sum
+        _ok, _rsn = can_open_trade(_acc_check_stake, account_id=_acc_id)
+        if _ok:
+            any_allowed = True
+            break
+        if not first_reason:
+            first_reason = _rsn
+    if not any_allowed:
+        logger.warning(f"  🚫 所有账户都拒绝 {c.symbol}: {first_reason}")
+        return False
+
+    # ── 触发开仓 ──
+    try:
+        price = exchange.fetch_ticker(c.symbol)['last']
+    except Exception as e:
+        logger.error(f"获取最新价失败 ({c.symbol}): {e}")
+        return False
+
+    # ── 多交易所价格确认 ──
+    # H10: 先用 okx_has_swap 门禁，避免对 OKX 上不存在的币发起 fetch_ticker
+    if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
+        price_cv = cross_validate_price(c.symbol, price)
+        if price_cv['available'] and not price_cv['pass']:
+            logger.warning(f"  ⚠️ 价格偏差过大 {c.symbol}: {price_cv['reason']}")
+            c.triggered = False
+            return False
+
+    # ── 实盘路由 ──
+    routes = _resolve_exchange_routes(c.symbol, actual_stake)
+    if not routes:
+        logger.warning(f"  ⚠️ 无可用交易所路由 {c.symbol}，跳过")
+        return False
+
+    # ── 多账户同步开仓 v5.0 ──
+    from admin_secrets import get_all_trading_accounts, SHADOW_ACCOUNT_ID, list_accounts
+    trading_accounts = get_all_trading_accounts()
+
+    shadow_account = None
+    try:
+        from admin_secrets import is_account_trading_enabled
+        for _acc in list_accounts():
+            if _acc.get('id') == SHADOW_ACCOUNT_ID:
+                if not is_account_trading_enabled(SHADOW_ACCOUNT_ID):
+                    logger.info("  ⏩ 影子账户交易开关已关闭，跳过同步")
+                    break
+                shadow_account = {
+                    'id': SHADOW_ACCOUNT_ID,
+                    'name': _acc.get('name', '影子账户'),
+                    'exchanges': {},
+                    'force_shadow_route': True,
+                }
+                break
+    except Exception as _e:
+        logger.debug(f"读取影子账户失败，跳过同步: {_e}")
+
+    all_accounts = []
+    if shadow_account is not None:
+        all_accounts.append(shadow_account)
+    all_accounts.extend(trading_accounts)
+
+    if not all_accounts:
+        all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}, 'force_shadow_route': True}]
+
+    # ── 锁内第一阶段：去重检查 + 每账户风控检查 ──
+    with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw_check, save_check):
+        already_open_per_account = {
+            (t.get('symbol'), t.get('account_id') or '')
+            for t in trades_raw_check
+            if t.get('status') == 'open' or t.get('close_retry_pending')
+        }
+
+        execution_tasks = []
+        for account in all_accounts:
+            acc_id = account['id']
+            acc_key = (c.symbol, acc_id or '')
+            if acc_key in already_open_per_account:
+                logger.info(
+                    f"  ⏩ 跳过账户 {account['name']}({acc_id})：已持有 {c.symbol}"
+                )
+                continue
+
+            if account.get('force_shadow_route'):
+                acc_routes = [('shadow', actual_stake)]
+            else:
+                acc_routes = routes
+
+            acc_stake_total = sum(s for _ex, s in acc_routes)
+            acc_allowed, acc_risk_reason = can_open_trade(
+                acc_stake_total, account_id=acc_id if acc_id else None
+            )
+            if not acc_allowed:
+                logger.info(
+                    f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
+                )
+                continue
+
+            for route_exchange, route_stake in acc_routes:
+                execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
+
+    if not execution_tasks:
+        c.triggered = False
+        return False
+
+    # ── 锁外第二阶段：并行执行下单 ──
+    from live_executor import execute_open, make_client_order_id
+    from common import (
+        journal_add_pending, journal_mark_confirmed, journal_mark_failed,
+    )
+
+    def _prep_task(task_args):
+        acc_id, acc_name, r_exchange, r_stake = task_args
+        coid = make_client_order_id('sho', c.symbol, r_exchange)
+        return (acc_id, acc_name, r_exchange, r_stake, coid)
+
+    prepared_tasks = [_prep_task(t) for t in execution_tasks]
+
+    for acc_id, _acc_name, r_exchange, r_stake, coid in prepared_tasks:
+        if r_exchange == 'shadow':
+            continue
+        lev = config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE
+        try:
+            journal_add_pending(
+                client_order_id=coid, exchange=r_exchange,
+                account_id=acc_id or '', symbol=c.symbol, direction='SHORT',
+                stake=r_stake, leverage=lev,
+            )
+        except Exception as _je:
+            logger.error(f"journal pending 写入失败（非致命）: {_je}")
+
+    def _execute_one(task_args):
+        acc_id, acc_name, r_exchange, r_stake, coid = task_args
+        if r_exchange == 'shadow':
+            return (acc_id, acc_name, r_exchange, r_stake, coid,
+                    {"success": True, "order_id": "", "price": 0, "amount": 0, "error": ""})
+        result = execute_open(
+            c.symbol, 'SHORT', r_stake,
+            exchange_name=r_exchange,
+            leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
+            client_order_id=coid,
+            account_id=acc_id if acc_id else None,
+        )
+        return (acc_id, acc_name, r_exchange, r_stake, coid, result)
+
+    with ThreadPoolExecutor(max_workers=max(len(prepared_tasks), 4)) as executor:
+        futures = [executor.submit(_execute_one, task) for task in prepared_tasks]
+        results = [f.result() for f in as_completed(futures)]
+
+    # ── 锁内第三阶段：把成功的下单结果写入 TRADES_FILE ──
+    opened_trades = []
+    routes_by_key: dict = {}
+
+    with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+        opened_any = False
+        for acc_id, acc_name, route_exchange, route_stake, coid, live_result in results:
+            key = (c.symbol, acc_id or '')
+            bucket = routes_by_key.setdefault(key, {'success': [], 'failed': []})
+
+            if not live_result["success"]:
+                logger.error(
+                    f"  ❌ [{acc_name}] {route_exchange} 下单失败 {c.symbol}: {live_result['error']}"
+                )
+                if route_exchange != 'shadow':
+                    try:
+                        journal_mark_failed(coid, live_result['error'])
+                    except Exception as _je:
+                        logger.debug(f"journal mark_failed 失败: {_je}")
+                send_tg(
+                    f"❌ <b>[{route_exchange.upper()}][{acc_name}] 实盘下单失败</b>\n\n"
+                    f"币种：{c.symbol}\n"
+                    f"原因：{live_result['error']}\n"
+                    f"本次跳过，不记录风控扣账。"
+                )
+                bucket['failed'].append({
+                    'exchange': route_exchange, 'account_id': acc_id,
+                    'account_name': acc_name, 'error': live_result['error'],
+                })
+                continue
+
+            entry_price = live_result["price"] if live_result["price"] > 0 else price
+            if price > 0 and entry_price > 0:
+                slippage_pct = abs(entry_price - price) / price * 100
+            else:
+                slippage_pct = 0.0
+
+            trade = Trade.create_short(
+                c.symbol, entry_price,
+                reason=trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h),
+                stake=route_stake,
+                leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
+                exchange=route_exchange,
+                live_order_id=live_result.get("order_id") or None,
+                client_order_id=coid,
+                ref_price_at_order=price,
+                slippage_pct=slippage_pct,
+            )
+            trade.account_id = acc_id
+            opened_trades.append((trade, entry_price, route_exchange, route_stake, coid))
+            trades_raw.append(trade.to_dict())
+            opened_any = True
+            bucket['success'].append({
+                'exchange': route_exchange, 'account_id': acc_id,
+                'trade_id': trade.id, 'order_id': live_result.get('order_id', ''),
+                'shares': trade.shares, 'direction': 'SHORT',
+                'client_order_id': coid,
+            })
+
+        if not opened_any:
+            c.triggered = False
+            return False
+
+        try:
+            save(trades_raw)
+        except Exception as _se:
+            order_ids_summary = ", ".join(
+                f"{s['exchange']}:{s.get('order_id') or s.get('client_order_id')}"
+                for bucket in routes_by_key.values()
+                for s in bucket.get('success', [])
+            )
+            logger.critical(
+                f"🚨 trades.json 写盘失败但交易所已下单！"
+                f"错误={_se} | 已成交订单={order_ids_summary}"
+            )
+            send_tg(
+                f"🚨🚨 <b>紧急：持久化失败，交易所已成交订单</b>\n\n"
+                f"币种：{c.symbol}\n"
+                f"错误：{_se}\n\n"
+                f"已成交订单（需人工到交易所核对）：\n<code>{order_ids_summary}</code>\n\n"
+                f"日志和 journal 文件包含完整信息；请立即检查交易所持仓。"
+            )
+            raise
+
+    for _trade, _ep, _ex, _rs, _coid in opened_trades:
+        if _ex == 'shadow':
+            continue
+        try:
+            journal_mark_confirmed(_coid, _trade.live_order_id or '')
+        except Exception as _je:
+            logger.debug(f"journal mark_confirmed 失败（非致命）: {_je}")
+
+    # ── H5: both 模式部分失败回滚 ──
+    rollbacks = []
+    for key, bucket in routes_by_key.items():
+        if bucket['success'] and bucket['failed']:
+            for s in bucket['success']:
+                if s['exchange'] == 'shadow':
+                    continue
+                rollbacks.append((
+                    s['trade_id'], s['exchange'], s['account_id'],
+                    s['shares'], s['direction'], key[0], s['client_order_id'],
+                ))
+
+    if rollbacks:
+        from live_executor import execute_close as _exec_close, make_client_order_id as _mk_coid
+        for trade_id, rb_ex, rb_acc_id, rb_shares, rb_dir, rb_sym, rb_coid in rollbacks:
+            rollback_coid = _mk_coid('rb', f"{rb_sym}{trade_id[-8:]}", exchange_name=rb_ex)
+            logger.warning(
+                f"🔁 [H5 对冲回滚] 部分失败→平掉成功那所的仓位: "
+                f"{rb_sym} {rb_ex}/{rb_acc_id} {rb_shares:.4f}"
+            )
+            try:
+                rb_result = _exec_close(
+                    rb_sym, rb_dir, rb_shares,
+                    exchange_name=rb_ex,
+                    client_order_id=rollback_coid,
+                    account_id=rb_acc_id or None,
+                )
+            except Exception as _re:
+                rb_result = {"success": False, "error": str(_re)}
+
+            if rb_result.get('success'):
+                try:
+                    with LockedJsonFile(TRADES_FILE, default=[]) as (trs, savetr):
+                        for t in trs:
+                            if t.get('id') == trade_id:
+                                t['status'] = 'closed'
+                                t['closed_at'] = utcnow_iso()
+                                t['close_reason'] = '对冲回滚（配对路由下单失败）'
+                                t['close_type'] = 'manual'
+                                t['close_order_id'] = rb_result.get('order_id', '')
+                                t['pnl'] = 0.0
+                                savetr(trs)
+                                break
+                except Exception as _we:
+                    logger.error(f"回滚后更新 trade 状态失败: {_we}")
+
+                send_tg(
+                    f"🔁 <b>对冲回滚成功</b>\n\n"
+                    f"币种：{rb_sym}\n"
+                    f"回滚交易所：{rb_ex.upper()}\n"
+                    f"原因：配对路由下单失败，保持对冲语义\n"
+                    f"仓位已平，下一轮扫描可重新触发。"
+                )
+                opened_trades = [x for x in opened_trades if x[0].id != trade_id]
+            else:
+                send_tg(
+                    f"🚨 <b>对冲回滚失败，需人工处理</b>\n\n"
+                    f"币种：{rb_sym}\n"
+                    f"交易所：{rb_ex.upper()}\n"
+                    f"数量：{rb_shares:.4f}\n"
+                    f"错误：{rb_result.get('error', '未知')}\n\n"
+                    f"⚠️ 请立即手动到交易所核对并平仓。"
+                )
+
+    if not opened_trades:
+        c.triggered = False
+        return False
+
+    # ══ 交易写盘成功后，才改风控状态 + 发推送 ══
+    c.triggered = True
+
+    if trigger_abandon:
+        trigger_reason = f"弃盘点: {abandon['reason']}"
+        c.trigger_type = 'abandon'
+    else:
+        trigger_reason = f"4h RSI从{rsi_4h_peak:.0f}回落至{rsi_4h}"
+        c.trigger_type = '4h_rsi'
+    c.trigger_reason = trigger_reason
+
+    logger.info(
+        f"  🚨 触发信号: {c.symbol} 开仓 {len(opened_trades)} 笔 "
+        f"[{', '.join(t[2] for t in opened_trades)}] [{trigger_reason}]"
+    )
+
+    for trade, entry_price, route_exchange, route_stake, _coid in opened_trades:
+        if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
+            continue
+        record_trade_opened(route_stake, account_id=trade.account_id or None)
+
+        logger.info(
+            f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "
+            f"评分={score_result['score']}[{score_result['grade']}] | "
+            f"保证金={trade.stake}U × {trade.leverage}x = {trade.notional}U | "
+            f"硬止损={trade.hard_stop_price} | 订单={trade.live_order_id or 'SHADOW'}"
+        )
+
+    # 推送通知
+    yao_tag = "🔥妖币" if c.yao_score >= 2 else "📌普通超买"
+    if c.trigger_type == 'abandon':
+        trigger_desc = f"📊 触发方式：<b>弃盘点信号</b>\n{abandon['reason']}"
+    else:
+        trigger_desc = (
+            f"📊 触发方式：<b>4h RSI 回落</b>\n"
+            f"4h RSI：{rsi_4h}（峰值 {rsi_4h_peak:.0f}，回落 {drop:.0f} 点）"
+        )
+
+    tp1_pct = round((1 - config.TP1_MULTIPLIER) * 100, 1)
+    tp2_pct = round((1 - config.TP2_MULTIPLIER) * 100, 1)
+    hard_stop_pct = config.HARD_STOP_LOSS_PCT
+
+    primary_trade, primary_price, primary_ex, _, _ = opened_trades[0]
+
+    route_tags = [t[2] for t in opened_trades]
+    if set(route_tags) == {'shadow'}:
+        title_prefix = "🔴 <b>影子空单已开仓</b>"
+    elif len(set(route_tags)) == 1:
+        title_prefix = f"🔴 <b>[{route_tags[0].upper()}] 实盘空单已开仓</b>"
+    else:
+        title_prefix = "🔴 <b>[双所对冲] 实盘空单已开仓</b>"
+
+    extra_routes_line = ""
+    if len(opened_trades) > 1:
+        extra_routes_line = "\n📮 路由：" + " + ".join(
+            f"{t[2].upper()}({t[0].stake}U×{t[0].leverage}x)"
+            for t in opened_trades
+        )
+
+    msg = (
+        f"{title_prefix} {yao_tag}\n\n"
+        f"📌 <b>{c.symbol}</b>{extra_routes_line}\n"
+        f"📊 信号评分：<b>{score_result['score']}分 [{score_result['grade']}]</b>\n"
+        f"评分详情：RSI={score_result['details'].get('rsi',0):.0f} "
+        f"妖={score_result['details'].get('yao',0):.0f} "
+        f"触发={score_result['details'].get('trigger',0):.0f} "
+        f"热度={score_result['details'].get('heat',0):.0f}"
+        f"{(' OKX=' + okx_cv_info) if okx_cv_info else ''}"
+        f"{(' 量价背离=+' + str(vol_divergence.get('score_bonus', 0))) if vol_divergence.get('divergence') else ''}\n\n"
+        f"入场价：{primary_price:.6f} U ({primary_ex})\n"
+        f"保证金：{primary_trade.stake}U × {primary_trade.leverage}x = <b>{primary_trade.notional}U</b>\n"
+        f"止盈一档：{primary_trade.take_profit_1:.6f}（-{tp1_pct}%，+{primary_trade.notional*tp1_pct/100*config.TP1_CLOSE_RATIO:.1f}U）\n"
+        f"止盈二档：{primary_trade.take_profit_2:.6f}（-{tp2_pct}%，+{primary_trade.notional*tp2_pct/100*(1-config.TP1_CLOSE_RATIO):.1f}U）\n"
+        f"硬止损：{primary_trade.hard_stop_price:.6f}（+{hard_stop_pct}%，-{primary_trade.notional*hard_stop_pct/100:.1f}U）\n"
+        f"移动止损：最高盈利回撤 {getattr(config, 'TRAIL_STOP_RETRACE_RATIO', 0.4)*100:.0f}% 触发\n\n"
+        f"{trigger_desc}\n\n"
+        f"日线RSI：{c.rsi_1d}（超买）\n"
+        f"24h涨幅：{c.pct24h:+.1f}% | 成交量：{c.vol24h:,}U\n"
+        f"OI变化：{c.oi_change:+.0f}% | 资金费率：{c.funding_rate:.4f}%/8h\n"
+        f"妖币评分：{c.yao_score}/3 | BTC 24h：{btc_pct:+.1f}%"
+    )
+    send_tg(msg)
+
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════
