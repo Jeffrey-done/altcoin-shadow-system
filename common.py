@@ -412,31 +412,39 @@ def _account_balance_for(account_id: str = None) -> float:
 
 def _account_param(account_id: str, key: str, fallback=None):
     """
-    通用：取指定账户对该字段的覆盖值；按优先级 fallback。
+    通用：取指定账户对该字段的值。
 
     所有 ACCOUNT_FIELDS（ACCOUNT_BALANCE / DEFAULT_STAKE / LEVERAGE / 复利参数 /
-    止盈止损 / 风控等）都走这个入口，统一 per-account 优先 → pristine config 默认值。
+    止盈止损 / 风控等）都走这个入口。
 
-    fallback 优先级（高 → 低）：
-        1. runtime_config.json[account_id][key]    ← 该账号显式覆盖
-        2. runtime_config.get_pristine_default(key) ← config.py 原始值（不会被
-           apply_overrides 污染）
-        3. 调用方传入的 fallback                     ← 最后兜底（可不传）
+    fallback 优先级:
 
-    关键修复（2026-05-17）：之前 fallback 直接用调用方传入的 config.X，但
-    config 模块属性已被 apply_overrides 改成"当前活跃账号"的值。结果：
-    主账号设了 286 → apply 完 config.ACCOUNT_BALANCE = 286 → 查从未配置过的
-    其他账号时，fallback 也拿到 286，导致看起来"改一个动全部"。
-    现在 fallback 优先走 PRISTINE_DEFAULTS（模块加载时快照的 config.py 原始值），
-    不会被 apply_overrides 影响。
+      ┌─ account_id 显式指定（"我要 X 账号的值"）──────────────────────
+      │   1. runtime_config.json[account_id][key]    ← 该账号显式覆盖
+      │   2. runtime_config.get_pristine_default(key) ← config.py 原始值
+      │      （原因：account_id 显式指定 X 时不能 fallback 到"当前 active
+      │       账号的值"，否则会出现"X 没设过反而看到 active 的值"的污染。
+      │       config.py 默认值是中性的）
+      │   3. fallback                                 ← 调用方兜底
+      │
+      ├─ account_id 为 None/空（"使用系统当前值"）─────────────────────
+      │   1. fallback                                 ← 调用方传入的 config.X
+      │      （此时调用方意图是"用 apply_overrides 后的当前生效值"，
+      │       这是单账号兼容模式 + 测试场景的预期）
+      │   2. runtime_config.get_pristine_default(key) ← 兜底再兜底
+      │
+      └────────────────────────────────────────────────────────────────
 
-    参数:
-      account_id: 账户 ID；空字符串或 None → 跳过 per-account 查找
-      key:        runtime_config.ALLOWED 中的字段名
-      fallback:   pristine default 也读不到时的最终兜底（可选）
+    关键设计理由（2026-05-17 多账号修复）：
+      - 显式 account_id：不能 fallback 到当前 config 模块值，因为 config 已被
+        apply_overrides 写入 active 账号的覆盖值；其他账号 fallback 到这里会
+        看起来"被 active 账号污染"——这就是用户报告的"改一个动全部"。
+      - account_id=None：保留单账号语义（用 config 模块当前生效值），既兼容
+        老代码也方便测试 monkey-patch config。
     """
-    # 1. 该账号的显式覆盖
-    if account_id:
+    # 视空字符串 / None / "_default" 哨兵都为"无具体账号"
+    if account_id and account_id != '_default':
+        # 1. 该账号的显式覆盖
         try:
             import runtime_config
             overrides = runtime_config.load_account_overrides(account_id) or {}
@@ -445,8 +453,22 @@ def _account_param(account_id: str, key: str, fallback=None):
                 return val
         except Exception:
             pass
+        # 2. config.py 的原始默认值（绝不会被 apply_overrides 污染）
+        try:
+            import runtime_config
+            pristine = runtime_config.get_pristine_default(key)
+            if pristine is not None:
+                return pristine
+        except Exception:
+            pass
+        # 3. 调用方兜底
+        return fallback
 
-    # 2. config.py 的原始默认值（绝不会被 apply_overrides 污染）
+    # account_id 为空/None/"_default"：使用调用方传入的 fallback（通常是 config.X 当前值，
+    # 已被 apply_overrides 应用为 active 账号的值；测试场景下是 monkey-patch 的值）
+    if fallback is not None:
+        return fallback
+    # 只有没传 fallback 时才退到 pristine
     try:
         import runtime_config
         pristine = runtime_config.get_pristine_default(key)
@@ -454,8 +476,6 @@ def _account_param(account_id: str, key: str, fallback=None):
             return pristine
     except Exception:
         pass
-
-    # 3. 最后兜底
     return fallback
 
 
