@@ -850,13 +850,23 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if exchange not in ('binance', 'okx'):
             abort(404)
 
-        existing = runtime_config.load_overrides()
-        if exchange == 'binance':
-            existing['LIVE_MODE'] = False
-        else:
-            existing['OKX_LIVE_MODE'] = False
-        runtime_config.save_overrides(existing)
-        runtime_config.apply_overrides(force=True)
+        # BUG 修复（2026-05）：原实现走 load_overrides() / save_overrides()，
+        # 这两个 API 会把"当前活跃账户的所有覆盖"+"全局字段"一并 re-validate。
+        # 如果该账户已存在跨字段 ERROR（譬如历史数据 DEFAULT_STAKE > ACCOUNT_BALANCE），
+        # save_overrides 会 raise ValueError，导致用户在凭证泄露时连「清除凭证」
+        # 这种紧急动作都做不了 —— 把人锁死在错误状态里。
+        #
+        # 正确做法：清除凭证只该影响 LIVE_MODE/OKX_LIVE_MODE 这两个全局字段，
+        # 直接走 save_global_overrides() 即可，绕开账户级跨字段一致性校验。
+        global_flag = 'LIVE_MODE' if exchange == 'binance' else 'OKX_LIVE_MODE'
+        try:
+            runtime_config.save_global_overrides({global_flag: False})
+            runtime_config.apply_overrides(force=True)
+        except Exception as e:
+            # save_global_overrides 内部只 validate_change（类型/范围），
+            # 不会触发跨字段一致性失败。这里仍然包一层兜底以防文件 IO / 锁异常。
+            logger.error(f"清除凭证时关闭 {global_flag} 失败: {e}")
+            return jsonify({'error': f'清除凭证时关闭 {global_flag} 失败: {e}'}), 500
 
         admin_secrets.clear_exchange_credentials(exchange)
 

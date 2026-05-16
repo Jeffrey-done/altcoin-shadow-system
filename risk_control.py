@@ -25,6 +25,7 @@ from common import (
     today_str, parse_iso, utcnow,
     get_realized_balance, LockedJsonFile,
     get_current_account_id, filter_trades_by_account,
+    account_param,
 )
 
 logger = setup_logger("risk_control")
@@ -290,6 +291,16 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
     """
     # 所有读-判-写操作统一在锁内执行，避免并发 can_open_trade 重复清理 paused_until
     # 或 total_open_stake 双写漂移
+    # 多账户合规（2026-05）：所有账户级阈值（RISK_MAX_DAILY_LOSS / DAILY_TRADES /
+    # POSITION_PCT）都通过 account_param() 取该账号的覆盖值，避免 apply_overrides
+    # 把活跃账户的阈值写到 config 模块后，非活跃账户的检查用错阈值。
+    _max_daily_loss = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                          config.RISK_MAX_DAILY_LOSS))
+    _max_daily_trades = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES',
+                                          config.RISK_MAX_DAILY_TRADES))
+    _max_position_pct = float(account_param(account_id, 'RISK_MAX_POSITION_PCT',
+                                            config.RISK_MAX_POSITION_PCT))
+
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
         dirty = False
@@ -308,8 +319,8 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
             dirty = True
 
         # 2. 检查单日最大亏损
-        if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
-            reason = f"单日亏损已达上限（{state.daily_loss:.1f}U >= {config.RISK_MAX_DAILY_LOSS}U）"
+        if state.daily_loss >= _max_daily_loss:
+            reason = f"单日亏损已达上限（{state.daily_loss:.1f}U >= {_max_daily_loss:.0f}U）"
             if dirty:
                 data = _save_state_in_lock(data, state, account_id)
                 save(data)
@@ -317,8 +328,8 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
             return False, reason
 
         # 3. 检查单日最大开仓次数
-        if state.daily_trades_opened >= config.RISK_MAX_DAILY_TRADES:
-            reason = f"单日开仓次数已达上限（{state.daily_trades_opened} >= {config.RISK_MAX_DAILY_TRADES}）"
+        if state.daily_trades_opened >= _max_daily_trades:
+            reason = f"单日开仓次数已达上限（{state.daily_trades_opened} >= {_max_daily_trades}）"
             if dirty:
                 data = _save_state_in_lock(data, state, account_id)
                 save(data)
@@ -336,7 +347,7 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
         # 防止 TP1 后上限放大形成加仓正反馈。（旧版本用 get_dynamic_balance，
         # 现已不再作为基准；移除了无用调用避免多一次余额查询。）
         realized_bal = get_realized_balance(account_id=_resolve_account_id(account_id))
-        max_position = realized_bal * config.RISK_MAX_POSITION_PCT
+        max_position = realized_bal * _max_position_pct
         if state.total_open_stake + stake > max_position:
             reason = (
                 f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
@@ -384,6 +395,15 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
     # NF-4: 优先用 trade 自带的 account_id
     if account_id is None and trade_account_id is not None:
         account_id = trade_account_id
+    # 多账户合规（2026-05）：连亏暂停 / 暂停时长 / 单日亏损告警阈值都按
+    # 账户级覆盖取，避免活跃账户的阈值被 apply_overrides 写到 config 后污染
+    # 非活跃账户的判定。
+    _consec_pause = int(account_param(account_id, 'RISK_CONSECUTIVE_LOSS_PAUSE',
+                                      config.RISK_CONSECUTIVE_LOSS_PAUSE))
+    _pause_hours = int(account_param(account_id, 'RISK_PAUSE_HOURS',
+                                     config.RISK_PAUSE_HOURS))
+    _max_daily_loss = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                          config.RISK_MAX_DAILY_LOSS))
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
 
@@ -409,12 +429,12 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
             )
 
             # 连亏暂停
-            if state.consecutive_losses >= config.RISK_CONSECUTIVE_LOSS_PAUSE:
+            if state.consecutive_losses >= _consec_pause:
                 from datetime import timedelta
-                pause_end = utcnow() + timedelta(hours=config.RISK_PAUSE_HOURS)
+                pause_end = utcnow() + timedelta(hours=_pause_hours)
                 state.paused_until = pause_end.isoformat()
                 logger.warning(
-                    f"🚨 连亏{state.consecutive_losses}次，暂停开仓{config.RISK_PAUSE_HOURS}小时"
+                    f"🚨 连亏{state.consecutive_losses}次，暂停开仓{_pause_hours}小时"
                 )
                 send_tg(
                     f"🚨 <b>风控警告：连亏暂停</b>\n\n"
@@ -425,11 +445,11 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
                 )
 
             # 单日亏损告警
-            if state.daily_loss >= config.RISK_MAX_DAILY_LOSS:
+            if state.daily_loss >= _max_daily_loss:
                 send_tg(
                     f"🛑 <b>风控警告：今日停止交易</b>\n\n"
                     f"今日累计亏损：{state.daily_loss:.1f}U\n"
-                    f"已达上限 {config.RISK_MAX_DAILY_LOSS}U\n"
+                    f"已达上限 {_max_daily_loss:.0f}U\n"
                     f"今日不再开新仓，明天重新来过 💤"
                 )
         else:
@@ -522,7 +542,9 @@ def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
 
     now = utcnow()
     today_dt = now.date()
-    cooldown_hours = config.COOLDOWN_HOURS
+    # 多账户合规（2026-05）：COOLDOWN_HOURS 是账户级字段，按账户取覆盖值。
+    # account_id 为 None/'' 时退化为全局 config 值（单账户兼容）。
+    cooldown_hours = int(account_param(account_id, 'COOLDOWN_HOURS', config.COOLDOWN_HOURS))
 
     for t in reversed(trades):
         if t.get('symbol') != symbol:
@@ -587,11 +609,18 @@ def get_risk_summary(account_id: Optional[str] = None) -> str:
     """获取指定账户的风控状态摘要"""
     state = load_risk_state(account_id)
     acc_id = _resolve_account_id(account_id)
+    # 多账户合规：摘要里展示的阈值也按该账户取
+    _max_daily_loss = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                          config.RISK_MAX_DAILY_LOSS))
+    _max_daily_trades = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES',
+                                          config.RISK_MAX_DAILY_TRADES))
+    _consec_pause = int(account_param(account_id, 'RISK_CONSECUTIVE_LOSS_PAUSE',
+                                      config.RISK_CONSECUTIVE_LOSS_PAUSE))
     lines = [
         f"📋 <b>风控状态</b> [{acc_id}]",
-        f"  今日亏损：{state.daily_loss:.1f} / {config.RISK_MAX_DAILY_LOSS}U",
-        f"  今日开仓：{state.daily_trades_opened} / {config.RISK_MAX_DAILY_TRADES}次",
-        f"  连亏次数：{state.consecutive_losses} / {config.RISK_CONSECUTIVE_LOSS_PAUSE}次",
+        f"  今日亏损：{state.daily_loss:.1f} / {_max_daily_loss:.0f}U",
+        f"  今日开仓：{state.daily_trades_opened} / {_max_daily_trades}次",
+        f"  连亏次数：{state.consecutive_losses} / {_consec_pause}次",
         f"  持仓占用：{state.total_open_stake:.0f}U",
     ]
     if state.paused_until:

@@ -133,28 +133,37 @@ def check_risk_state():
         total_stake = state.get('total_open_stake', 0)
         paused_until = state.get('paused_until')
 
+        # 多账户合规（2026-05）：阈值按账户取覆盖值，避免诊断输出
+        # 显示活跃账户的阈值给非活跃账户判断
+        from common import account_param as _ap
+        _check_acc = None if acc_id == '_default' else acc_id
+        max_dl = float(_ap(_check_acc, 'RISK_MAX_DAILY_LOSS', config.RISK_MAX_DAILY_LOSS))
+        max_dt = int(_ap(_check_acc, 'RISK_MAX_DAILY_TRADES', config.RISK_MAX_DAILY_TRADES))
+        max_cl = int(_ap(_check_acc, 'RISK_CONSECUTIVE_LOSS_PAUSE',
+                         config.RISK_CONSECUTIVE_LOSS_PAUSE))
+
         # 日亏损
-        loss_status = "🔴 已达上限!" if daily_loss >= config.RISK_MAX_DAILY_LOSS else "✅"
-        print(f"    今日亏损: {daily_loss:.1f} / {config.RISK_MAX_DAILY_LOSS}U  {loss_status}")
-        if daily_loss >= config.RISK_MAX_DAILY_LOSS:
+        loss_status = "🔴 已达上限!" if daily_loss >= max_dl else "✅"
+        print(f"    今日亏损: {daily_loss:.1f} / {max_dl:.0f}U  {loss_status}")
+        if daily_loss >= max_dl:
             any_blocked = True
 
         # 日开仓次数
-        trades_status = "🔴 已达上限!" if daily_trades >= config.RISK_MAX_DAILY_TRADES else "✅"
-        print(f"    今日开仓: {daily_trades} / {config.RISK_MAX_DAILY_TRADES}次  {trades_status}")
-        if daily_trades >= config.RISK_MAX_DAILY_TRADES:
+        trades_status = "🔴 已达上限!" if daily_trades >= max_dt else "✅"
+        print(f"    今日开仓: {daily_trades} / {max_dt}次  {trades_status}")
+        if daily_trades >= max_dt:
             any_blocked = True
 
         # 连亏
         consec_status = ""
-        if consec_losses >= config.RISK_CONSECUTIVE_LOSS_PAUSE:
+        if consec_losses >= max_cl:
             consec_status = "🔴 触发暂停!"
             any_blocked = True
-        elif consec_losses >= 2:
+        elif consec_losses >= max_cl - 1:
             consec_status = "⚠️ 接近上限"
         else:
             consec_status = "✅"
-        print(f"    连续亏损: {consec_losses} / {config.RISK_CONSECUTIVE_LOSS_PAUSE}次  {consec_status}")
+        print(f"    连续亏损: {consec_losses} / {max_cl}次  {consec_status}")
 
         # 暂停状态
         if paused_until:

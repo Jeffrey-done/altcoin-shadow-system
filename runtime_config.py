@@ -268,6 +268,46 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
             f"同时存在其他持仓时新开仓将被拒绝。"
         )
 
+    # 新增：复利上限 vs 持仓上限的一致性检查
+    # COMPOUND_MAX_STAKE 是复利后单笔保证金的硬上限。如果它已经 > 最大持仓上限，
+    # 复利触顶后系统会进入"按规则不能开仓但 stake 仍按上限计算"的死循环。
+    # 这是配置层面的 silent kill：用户设了一个永远到不了的复利目标。
+    auto_compound = overrides.get('AUTO_COMPOUND_ENABLED',
+                                  getattr(_config, 'AUTO_COMPOUND_ENABLED', True))
+    compound_max = overrides.get('COMPOUND_MAX_STAKE',
+                                 getattr(_config, 'COMPOUND_MAX_STAKE', 300))
+    if account_id:
+        try:
+            acc_overrides = load_account_overrides(account_id)
+            auto_compound = overrides.get('AUTO_COMPOUND_ENABLED',
+                                          acc_overrides.get('AUTO_COMPOUND_ENABLED', auto_compound))
+            compound_max = overrides.get('COMPOUND_MAX_STAKE',
+                                         acc_overrides.get('COMPOUND_MAX_STAKE', compound_max))
+        except Exception:
+            pass
+
+    try:
+        compound_max = float(compound_max)
+    except (TypeError, ValueError):
+        compound_max = 0
+
+    if auto_compound and compound_max > balance:
+        # 与 DEFAULT_STAKE > balance 不同：COMPOUND_MAX_STAKE 是"复利触顶后"
+        # 的硬上限，亏损时 get_compound_stake 会回退到 DEFAULT_STAKE，所以
+        # 不会立刻锁死开仓，只是当账户累计盈利触顶时进入"理论上能拿大仓位
+        # 但风控拒收"的状态。属于 WARNING 而非 ERROR。
+        warnings_out.append(
+            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > ACCOUNT_BALANCE({balance:.0f}U)，"
+            f"复利触顶后单笔保证金会超过本金，届时风控会永远拒绝开仓。"
+            f"建议把 COMPOUND_MAX_STAKE 控制在 ≤ {balance:.0f}U。"
+        )
+    elif auto_compound and compound_max > max_position:
+        warnings_out.append(
+            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > 最大持仓上限({max_position:.0f}U)，"
+            f"复利触顶后只要有任何其他持仓，新开仓将被拒绝。建议把 COMPOUND_MAX_STAKE "
+            f"控制在 ≤ {max_position:.0f}U 或提高 RISK_MAX_POSITION_PCT。"
+        )
+
     # 日志记录
     for e in errors:
         logger.error(f"配置一致性 ERROR: {e}")

@@ -5,7 +5,10 @@
 """
 
 import config
-from common import setup_logger, send_tg, TRADES_FILE, load_json
+from common import (
+    setup_logger, send_tg, TRADES_FILE, load_json,
+    get_current_account_id, filter_trades_by_account,
+)
 
 logger = setup_logger("auto_optimize")
 
@@ -32,7 +35,12 @@ def run_auto_optimize():
         return
 
     # 检查最近是否有足够交易作为参考
+    # 多账户合规（2026-05）：原实现读 ALL accounts 的交易、用 active 账户的参数对比，
+    # 多账户场景会输出错位建议（"基于全部账户的胜率，但参数对应的是 active 账户"）。
+    # 改为按活跃账户过滤交易；单账户兼容时 account_id='' filter 不生效，行为不变。
+    account_id = get_current_account_id()
     trades = load_json(TRADES_FILE, [])
+    trades = filter_trades_by_account(trades, account_id)
     closed = [t for t in trades if t.get('status') == 'closed']
     if len(closed) < 5:
         logger.info(f"已平仓交易不足5笔（{len(closed)}），跳过优化分析")

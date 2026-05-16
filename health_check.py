@@ -71,14 +71,30 @@ def check_no_signal() -> tuple:
 
 
 def check_total_loss() -> tuple:
-    """检查累计亏损是否过大"""
+    """检查累计亏损是否过大。
+
+    多账户兼容（2026-05 修复）：原实现用全局 config.ACCOUNT_BALANCE 比对全部
+    交易合计盈亏，多账户场景会把所有账户的亏损叠加再除一个错本金，得到
+    无意义的告警阈值。改为按当前活跃账户过滤交易 + 取该账户的 ACCOUNT_BALANCE
+    覆盖值。
+    """
+    from common import (
+        get_current_account_id as _get_acc, filter_trades_by_account as _filter,
+        _account_balance_for as _get_bal,
+    )
+    account_id = _get_acc()
     trades = load_json(TRADES_FILE, [])
+    trades = _filter(trades, account_id)
     closed = [t for t in trades if t.get('status') == 'closed']
     if not closed:
         return True, "无已平仓交易"
 
     total_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed)
-    loss_pct = abs(total_pnl) / config.ACCOUNT_BALANCE * 100 if total_pnl < 0 else 0
+    balance = _get_bal(account_id)
+    if balance <= 0:
+        # 异常配置兜底，避免除 0
+        return True, f"累计盈亏 {total_pnl:+.1f}U（账户本金未配置，跳过比例阈值告警）"
+    loss_pct = abs(total_pnl) / balance * 100 if total_pnl < 0 else 0
 
     if total_pnl < 0 and loss_pct >= MAX_TOTAL_LOSS_PCT:
         return False, f"累计亏损 {total_pnl:.1f}U（本金的 {loss_pct:.0f}%），策略可能失效"
@@ -110,8 +126,18 @@ def check_file_health() -> tuple:
 
 
 def check_daily_performance() -> tuple:
-    """检查今日表现"""
+    """检查今日表现。
+
+    多账户兼容（2026-05 修复）：按当前活跃账户过滤 + 用该账户的
+    RISK_MAX_DAILY_LOSS 覆盖值做阈值（账户级风控参数可能不同）。
+    """
+    from common import (
+        get_current_account_id as _get_acc, filter_trades_by_account as _filter,
+        account_param as _ap,
+    )
+    account_id = _get_acc()
     trades = load_json(TRADES_FILE, [])
+    trades = _filter(trades, account_id)
     today = today_str()
 
     today_closed = [
@@ -127,8 +153,9 @@ def check_daily_performance() -> tuple:
 
     msg = f"今日 {len(today_closed)} 笔，盈亏 {today_pnl:+.1f}U，胜率 {wins}/{len(today_closed)}"
 
-    # 今日大亏告警
-    if today_pnl < -config.RISK_MAX_DAILY_LOSS * 0.8:
+    # 今日大亏告警（按账户取阈值）
+    max_daily_loss = float(_ap(account_id, 'RISK_MAX_DAILY_LOSS', config.RISK_MAX_DAILY_LOSS))
+    if today_pnl < -max_daily_loss * 0.8:
         return False, msg + "（接近日亏上限！）"
     return True, msg
 

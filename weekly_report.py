@@ -281,21 +281,27 @@ def calculate_weekly_stats(short_trades):
 #  策略建议
 # ══════════════════════════════════════════════════════════════════
 
-def generate_suggestions(stats):
+def generate_suggestions(stats, balance: float = None):
     """
     根据统计结果生成可操作的建议列表。
+
+    多账户兼容（2026-05 修复）：单日亏损 20% 的阈值原来用全局
+    config.ACCOUNT_BALANCE，多账户场景会用错本金。允许调用方传入账户级本金。
 
     Returns:
         list[str]: 建议列表
     """
+    if balance is None:
+        balance = float(getattr(config, 'ACCOUNT_BALANCE', 100))
+
     suggestions = []
 
     # 胜率过低
     if stats['total_trades'] > 0 and stats['win_rate'] < 40:
         suggestions.append("胜率低于40%，建议收紧入场条件（提高RSI阈值或增加确认信号）")
 
-    # 最大单日亏损过大
-    if stats['max_drawdown_day'] < -(config.ACCOUNT_BALANCE * 0.20):
+    # 最大单日亏损过大（按账户本金的 20%）
+    if balance > 0 and stats['max_drawdown_day'] < -(balance * 0.20):
         suggestions.append("单日最大亏损超过本金20%，建议降低杠杆或减少单笔仓位")
 
     # 平均持仓时间过长
@@ -322,11 +328,17 @@ def generate_suggestions(stats):
 #  报告格式化
 # ══════════════════════════════════════════════════════════════════
 
-def _get_weekly_grade(total_pnl):
-    """根据ROI评级"""
-    if config.ACCOUNT_BALANCE == 0:
+def _get_weekly_grade(total_pnl, balance: float = None):
+    """根据ROI评级。
+
+    多账户兼容（2026-05 修复）：原实现用全局 config.ACCOUNT_BALANCE，多账户场景
+    会用错本金。允许调用方传入账户级本金；不传则回退到全局值，保证旧用法不破。
+    """
+    if balance is None:
+        balance = float(getattr(config, 'ACCOUNT_BALANCE', 100))
+    if balance <= 0:
         return 'F', 0.0
-    roi = total_pnl / config.ACCOUNT_BALANCE * 100
+    roi = total_pnl / balance * 100
     if roi >= config.WEEKLY_ROI_GRADE_A:
         return 'A', roi
     elif roi >= config.WEEKLY_ROI_GRADE_B:

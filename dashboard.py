@@ -174,6 +174,32 @@ def check_api_token(f):
 #  Data Reading
 # ══════════════════════════════════════════════════════════════════
 
+def _load_risk_v1_view(account_id: str) -> dict:
+    """
+    把 risk_state.json (v2 多账户结构) 转成单账户 v1 平铺视图，
+    供前端 templates/index.html 直接使用 risk.daily_loss / paused_until /
+    consecutive_losses 等字段（前端模板长期依赖 v1 结构）。
+
+    BUG 修复（2026-05）：
+      原实现 `load_json(RISK_FILE, {})` 后直接把 {_version:2, accounts:{...}}
+      传给前端，导致 risk.daily_loss 永远为 undefined → 显示 "0/30U"，
+      paused_until 也读不出来 → 永远显示"正常"，连亏暂停状态完全失真。
+
+      统一改走 risk_control.load_risk_state(account_id)，它会自动处理
+      v1→v2 迁移、按账户解析、日期翻转重置，再把 RiskState dataclass
+      转回 v1 平铺 dict 给前端。
+    """
+    try:
+        from risk_control import load_risk_state
+        state = load_risk_state(account_id)
+        return state.to_dict()
+    except Exception as e:
+        # 风控状态读取异常时返回空字典，让前端按默认值渲染（避免 500）
+        import logging as _log
+        _log.getLogger("dashboard").warning(f"读取风控状态失败: {e}")
+        return {}
+
+
 def get_dashboard_data(account_id: str = None) -> dict:
     """汇总所有数据供前端展示（按指定账户过滤；account_id=None 时使用活跃账户）"""
     trades = load_json(TRADES_FILE, [])
@@ -181,7 +207,11 @@ def get_dashboard_data(account_id: str = None) -> dict:
         account_id = get_current_account_id()
     trades = filter_trades_by_account(trades, account_id)
     candidates = load_json(CANDIDATES_FILE, [])
-    risk_state = load_json(RISK_FILE, {})
+    # BUG 修复（2026-05）：以前是 load_json(RISK_FILE, {})，risk_state 是 v2
+    # 多账户嵌套结构（{_version:2, accounts:{...}}），前端模板按 v1 平铺字段
+    # 读取会全部失效。改用 _load_risk_v1_view 把当前账户的 RiskState 转成
+    # v1 兼容的平铺 dict。
+    risk_state = _load_risk_v1_view(account_id)
 
     # 分离做空和做多（保留direction字段向后兼容）
     short_trades = [t for t in trades if t.get('direction', 'SHORT') == 'SHORT']
@@ -366,8 +396,12 @@ def _get_risk_history(pnl_history: dict) -> list:
 # L-6 修复：events 缓存（mtime 失效）
 # 旧实现每次 /api/events 都全表扫一遍 trades + filter（虽 7 天窗口但仍 O(N)）。
 # 加 mtime 缓存：trades.json 不变时直接返回上次结果。
+# 优化（2026-05）：缓存 key 同时跟踪 RISK_FILE mtime —— 风控暂停事件
+# (paused_until) 在 risk_state.json 改但 trades.json 不变的情况下也能立刻
+# 体现到 /api/events，否则告警事件最坏要等到下一笔交易开/平仓才出现。
 _events_cache_lock = threading.Lock()
-_events_cache_mtime: float = 0.0
+_events_cache_trades_mtime: float = 0.0
+_events_cache_risk_mtime: float = 0.0
 _events_cache_account: str = ''
 _events_cache_data: list = []
 
@@ -379,8 +413,10 @@ def _extract_events() -> list:
 
     B8 优化：只扫最近 7 天的事件，不再每 30s 全量遍历交易历史。
     L-6 优化：mtime 缓存 — 文件未变时复用上次结果。
+    2026-05 优化：同时跟踪 RISK_FILE mtime，风控暂停事件秒级生效。
     """
-    global _events_cache_mtime, _events_cache_account, _events_cache_data
+    global _events_cache_trades_mtime, _events_cache_risk_mtime
+    global _events_cache_account, _events_cache_data
 
     EVENT_WINDOW_DAYS = 7
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=EVENT_WINDOW_DAYS)
@@ -388,15 +424,20 @@ def _extract_events() -> list:
 
     account_id = get_current_account_id()
 
-    # 先看缓存
+    # 先看缓存（trades + risk 两个 mtime 都没变才命中）
     try:
-        current_mtime = os.path.getmtime(TRADES_FILE)
+        current_trades_mtime = os.path.getmtime(TRADES_FILE)
     except OSError:
-        current_mtime = 0.0
+        current_trades_mtime = 0.0
+    try:
+        current_risk_mtime = os.path.getmtime(RISK_FILE)
+    except OSError:
+        current_risk_mtime = 0.0
 
     with _events_cache_lock:
         if (
-            _events_cache_mtime == current_mtime
+            _events_cache_trades_mtime == current_trades_mtime
+            and _events_cache_risk_mtime == current_risk_mtime
             and _events_cache_account == (account_id or '')
             and _events_cache_data
         ):
@@ -405,7 +446,10 @@ def _extract_events() -> list:
     events = []
     trades = load_json(TRADES_FILE, [])
     trades = filter_trades_by_account(trades, account_id)
-    risk_state = load_json(RISK_FILE, {})
+    # BUG 修复（2026-05）：v2 多账户格式下 load_json(RISK_FILE) 返回的是
+    # 嵌套 dict（{_version:2, accounts:{...}}），直接 .get('paused_until') 永远 None。
+    # 改用 _load_risk_v1_view 拿当前账户的扁平视图。
+    risk_state = _load_risk_v1_view(account_id)
 
     # Trade open/close events（只看 7 天内的）
     for t in trades:
@@ -452,7 +496,8 @@ def _extract_events() -> list:
     result = events[:50]
 
     with _events_cache_lock:
-        _events_cache_mtime = current_mtime
+        _events_cache_trades_mtime = current_trades_mtime
+        _events_cache_risk_mtime = current_risk_mtime
         _events_cache_account = account_id or ''
         _events_cache_data = list(result)
 

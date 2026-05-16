@@ -290,9 +290,14 @@ def cmd_status() -> str:
         header = "📭 <b>当前无持仓</b>"
 
     # 风控简报
-    risk = load_json(RISK_FILE, {})
-    daily_loss = risk.get('daily_loss', 0)
-    paused = risk.get('paused_until')
+    # BUG 修复（2026-05）：原实现用 load_json(RISK_FILE, {}) 读取，然而 v2 多账户
+    # 格式下数据嵌套在 accounts.<id> 下，risk.get('daily_loss') 永远拿不到值——
+    # /status 永远显示「亏 0.0/30U」+ 永远「正常」🟢，连亏暂停完全失效。
+    # 改用 risk_control.load_risk_state() 走标准 v1→v2 兼容路径，按当前账户取数。
+    from risk_control import load_risk_state as _load_state
+    rstate = _load_state()
+    daily_loss = rstate.daily_loss
+    paused = rstate.paused_until
     risk_status = "🟢" if not paused and daily_loss < config.RISK_MAX_DAILY_LOSS else "🔴"
 
     balance = get_dynamic_balance()

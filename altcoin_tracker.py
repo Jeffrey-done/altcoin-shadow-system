@@ -94,6 +94,14 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         return EvalResult(pnl_pct=0.0, pnl_usd=0.0, current_price=current_price)
 
+    # 异常数据守卫：shares==0（历史迁移可能产生）会让 remaining_shares 计算
+    # 全部失效，且交易所平仓数量为 0 必然报错。直接跳过本轮，由下次评估或人工介入处理。
+    if trade.shares <= 0:
+        logger.error(
+            f"⚠️ Trade {trade.id} shares={trade.shares} 异常，本轮跳过评估"
+        )
+        return EvalResult(pnl_pct=0.0, pnl_usd=0.0, current_price=current_price)
+
     # 方向盈亏
     if trade.direction == 'LONG':
         pnl_pct = (current_price - entry) / entry * 100  # 做多：涨=赚

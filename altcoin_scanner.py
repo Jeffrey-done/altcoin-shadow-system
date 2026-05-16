@@ -780,32 +780,9 @@ def check_candidates():
     #
     #  关键：worker 线程必须是 daemon，否则子进程主线程退出时 Python
     #  会等所有非 daemon 线程结束 → 子进程根本不会退出，反而被父进程
-    #  600s 强杀。下面 _make_daemon_executor 通过 threading.Thread 的
-    #  默认 daemon 状态控制（继承当前线程，子进程主线程是 daemon=False，
-    #  所以 worker 默认也是 daemon=False，必须显式 patch）。
+    #  600s 强杀。下面 _DaemonThreadPoolExecutor 子类化 ThreadPoolExecutor
+    #  在 _adjust_thread_count 后把所有 worker 标 daemon，作用域只限实例。
     # ══════════════════════════════════════════════════════════════════
-
-    def _make_daemon_executor(max_workers: int) -> ThreadPoolExecutor:
-        """创建一个所有 worker 都是 daemon 的 ThreadPoolExecutor。
-        这样 main thread 退出时，没跑完的 worker 不会阻塞进程退出。"""
-        executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix='cand-eval',
-        )
-        # 强制 worker 线程为 daemon：拦截 _adjust_thread_count 后的 Thread 创建
-        # CPython 实现细节：ThreadPoolExecutor 内部用 _threads set 跟踪 worker
-        original_adjust = executor._adjust_thread_count
-        def _patched():
-            original_adjust()
-            for t in list(executor._threads):
-                if not t.daemon and not t.is_alive():
-                    # 还没 start，可以改 daemon
-                    try:
-                        t.daemon = True
-                    except RuntimeError:
-                        pass
-        # 简化：直接预启动所有 worker 并设 daemon
-        # 实际上更安全的方式是 monkey-patch threading.Thread 在 submit 之前
-        return executor
 
     triggered_payloads = []  # [(c, payload), ...]
     skipped_count = 0
