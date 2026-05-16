@@ -447,29 +447,61 @@ def refresh_open_stake(account_id: Optional[str] = None) -> None:
             logger.info(f"🔄 持仓同步 [{_resolve_account_id(account_id)}]：{actual:.0f}U（无偏差）")
 
 
+def release_partial_stake(stake: float, account_id: Optional[str] = None) -> None:
+    """
+    M-1 修复：TP1 半仓平仓后释放保证金到 total_open_stake，
+    但不影响 daily_loss / consecutive_losses（这些只在最终平仓时记账）。
+
+    背景：record_trade_closed 会重置/累加连亏计数，把"TP1 锁定的浮动利润"
+    当成实现盈利记账会让 TP1 后再硬止损的整笔亏损被错误地清空连亏计数。
+    专用函数只动 total_open_stake，避免误触发风控状态。
+    """
+    if stake <= 0:
+        return
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data, account_id)
+        new_stake = state.total_open_stake - stake
+        if new_stake < -0.01:
+            logger.warning(
+                f"⚠️ release_partial_stake: total_open_stake 漂移 "
+                f"[{_resolve_account_id(account_id)}]: "
+                f"{state.total_open_stake:.2f} - {stake:.2f} = {new_stake:.2f}，从交易文件反算修正"
+            )
+            state.total_open_stake = _calc_actual_open_stake(account_id)
+        else:
+            state.total_open_stake = max(0.0, new_stake)
+        data = _save_state_in_lock(data, state, account_id)
+        save(data)
+    logger.info(
+        f"📝 TP1 半仓释放保证金 [{_resolve_account_id(account_id)}]：-{stake:.0f}U"
+    )
+
+
 def is_in_cooldown(symbol: str, account_id: Optional[str] = None) -> tuple:
     """
     检查某币种在指定账户下是否在冷却期内。
 
-    account_id 语义:
-      - None     → 跨所有账户扫描(默认;和 scanner 其他模块调用方式对齐)
-      - ''       → 仅扫描 account_id 为空的老数据(历史迁移兼容)
-      - 'acc_X'  → 只看指定账户的交易
+    account_id 语义（2026-05 修复后统一）:
+      - None 或 ''        → 跨所有账户扫描（保守默认；任一账户的止损都会触发冷却）
+      - 非空字符串 'acc_X' → 仅看 acc_X 名下的交易（账户级精准查询）
 
-    为什么 None 不走"活跃账户":is_in_cooldown 的保护意图是"这个币刚刚在
-    任何账户下出过止损,别急着再开" — 如果仅限活跃账户,切账户后冷却
-    立即失效,是风控漏洞。scanner 在多账户循环里已经显式传 account_id
-    做账户级精准检查;不传时应按"全局保守"语义执行。
+    背景:
+      旧实现 '' 走 _resolve_account_id 后会变成 '_default'，跳过 filter
+      也是"全扫"的效果，与 None 行为相同但语义混乱（注释写"仅扫描 account_id 为空
+      的老数据"，实际是全扫）。新语义：把 None / '' / 任何 falsy 都归为"默认全扫"，
+      明确字符串才走账户过滤。
+
+    使用建议:
+      - scanner 默认调用 is_in_cooldown(symbol) 不传 account_id → 全局保守
+      - 需要按账户隔离时显式传 account_id='acc_X'（仅 COOLDOWN_SCOPE='per_account'
+        时 scanner 会这样传）
     """
     from models import CloseType
     trades = load_json(TRADES_FILE, [])
 
-    # account_id=None 时不过滤(全局视角);显式传入 '' 或 'acc_X' 才按账户过滤。
-    # 这是和旧语义(None → 活跃账户)的关键差别。
-    if account_id is not None:
-        acc_id = _resolve_account_id(account_id)
-        if acc_id != '_default':
-            trades = filter_trades_by_account(trades, acc_id)
+    # 统一语义：仅当 account_id 是非空字符串时才按账户过滤
+    if account_id:
+        trades = filter_trades_by_account(trades, account_id)
 
     now = utcnow()
     today_dt = now.date()

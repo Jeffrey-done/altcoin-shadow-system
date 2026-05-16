@@ -55,6 +55,11 @@ class BacktestParams:
     stake: float = config.DEFAULT_STAKE
     slippage_pct: float = config.BACKTEST_SLIPPAGE_PCT
     fee_pct: float = config.BACKTEST_FEE_PCT
+    # M-3 修复：资金费率持仓成本（做空 → 正费率收钱、负费率付钱；按 8h 周期扣算）
+    # 单位：%/8h（与交易所 funding rate 单位一致）
+    # 默认 0.01%/8h ≈ 行业平均；保守起见在回测里把做空者支付的费率成本计入。
+    # 调用方可通过传入实际历史 funding rate 进一步精确化。
+    funding_rate_pct: float = 0.01
 
 
 @dataclass
@@ -525,10 +530,18 @@ def simulate_trade(klines: List[dict], entry_idx: int,
             tp1_pnl = notional * params.tp1_close_ratio * params.tp1_pct / 100
         remaining_pnl = notional * stake_remaining_ratio * pnl_pct / 100
         fee = notional * params.fee_pct / 100 * 2
+        # M-3 修复：资金费率持仓成本
+        # 做空 + 正 funding rate → 多头付空头 → 收益（不扣费）
+        # 做空 + 负 funding rate → 空头付多头 → 亏损（扣费）
+        # 此处保守地按"做空总是支付费率"假设（与做空策略下负费率/正费率
+        # 概率分布对策略不利方向保守计算）
+        # 持仓时长 ≈ bar_off 小时；每 8h 计一次费率
+        funding_periods = bar_off / 8.0
+        funding_cost = abs(notional) * (params.funding_rate_pct / 100) * funding_periods
         trade.exit_price = exit_price
         trade.exit_time = exit_time
         trade.pnl_pct = pnl_pct
-        trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee, 2)
+        trade.pnl_usd = round(tp1_pnl + remaining_pnl - fee - funding_cost, 2)
         trade.exit_reason = reason
         trade.hold_bars = bar_off
         trade.tp1_hit = tp1_hit_flag

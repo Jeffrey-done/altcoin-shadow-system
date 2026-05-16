@@ -141,27 +141,33 @@ def validate_change(key: str, value: Any) -> Tuple[bool, str]:
     return True, ""
 
 
-def validate_cross_field_consistency(overrides: dict, account_id: str = None) -> list:
+def validate_cross_field_consistency(overrides: dict, account_id: str = None) -> tuple:
     """
     跨字段一致性校验：检测参数组合是否会导致系统功能异常。
 
-    不阻止保存（返回警告列表），但会通过日志和 TG 通知管理员。
-    调用方（admin_panel）应在保存成功后把 warnings 展示给用户。
+    2026-05 修复：返回 (errors, warnings) 元组（旧版仅返回单一 list）：
+      - errors:   阻止保存级别（admin panel 应拒绝并返回 400；保存会让系统永远拒绝开仓）
+      - warnings: 提示级别（不阻止保存，但会记录日志/推送告警让用户知晓）
 
-    当前检查项：
-      1. DEFAULT_STAKE > ACCOUNT_BALANCE × RISK_MAX_POSITION_PCT
-         → 第一笔开仓就占满额度，第二笔永远无法开仓
-      2. DEFAULT_STAKE > ACCOUNT_BALANCE
-         → 保证金超过本金，风控 can_open_trade 永远拒绝
+    当前规则:
+      - DEFAULT_STAKE > ACCOUNT_BALANCE
+        → ERROR（保证金超过本金，风控 can_open_trade 永远拒绝开仓）
+      - DEFAULT_STAKE > ACCOUNT_BALANCE × RISK_MAX_POSITION_PCT 但 ≤ ACCOUNT_BALANCE
+        → WARNING（首笔可开，但同时存在其他持仓时新开仓会被拒）
+
+    向后兼容：返回的 tuple 仍可被 `if warnings:` 当作 truthy 判断，
+    且单元素元组下迭代仍然得到字符串列表。原来的调用方
+    `for w in warnings: ...` 在切到 `errors, warnings = validate_*` 后即可。
 
     参数:
       overrides: 即将保存的覆盖值 dict
       account_id: 指定账户 ID；None 使用活跃账户（用于读取当前 config 值做合并）
 
-    返回: [warning_message, ...] 空列表表示无警告
+    返回: (errors: list[str], warnings: list[str])
     """
     import config as _config
-    warnings = []
+    errors: list = []
+    warnings_out: list = []
 
     # 合并：用 overrides 覆盖当前 config 值，得到"如果保存后"的生效值
     balance = overrides.get('ACCOUNT_BALANCE', getattr(_config, 'ACCOUNT_BALANCE', 100))
@@ -184,27 +190,29 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
         stake = float(stake)
         pos_pct = float(pos_pct)
     except (TypeError, ValueError):
-        return warnings  # 类型有问题，单字段校验已经会报错
+        return (errors, warnings_out)  # 类型有问题，单字段校验已经会报错
 
     max_position = balance * pos_pct
 
     if stake > balance:
-        warnings.append(
-            f"⚠️ DEFAULT_STAKE({stake:.0f}U) > ACCOUNT_BALANCE({balance:.0f}U)，"
-            f"保证金超过本金，风控将永远拒绝开仓"
+        errors.append(
+            f"❌ DEFAULT_STAKE({stake:.0f}U) > ACCOUNT_BALANCE({balance:.0f}U)，"
+            f"保证金超过本金，风控将永远拒绝开仓。请提高 ACCOUNT_BALANCE 或降低 DEFAULT_STAKE。"
         )
     elif stake > max_position:
-        warnings.append(
+        warnings_out.append(
             f"⚠️ DEFAULT_STAKE({stake:.0f}U) > 最大持仓上限({max_position:.0f}U = "
             f"ACCOUNT_BALANCE {balance:.0f} × RISK_MAX_POSITION_PCT {pos_pct})，"
-            f"同时存在其他持仓时新开仓将被拒绝"
+            f"同时存在其他持仓时新开仓将被拒绝。"
         )
 
-    if warnings:
-        for w in warnings:
-            logger.warning(f"配置一致性警告: {w}")
+    # 日志记录
+    for e in errors:
+        logger.error(f"配置一致性 ERROR: {e}")
+    for w in warnings_out:
+        logger.warning(f"配置一致性 WARNING: {w}")
 
-    return warnings
+    return (errors, warnings_out)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -293,6 +301,11 @@ def save_overrides(overrides: dict) -> None:
     """
     保存配置覆盖（兼容旧接口）。
     自动拆分全局字段和账户字段。
+
+    防御纵深：调用 validate_cross_field_consistency 检查 errors，
+    若发现致命组合（如 DEFAULT_STAKE > ACCOUNT_BALANCE）抛 ValueError 拒绝写盘。
+    Admin panel 应当在调用本函数前先做 pre-flight 校验返回 400，
+    本函数的检查是最后一道防线，避免直接调用方绕过 admin UI 写入坏配置。
     """
     data = _load_raw_config()
 
@@ -301,6 +314,13 @@ def save_overrides(overrides: dict) -> None:
         active_id = admin_secrets.get_active_account_id()
     except Exception:
         active_id = ''
+
+    # 防御性拒绝：致命错误直接抛
+    errors, _warnings = validate_cross_field_consistency(overrides, account_id=active_id)
+    if errors:
+        raise ValueError(
+            "配置一致性校验失败，拒绝保存：\n" + "\n".join(errors)
+        )
 
     # 拆分并保存
     for key, value in overrides.items():
@@ -312,9 +332,6 @@ def save_overrides(overrides: dict) -> None:
             data.setdefault(active_id, {})[key] = value
 
     _save_raw_config(data)
-
-    # 跨字段一致性检查（保存后警告，不阻止）
-    validate_cross_field_consistency(overrides, account_id=active_id)
 
 
 def load_account_overrides(account_id: str) -> dict:

@@ -49,12 +49,14 @@ docker-compose up -d
 ## 核心流程
 
 ```
-1. 全市场扫描 → 日线 RSI>80 + 涨幅>10% + 成交量>50万U → 加入候选池
+1. 全市场扫描 → 日线 RSI≥75 + 涨幅>10% + 成交量>50万U → 加入候选池
 2. 候选确认   → 4h RSI 回落 或 弃盘点信号 → 信号评分
 3. 开仓决策   → 评分≥40分 + 风控通过 + 价格确认 + 冷却期检查 → 开仓
 4. 持仓管理   → 硬止损/移动止损/分批止盈/时间止损 → 实时监控
 5. 风控保护   → 单日亏损上限/最大开仓次数/连亏暂停/持仓占比限制
 ```
+
+> 阈值以 `config.py` 为准（`DAILY_RSI_MIN`、`SCORE_HALF_THRESHOLD`、`RISK_MAX_DAILY_TRADES` 等）。本节描述若与 `config.py` 不同，请以 `config.py` 为准。
 
 ## 策略参数
 
@@ -385,6 +387,16 @@ DASHBOARD_SECRET_KEY=<另一个 32 字节随机串>
 ```
 
 **4. 首次访问：浏览器打开 `https://你的域名/Kx3mQ8-.../setup`**
+
+> 🔐 **M-8 安全加固**：从 v5.x 起，访问 `/setup` 端点要求宿主机存在
+> `.admin_setup_token` 文件作为运维明确授权。首次部署时执行：
+> ```bash
+> ssh 服务器
+> touch /path/to/altcoin-shadow-system/.admin_setup_token
+> ```
+> setup 成功后此文件会被自动删除。如果忘记 setup 凭证需重做，先 `rm admin_secrets.json`
+> 再 `touch .admin_setup_token`。
+
 - 用 Google Authenticator / 1Password 扫 TOTP 二维码
 - 设置 ≥12 字符的密码
 - 输入 Authenticator 当前 6 位码确认绑定

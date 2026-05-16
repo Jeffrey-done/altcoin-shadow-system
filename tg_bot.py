@@ -445,6 +445,13 @@ def run_bot():
 
     logger.info("🤖 TG Bot 已启动，等待指令...")
 
+    # M-5 修复：未授权 chat_id 触达限速
+    # 防止 bot token 泄露后被人加进群组刷屏占用配额并产生告警风暴
+    # 同一未授权 chat_id 1 小时内 logger.warning 超过 50 次后转 debug 静默
+    _unauth_seen: dict = {}  # {chat_id: (count, first_seen_ts)}
+    _UNAUTH_LOG_THRESHOLD = 50
+    _UNAUTH_WINDOW_SEC = 3600
+
     while True:
         try:
             updates = _poll_updates()
@@ -461,7 +468,21 @@ def run_bot():
                     logger.warning("TG_CHAT_ID 未配置，拒绝所有请求（安全模式）")
                     continue
                 if chat_id != TG_CHAT_ID:
-                    logger.warning(f"拒绝未授权 chat_id: {chat_id}")
+                    # M-5: 限速防刷屏
+                    cnt, ts = _unauth_seen.get(chat_id, (0, time.time()))
+                    if time.time() - ts > _UNAUTH_WINDOW_SEC:
+                        # 窗口过期 → 重置
+                        cnt, ts = 0, time.time()
+                    cnt += 1
+                    _unauth_seen[chat_id] = (cnt, ts)
+                    if cnt <= _UNAUTH_LOG_THRESHOLD:
+                        logger.warning(f"拒绝未授权 chat_id: {chat_id}")
+                    elif cnt == _UNAUTH_LOG_THRESHOLD + 1:
+                        logger.warning(
+                            f"未授权 chat_id {chat_id} 1小时内已触发 {cnt} 次，转 debug"
+                        )
+                    else:
+                        logger.debug(f"拒绝未授权 chat_id（已限速）: {chat_id}")
                     continue
 
                 if not text.startswith('/'):

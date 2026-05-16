@@ -34,6 +34,7 @@ runtime_config.json.*
 admin_audit.log
 .admin_ratelimit.json
 .admin_ratelimit.json.*
+.admin_setup_token
 
 # ══════════════════════════════════════════════════════════════════
 #  运行期数据 / 锁文件（含持仓、风控、候选池等）
