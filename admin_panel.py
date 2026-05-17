@@ -583,12 +583,30 @@ def create_blueprint(url_secret: str) -> Blueprint:
         except Exception:
             pass
 
+        # 仓位模式（v5.1）：当前 POSITION_MODE / scale / 余额来源
+        position_scale = {}
+        try:
+            position_scale = runtime_config.get_position_scale_state()
+            position_scale['baseline_balance'] = getattr(
+                __import__('config'), 'BASELINE_BALANCE', 100
+            )
+        except Exception:
+            position_scale = {
+                'mode': current.get('POSITION_MODE', 'manual'),
+                'effective_balance': None,
+                'scale': 1.0,
+                'balance_source': 'config',
+                'scaled_fields': {},
+                'baseline_balance': 100,
+            }
+
         data = {
             'config': current,
             'fields_meta': fields_meta,
             'global_config': global_config,
             'accounts_config': accounts_config,
             'config_defaults': config_defaults,
+            'position_scale': position_scale,
             'compound': {
                 'current_stake': compound_stake,
                 'dynamic_balance': dynamic_balance,

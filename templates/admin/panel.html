@@ -270,6 +270,60 @@ select { cursor: pointer; }
         </select>
       </div>
     </div>
+
+    <!-- 仓位模式（v5.1）：全局字段 -->
+    <div class="card">
+      <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）</div>
+      <div class="form-row">
+        <label>POSITION_MODE</label>
+        <select id="cfg-POSITION_MODE">
+          <option value="manual">manual — 手动（用户填什么就是什么）</option>
+          <option value="proportional">proportional — 按余额比例自动缩放</option>
+        </select>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-muted);margin:8px 0 14px;">
+        <b>manual</b>：账号字段 DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP /
+        COMPOUND_INCREASE 用下方"仓位与风控" tab 你手填的值。<br>
+        <b>proportional</b>：以 BASELINE_BALANCE=100U 为基准，按
+        <code>实际余额 ÷ 100</code> 自动缩放上述 4 个金额字段（杠杆/止盈止损%/RSI 阈值不变）。
+        实盘时余额从交易所拉取（60s 缓存），影子模式用账户配置里的 ACCOUNT_BALANCE 手填值。
+        <span style="color:var(--yellow);"><b>COMPOUND_MAX_STAKE 不参与缩放</b>，绝对值封顶（默认 300U）。</span>
+      </div>
+      <div id="position-scale-state" class="compound-box" style="border-color:var(--accent);">
+        <div class="compound-title">
+          <i data-lucide="activity" style="width:14px;height:14px;"></i>
+          当前生效状态（每 30s 刷新）
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">模式</label>
+          <span id="pscale-mode" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">实际余额 / 来源</label>
+          <span id="pscale-balance" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">缩放系数 (scale)</label>
+          <span id="pscale-scale" style="font-weight:700;color:var(--green);">1.00x</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">DEFAULT_STAKE</label>
+          <span id="pscale-stake" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">RISK_MAX_DAILY_LOSS</label>
+          <span id="pscale-loss" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">COMPOUND_STEP / INCREASE</label>
+          <span id="pscale-compound" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:0;">
+          <label style="color:var(--text-primary);">COMPOUND_MAX_STAKE（不缩放）</label>
+          <span id="pscale-maxstake" style="font-weight:700;color:var(--yellow);">--</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- TAB: Credentials -->
@@ -607,8 +661,76 @@ async function loadState() {
     // 5. 复利显示（基于 cfgTargetAccountId）
     refreshCompoundDisplay();
 
+    // 6. 仓位模式状态显示（v5.1）
+    renderPositionScaleState(s.position_scale || {});
+
     lucide.createIcons();
   } catch (e) { alertBox('加载失败: ' + e.message, 'error'); }
+}
+
+// 渲染仓位模式状态卡片，并在 proportional 模式下把被缩放的 4 个字段
+// 标记成只读 + 提示"由比例模式自动计算"，避免用户混淆。
+function renderPositionScaleState(ps) {
+  const mode = ps.mode || 'manual';
+  const scale = (ps.scale != null) ? Number(ps.scale).toFixed(2) : '1.00';
+  const bal = (ps.effective_balance != null) ? Number(ps.effective_balance).toFixed(2) : '--';
+  const src = ps.balance_source || 'config';
+  const sf = ps.scaled_fields || {};
+  const baseline = ps.baseline_balance || 100;
+
+  const srcLabel = {
+    'config':      '配置(影子/手填)',
+    'binance':     '交易所(Binance 实盘)',
+    'okx':         '交易所(OKX 实盘)',
+    'both':        '交易所(双所相加)',
+    'unavailable': '不可用 → 回退',
+  }[src] || src;
+
+  const setText = (id, val, color) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = val;
+    if (color) el.style.color = color;
+  };
+
+  setText('pscale-mode', mode === 'proportional' ? 'PROPORTIONAL（按比例）' : 'MANUAL（手动）',
+          mode === 'proportional' ? 'var(--accent)' : 'var(--text-primary)');
+  setText('pscale-balance', `${bal}U（${srcLabel}, baseline=${baseline}U）`);
+  setText('pscale-scale', `${scale}x`);
+
+  // 缩放后的字段值
+  const stake = sf.DEFAULT_STAKE != null ? sf.DEFAULT_STAKE : '--';
+  const loss = sf.RISK_MAX_DAILY_LOSS != null ? sf.RISK_MAX_DAILY_LOSS : '--';
+  const step = sf.COMPOUND_STEP != null ? sf.COMPOUND_STEP : '--';
+  const inc = sf.COMPOUND_INCREASE != null ? sf.COMPOUND_INCREASE : '--';
+  setText('pscale-stake', `${stake}U`);
+  setText('pscale-loss', `${loss}U`);
+  setText('pscale-compound', `${step}U / ${inc}U`);
+
+  // COMPOUND_MAX_STAKE 不在 scaled_fields 里（不参与缩放），从 config 读
+  const cfg = lastConfigState.config_active_snapshot || {};
+  const maxStake = cfg.COMPOUND_MAX_STAKE != null ? cfg.COMPOUND_MAX_STAKE : '--';
+  setText('pscale-maxstake', `${maxStake}U（绝对值上限）`);
+
+  // 在 proportional 模式下，把仓位 tab 上 4 个被自动缩放的字段标记只读
+  const scaledFieldIds = ['cfg-DEFAULT_STAKE', 'cfg-RISK_MAX_DAILY_LOSS',
+                          'cfg-COMPOUND_STEP', 'cfg-COMPOUND_INCREASE'];
+  scaledFieldIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (mode === 'proportional') {
+      el.readOnly = true;
+      el.disabled = false; // disabled 会让 saveConfig 跳过；用 readOnly 让值仍能提交但不可编辑
+      el.style.background = 'var(--bg-elevated)';
+      el.style.opacity = '0.5';
+      el.title = `比例模式下由系统自动计算 = PRISTINE × scale (${scale}x)。要手动调请切换到 manual 模式。`;
+    } else {
+      el.readOnly = false;
+      el.style.background = '';
+      el.style.opacity = '';
+      el.title = '';
+    }
+  });
 }
 
 // 渲染"配置目标账号"下拉

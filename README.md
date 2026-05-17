@@ -74,6 +74,53 @@ docker-compose up -d
 | 连亏暂停 | 连亏 3 次暂停 24h | |
 | 同币冷却期 | 止损后 24h 不再开仓 | 按 `close_type` 判断 |
 
+## 仓位模式（v5.1）
+
+策略参数表里的金额（`DEFAULT_STAKE=30U`、`COMPOUND_STEP=50U` 等）都是按 100U 本金校准的。
+如果你的实际本金是 500U/1000U，不想每个金额都手算，可以切到**比例模式**让系统自动缩放。
+
+| 模式 | `config.POSITION_MODE` | 行为 |
+|---|---|---|
+| 手动（默认） | `'manual'` | `DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE` 用 admin 面板手填的值 |
+| 按比例自动 | `'proportional'` | 以 `BASELINE_BALANCE=100U` 为基准，按 `实际余额 ÷ 100` 自动缩放上述 4 个字段 |
+
+### 比例模式的余额来源
+
+- `LIVE_MODE=True` 单所实盘 → 从该所 `fetch_balance` 拉真实余额（带 60s 缓存）
+- `PRIMARY_EXCHANGE='both'` 双所实盘 → 两所余额相加
+- `PRIMARY_EXCHANGE='auto'` → 取较大者
+- 影子模式 → 用 admin 面板填的 `ACCOUNT_BALANCE`
+
+### 不参与缩放的字段
+
+- **`COMPOUND_MAX_STAKE`**：保持绝对值（默认 300U），即使账户涨到 1000U，单笔保证金也不会超过 300U
+- 杠杆、止盈止损百分比、移动止损、RSI 阈值、`PCT_24H_MIN` 等"非金额"参数都不变
+- `RISK_MAX_DAILY_TRADES`、`RISK_MAX_POSITION_PCT` 是笔数/比例，不是金额，也不变
+
+### 切换方式
+
+打开 admin 面板（详见下文），左侧 `Live Control` 标签页里有 **仓位模式（金额缩放）** 卡片：
+
+- 下拉框选 `manual` / `proportional`
+- 切到 `proportional` 后，"仓位与风控"标签页里的 4 个金额字段会变灰只读，旁边 tooltip 会说明"由 PRISTINE × scale 计算"
+- 实时状态卡显示当前 `scale`、`实际余额 / 来源`、缩放后的字段值
+
+写盘后 30 秒内所有进程（scheduler / realtime_monitor / dashboard）同步生效。
+
+### 例子
+
+实盘余额 500U → scale = 5：
+
+| 字段 | manual 默认 | proportional (500U) |
+|---|---|---|
+| `DEFAULT_STAKE` | 30 | **150** |
+| `RISK_MAX_DAILY_LOSS` | 30 | **150** |
+| `COMPOUND_STEP` | 50 | **250** |
+| `COMPOUND_INCREASE` | 25 | **125** |
+| `COMPOUND_MAX_STAKE` | 300 | **300** ← 不变 |
+| `LEVERAGE` | 10 | **10** ← 不变 |
+| `HARD_STOP_LOSS_PCT` | 5.0 | **5.0** ← 不变 |
+
 ## 文件结构
 
 ```

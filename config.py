@@ -19,6 +19,19 @@ DEFAULT_STAKE = 30             # 单笔保证金（USDT），实际仓位 = STAK
 #   才能真正发挥 RISK_MAX_DAILY_TRADES=3 的允许容量。
 # 注意：DEFAULT_STAKE 必须 <= ACCOUNT_BALANCE * RISK_MAX_POSITION_PCT，否则风控会永远拒绝开仓
 
+# ── 仓位模式（v5.1 新增）──────────────────────────────────────────
+# 'manual':       手动模式（向后兼容）。DEFAULT_STAKE / RISK_MAX_DAILY_LOSS /
+#                 COMPOUND_STEP / COMPOUND_INCREASE 用上面/下面写死的值或 admin
+#                 面板手填的值。
+# 'proportional': 比例模式。以 BASELINE_BALANCE (100U) 为基准，按
+#                 实际余额 / BASELINE_BALANCE 的比例自动缩放上述 4 个金额参数。
+#                 实际余额来源：LIVE_MODE 时从交易所 fetch_balance 拉取（60s 缓存），
+#                 否则用 ACCOUNT_BALANCE 手填值。
+#                 COMPOUND_MAX_STAKE 不参与缩放，保持绝对值上限（默认 300U）。
+#                 杠杆、止盈止损百分比、风控笔数、信号阈值等"非金额"参数也不变。
+POSITION_MODE = 'manual'
+BASELINE_BALANCE = 100         # 比例模式的基准本金（即默认 4 个金额参数对应的本金）
+
 # ══════════════════════════════════════════════════════════════════
 #  实盘模式（危险！确认策略验证通过后再开启）
 # ══════════════════════════════════════════════════════════════════

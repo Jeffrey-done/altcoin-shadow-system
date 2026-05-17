@@ -107,10 +107,18 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
 
     # ── 影子并行 ──
     'SHADOW_PARALLEL': (bool, None, '影子并行模式（实盘时同步跑影子对照）'),
+
+    # ── 仓位模式（v5.1）──
+    # manual: 用户手填 DEFAULT_STAKE 等绝对值（向后兼容）
+    # proportional: 以 100U 为基准按余额比例自动缩放金额参数
+    'POSITION_MODE': (str,
+                      _enum_validator(['manual', 'proportional']),
+                      '仓位模式 (manual=手动 / proportional=按余额比例缩放)'),
 }
 
 # ── 全局字段 vs 账户字段 ──
-GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE', 'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL'}
+GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE',
+                 'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL', 'POSITION_MODE'}
 ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
 
 
@@ -553,48 +561,288 @@ def save_global_overrides(overrides: dict) -> None:
 _last_applied_mtime = 0.0
 _last_applied: dict = {}
 
+# ── 比例模式状态（用于 admin panel /api/state 上报）─────────────────
+# apply_position_scale() 每次执行后会更新此字典，admin 面板读它做展示。
+_position_scale_state: dict = {
+    'mode': 'manual',           # manual | proportional
+    'effective_balance': None,  # 实际生效的余额（U）
+    'scale': 1.0,               # 缩放系数 = effective_balance / BASELINE_BALANCE
+    'balance_source': 'config', # config | binance | okx | both
+    'scaled_fields': {},        # 缩放后的 4 个字段值
+    'last_applied_at': 0.0,     # time.time()
+}
+
+# ── 真实余额拉取的 60s TTL 缓存 ─────────────────────────────────────
+# 避免 apply_overrides() 30s 一调就打一次交易所 fetch_balance；
+# 每 60s 才真正查一次（实盘场景下账户余额变化不会那么快）。
+_balance_cache: dict = {
+    'value': None,
+    'source': None,
+    'expires_at': 0.0,
+}
+
+# 比例模式下被自动缩放的金额参数（COMPOUND_MAX_STAKE 不在内）
+_PROPORTIONAL_FIELDS = (
+    'DEFAULT_STAKE',
+    'RISK_MAX_DAILY_LOSS',
+    'COMPOUND_STEP',
+    'COMPOUND_INCREASE',
+)
+
+
+def get_position_scale_state() -> dict:
+    """返回最近一次 apply_position_scale() 的执行状态（admin panel /api/state 用）"""
+    return dict(_position_scale_state)
+
+
+def _fetch_live_balance_cached() -> tuple:
+    """
+    从交易所拉真实余额，带 60s TTL 缓存。
+
+    返回 (balance: float, source: str)
+    - source ∈ {'binance', 'okx', 'both', 'config', 'unavailable'}
+    - balance 为 None 时调用方应 fallback 到 config.ACCOUNT_BALANCE
+
+    根据 LIVE_MODE / OKX_LIVE_MODE / PRIMARY_EXCHANGE 决定从哪所拉：
+      - 双所且 PRIMARY_EXCHANGE='both': 两所余额相加
+      - 单所实盘:                       拉那一所
+      - 全是影子:                       返回 None（调用方用 ACCOUNT_BALANCE）
+    """
+    import time as _time
+    import config as _config
+
+    now = _time.time()
+    if _balance_cache['value'] is not None and now < _balance_cache['expires_at']:
+        return _balance_cache['value'], _balance_cache['source']
+
+    bn_live = bool(getattr(_config, 'LIVE_MODE', False))
+    okx_live = bool(getattr(_config, 'OKX_LIVE_MODE', False))
+    primary = getattr(_config, 'PRIMARY_EXCHANGE', 'binance')
+
+    if not bn_live and not okx_live:
+        # 全影子：用 ACCOUNT_BALANCE 手填值
+        return None, 'config'
+
+    # 延迟 import 避免循环依赖（live_executor 依赖 config）
+    try:
+        from live_executor import check_live_balance, check_okx_balance
+    except Exception as e:
+        logger.warning(f"_fetch_live_balance_cached: import live_executor 失败: {e}")
+        return None, 'unavailable'
+
+    bn_total = 0.0
+    okx_total = 0.0
+    sources = []
+
+    if bn_live:
+        try:
+            bn = check_live_balance()
+            bn_total = float(bn.get('total', 0) or 0)
+            if bn_total > 0:
+                sources.append('binance')
+        except Exception as e:
+            logger.warning(f"check_live_balance 失败: {e}")
+
+    if okx_live:
+        try:
+            okx = check_okx_balance()
+            okx_total = float(okx.get('total', 0) or 0)
+            if okx_total > 0:
+                sources.append('okx')
+        except Exception as e:
+            logger.warning(f"check_okx_balance 失败: {e}")
+
+    # 决定用哪个余额作为"实际可用本金"
+    if primary == 'both' and bn_live and okx_live:
+        balance = bn_total + okx_total
+        source = 'both'
+    elif primary == 'okx' and okx_live:
+        balance = okx_total
+        source = 'okx'
+    elif primary == 'binance' and bn_live:
+        balance = bn_total
+        source = 'binance'
+    elif primary == 'auto':
+        # auto 模式：取较大者作为基准（避免余额低的所拖低 scale）
+        if bn_total >= okx_total and bn_live:
+            balance, source = bn_total, 'binance'
+        elif okx_live:
+            balance, source = okx_total, 'okx'
+        else:
+            balance, source = bn_total, 'binance'
+    else:
+        # 兜底：哪个开了用哪个
+        if bn_live and bn_total > 0:
+            balance, source = bn_total, 'binance'
+        elif okx_live and okx_total > 0:
+            balance, source = okx_total, 'okx'
+        else:
+            return None, 'unavailable'
+
+    if balance <= 0:
+        return None, 'unavailable'
+
+    _balance_cache['value'] = balance
+    _balance_cache['source'] = source
+    _balance_cache['expires_at'] = now + 60  # 60s TTL
+    return balance, source
+
+
+def apply_position_scale() -> dict:
+    """
+    根据 POSITION_MODE 把金额参数按 scale 缩放写回 config 模块。
+
+    - manual 模式: 不动任何字段，记录状态后返回。
+    - proportional 模式:
+      1) 决定 effective_balance:
+         - LIVE_MODE/OKX_LIVE_MODE 至少一个开 → 拉真实余额（带 60s 缓存）
+         - 全是影子 → 用 config.ACCOUNT_BALANCE（admin 面板可改）
+      2) scale = effective_balance / BASELINE_BALANCE
+      3) 用 PRISTINE 默认值 × scale 写回 4 个字段（不基于"当前值"否则会复合放大）
+      4) COMPOUND_MAX_STAKE 不动（用户要求绝对值封顶 300U）
+
+    返回最新的 _position_scale_state 字典副本。
+    """
+    import time as _time
+    import config as _config
+
+    mode = getattr(_config, 'POSITION_MODE', 'manual')
+    baseline = float(getattr(_config, 'BASELINE_BALANCE', 100) or 100)
+
+    state = {
+        'mode': mode,
+        'effective_balance': None,
+        'scale': 1.0,
+        'balance_source': 'config',
+        'scaled_fields': {},
+        'last_applied_at': _time.time(),
+    }
+
+    if mode != 'proportional':
+        # manual: 直接 return，不缩放
+        _position_scale_state.update(state)
+        return dict(state)
+
+    # ── proportional 模式 ──
+    # 决定 effective_balance
+    live_balance, source = _fetch_live_balance_cached()
+    if live_balance is not None:
+        effective_balance = live_balance
+        balance_source = source
+    else:
+        # 影子或 fetch 失败 → 用 ACCOUNT_BALANCE 手填值
+        try:
+            effective_balance = float(getattr(_config, 'ACCOUNT_BALANCE', baseline))
+        except (TypeError, ValueError):
+            effective_balance = baseline
+        balance_source = source if source else 'config'
+
+    if effective_balance <= 0 or baseline <= 0:
+        # 边界保护：余额 0 不缩放，记 warning
+        logger.warning(
+            f"apply_position_scale: effective_balance={effective_balance} "
+            f"baseline={baseline}，跳过缩放保留 PRISTINE 默认值"
+        )
+        # 把 PRISTINE 写回，避免之前的 scale 残留
+        for k in _PROPORTIONAL_FIELDS:
+            v = get_pristine_default(k)
+            if v is not None:
+                setattr(_config, k, v)
+        state['effective_balance'] = effective_balance
+        state['balance_source'] = balance_source
+        state['scale'] = 1.0
+        state['scaled_fields'] = {k: getattr(_config, k, None) for k in _PROPORTIONAL_FIELDS}
+        _position_scale_state.update(state)
+        return dict(state)
+
+    scale = effective_balance / baseline
+
+    scaled_fields = {}
+    for key in _PROPORTIONAL_FIELDS:
+        base_value = get_pristine_default(key)
+        if base_value is None:
+            continue
+        # 整型字段保持整型，浮点保持浮点
+        if isinstance(base_value, int):
+            scaled = max(1, int(round(base_value * scale)))
+        else:
+            scaled = round(float(base_value) * scale, 2)
+        setattr(_config, key, scaled)
+        scaled_fields[key] = scaled
+
+    state.update({
+        'effective_balance': round(effective_balance, 2),
+        'scale': round(scale, 4),
+        'balance_source': balance_source,
+        'scaled_fields': scaled_fields,
+    })
+    _position_scale_state.update(state)
+
+    logger.info(
+        f"POSITION_MODE=proportional, "
+        f"balance={effective_balance:.2f}U({balance_source}), "
+        f"scale={scale:.2f}, "
+        f"DEFAULT_STAKE={scaled_fields.get('DEFAULT_STAKE')}, "
+        f"RISK_MAX_DAILY_LOSS={scaled_fields.get('RISK_MAX_DAILY_LOSS')}, "
+        f"COMPOUND_STEP={scaled_fields.get('COMPOUND_STEP')}, "
+        f"COMPOUND_INCREASE={scaled_fields.get('COMPOUND_INCREASE')} "
+        f"(COMPOUND_MAX_STAKE 不缩放)"
+    )
+
+    return dict(state)
+
 
 def apply_overrides(force: bool = False) -> dict:
     """
     读 runtime_config.json 并把白名单字段写到 config 模块属性。
 
     使用活跃账户的配置合并全局配置。
+
+    末尾自动调用 apply_position_scale()：
+    - manual 模式: 走 no-op 路径（仅刷新状态）
+    - proportional 模式: 把 PRISTINE × scale 写回 4 个金额字段
+    即使 runtime_config.json 没变（mtime 没刷新），也会重跑 apply_position_scale
+    以反映交易所余额变化（live balance 60s 缓存）。
     """
     global _last_applied_mtime, _last_applied
 
-    if not os.path.exists(RUNTIME_CONFIG_FILE):
-        return {}
+    applied: dict = {}
 
+    if os.path.exists(RUNTIME_CONFIG_FILE):
+        try:
+            mtime = os.path.getmtime(RUNTIME_CONFIG_FILE)
+        except OSError:
+            mtime = 0.0
+
+        if force or mtime != _last_applied_mtime:
+            overrides = load_overrides()
+            import config as _config
+
+            for key, value in overrides.items():
+                if key not in ALLOWED:
+                    continue
+                ok, _err = validate_change(key, value)
+                if not ok:
+                    logger.warning(f"runtime_config: {key}={value!r} 校验失败，跳过")
+                    continue
+                old = getattr(_config, key, None)
+                if old != value:
+                    setattr(_config, key, value)
+                    applied[key] = {'old': old, 'new': value}
+
+            _last_applied_mtime = mtime
+            _last_applied = applied
+
+            if applied:
+                logger.info(f"runtime_config 应用: {applied}")
+
+    # 不论 overrides 有没有变，都重跑比例缩放：
+    # - manual 模式 no-op 几乎零成本
+    # - proportional 模式靠 60s 缓存避免每次都打交易所
     try:
-        mtime = os.path.getmtime(RUNTIME_CONFIG_FILE)
-    except OSError:
-        return {}
-
-    if not force and mtime == _last_applied_mtime:
-        return {}
-
-    overrides = load_overrides()
-    applied = {}
-
-    import config as _config
-
-    for key, value in overrides.items():
-        if key not in ALLOWED:
-            continue
-        ok, _err = validate_change(key, value)
-        if not ok:
-            logger.warning(f"runtime_config: {key}={value!r} 校验失败，跳过")
-            continue
-        old = getattr(_config, key, None)
-        if old != value:
-            setattr(_config, key, value)
-            applied[key] = {'old': old, 'new': value}
-
-    _last_applied_mtime = mtime
-    _last_applied = applied
-
-    if applied:
-        logger.info(f"runtime_config 应用: {applied}")
+        apply_position_scale()
+    except Exception as e:
+        logger.warning(f"apply_position_scale 异常（非致命）: {e}")
 
     return applied
 
