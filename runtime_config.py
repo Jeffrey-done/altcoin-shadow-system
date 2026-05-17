@@ -782,7 +782,33 @@ def apply_position_scale() -> dict:
     }
 
     if mode != 'proportional':
-        # manual: 直接 return，不缩放
+        # manual: 必须把 4 个字段恢复成"admin override 或 PRISTINE 默认"，
+        # 否则从 proportional 切回 manual 时 config 模块残留缩放后的脏值
+        # （proportional 时 apply_position_scale 写入的 86/143/72 等不会被
+        # apply_overrides 自动还原，因为 admin override 里没这些字段时
+        # apply_overrides 不会主动重置）。
+        # 此举确保 manual 模式下 4 字段始终反映"用户填的值或 PRISTINE 默认"，
+        # 跟 admin 面板的 fallback 语义一致。
+        try:
+            from admin_secrets import get_active_account_id
+            active_id = get_active_account_id()
+        except Exception:
+            active_id = ''
+
+        try:
+            acc_overrides = load_account_overrides(active_id) if active_id else {}
+        except Exception:
+            acc_overrides = {}
+
+        for key in _PROPORTIONAL_FIELDS:
+            override_val = acc_overrides.get(key)
+            if override_val is not None:
+                setattr(_config, key, override_val)
+            else:
+                pristine = get_pristine_default(key)
+                if pristine is not None:
+                    setattr(_config, key, pristine)
+
         _position_scale_state.update(state)
         return dict(state)
 

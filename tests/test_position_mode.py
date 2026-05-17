@@ -110,6 +110,43 @@ class TestManualMode:
         # config.DEFAULT_STAKE 不应被改动
         assert config.DEFAULT_STAKE == 30
 
+    def test_manual_clears_proportional_residue(self, tmp_path, monkeypatch):
+        """
+        P3-3 回归（2026-05）：从 proportional 切回 manual 必须清除 config 模块里
+        被 apply_position_scale 写入的缩放值。否则 COMPOUND_STEP/INCREASE 会
+        保留 PROPORTIONAL 时的脏数据（如 143/72），让用户看到错误的状态卡数字。
+        """
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_test', raising=False)
+        runtime_config.save_account_overrides('acc_test', {'DEFAULT_STAKE': 30})
+
+        # 步骤1: 模拟 proportional 写入了缩放值（直接 monkeypatch config 触发 scale=5）
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        monkeypatch.setattr(config, 'ACCOUNT_BALANCE', 500)
+        runtime_config.apply_position_scale()
+        # 此时 config.COMPOUND_STEP 应被缩放
+        assert config.COMPOUND_STEP > runtime_config.get_pristine_default('COMPOUND_STEP'), (
+            f"proportional 时 COMPOUND_STEP 应大于 PRISTINE，实际 {config.COMPOUND_STEP}"
+        )
+
+        # 步骤2: 切回 manual
+        monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
+        runtime_config.apply_position_scale()
+
+        # config 模块必须被清回 PRISTINE，不能保留 proportional 脏值
+        pristine_step = runtime_config.get_pristine_default('COMPOUND_STEP')
+        assert config.COMPOUND_STEP == pristine_step, (
+            f"manual 模式必须把 COMPOUND_STEP 恢复到 PRISTINE {pristine_step}，"
+            f"实际还是 {config.COMPOUND_STEP}（proportional 残留）"
+        )
+        # admin 给 acc_test 设过 DEFAULT_STAKE=30（恰好等于 PRISTINE）→ 用 override
+        assert config.DEFAULT_STAKE == 30
+
 
 # ══════════════════════════════════════════════════════════════════
 #  apply_position_scale: proportional 模式 + 影子
