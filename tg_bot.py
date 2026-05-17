@@ -71,8 +71,8 @@ def cmd_balance() -> str:
     tp1_locked = sum(t.get('tp1_locked_pnl', 0) for t in open_trades if t.get('tp1_triggered'))
     total_pnl += tp1_locked
 
-    balance = get_dynamic_balance()
-    compound_stake = get_compound_stake()
+    balance = get_dynamic_balance(account_id)
+    compound_stake = get_compound_stake(account_id)
 
     wins = sum(1 for t in closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
@@ -300,7 +300,7 @@ def cmd_status() -> str:
     paused = rstate.paused_until
     risk_status = "🟢" if not paused and daily_loss < config.RISK_MAX_DAILY_LOSS else "🔴"
 
-    balance = get_dynamic_balance()
+    balance = get_dynamic_balance(account_id)
 
     return (
         f"{header}\n\n"

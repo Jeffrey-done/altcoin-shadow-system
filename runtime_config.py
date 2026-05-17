@@ -262,6 +262,37 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
     except (TypeError, ValueError):
         return (errors, warnings_out)  # 类型有问题，单字段校验已经会报错
 
+    # P2-2 修复（2026-05）：proportional 模式下，DEFAULT_STAKE 实际生效值不是
+    # admin override 的值，而是 PRISTINE × scale。用 override 校验会得到误报警
+    # （admin 设的 48 永远 < 100 baseline 不报警，但实际 86 vs 286 也不报警，
+    # 看起来一致；但当 effective_balance 极小或缩放因子很大时，会出现"看起来
+    # 配置 OK 实际锁死"的 silent failure）。改用 PRISTINE × scale 计算。
+    # ACCOUNT_BALANCE 的比对也改用 effective_balance（实盘真实余额或影子手填值），
+    # 否则 baseline 100 的虚拟值跟实际 stake 86 比意义不大。
+    try:
+        position_mode = overrides.get('POSITION_MODE',
+                                      getattr(_config, 'POSITION_MODE', 'manual'))
+    except Exception:
+        position_mode = 'manual'
+
+    if position_mode == 'proportional':
+        try:
+            ps_state = get_position_scale_state()
+            eff_bal = ps_state.get('effective_balance')
+            scaled = ps_state.get('scaled_fields') or {}
+            if eff_bal is not None and eff_bal > 0:
+                balance = float(eff_bal)
+            if 'DEFAULT_STAKE' in scaled and scaled['DEFAULT_STAKE'] is not None:
+                stake = float(scaled['DEFAULT_STAKE'])
+            else:
+                # apply_position_scale 还没跑过：手动算
+                pristine_stake = get_pristine_default('DEFAULT_STAKE') or stake
+                pristine_baseline = float(getattr(_config, 'BASELINE_BALANCE', 100) or 100)
+                if pristine_baseline > 0 and balance > 0:
+                    stake = float(pristine_stake) * (balance / pristine_baseline)
+        except Exception:
+            pass  # fallback 到 override 值，行为同 manual
+
     max_position = balance * pos_pct
 
     if stake > balance:
@@ -299,21 +330,53 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
     except (TypeError, ValueError):
         compound_max = 0
 
-    if auto_compound and compound_max > balance:
+    # P2-3 修复（2026-05）：proportional 模式下 ACCOUNT_BALANCE 是个"basement
+    # baseline"（默认 100U），不是真实账户能用的余额。COMPOUND_MAX_STAKE 是
+    # 用户要求的"绝对值上限不缩放"，跟 baseline 100 比永远会触发警告 → 启动日志
+    # spam。改用 effective_balance（实盘真实余额或影子手填值）做比较，让警告
+    # 真实反映"复利上限是否高于实际可用资金"。
+    try:
+        position_mode = overrides.get('POSITION_MODE',
+                                      getattr(_config, 'POSITION_MODE', 'manual'))
+    except Exception:
+        position_mode = 'manual'
+
+    effective_balance_for_check = balance
+    if position_mode == 'proportional':
+        try:
+            from runtime_config import get_position_scale_state as _gps
+            ps_state = _gps()
+            eb = ps_state.get('effective_balance')
+            if eb is not None and eb > 0:
+                effective_balance_for_check = float(eb)
+        except Exception:
+            # 拿不到就 fallback 到 baseline，行为同 manual
+            pass
+
+    max_position_for_check = effective_balance_for_check * pos_pct
+
+    if auto_compound and compound_max > effective_balance_for_check:
         # 与 DEFAULT_STAKE > balance 不同：COMPOUND_MAX_STAKE 是"复利触顶后"
         # 的硬上限，亏损时 get_compound_stake 会回退到 DEFAULT_STAKE，所以
         # 不会立刻锁死开仓，只是当账户累计盈利触顶时进入"理论上能拿大仓位
         # 但风控拒收"的状态。属于 WARNING 而非 ERROR。
-        warnings_out.append(
-            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > ACCOUNT_BALANCE({balance:.0f}U)，"
-            f"复利触顶后单笔保证金会超过本金，届时风控会永远拒绝开仓。"
-            f"建议把 COMPOUND_MAX_STAKE 控制在 ≤ {balance:.0f}U。"
+        mode_tag = (
+            f"（proportional, effective_balance={effective_balance_for_check:.0f}U）"
+            if position_mode == 'proportional' else ''
         )
-    elif auto_compound and compound_max > max_position:
         warnings_out.append(
-            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > 最大持仓上限({max_position:.0f}U)，"
-            f"复利触顶后只要有任何其他持仓，新开仓将被拒绝。建议把 COMPOUND_MAX_STAKE "
-            f"控制在 ≤ {max_position:.0f}U 或提高 RISK_MAX_POSITION_PCT。"
+            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > "
+            f"实际可用本金({effective_balance_for_check:.0f}U){mode_tag}，"
+            f"复利触顶后单笔保证金会超过本金，届时风控会永远拒绝开仓。"
+            f"建议把 COMPOUND_MAX_STAKE 控制在 ≤ {effective_balance_for_check:.0f}U。"
+        )
+    elif auto_compound and compound_max > max_position_for_check:
+        warnings_out.append(
+            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > "
+            f"最大持仓上限({max_position_for_check:.0f}U)，"
+            f"复利触顶后只要有任何其他持仓，新开仓将被拒绝。建议把 "
+            f"COMPOUND_MAX_STAKE 控制在 ≤ {max_position_for_check:.0f}U "
+            f"或提高 RISK_MAX_POSITION_PCT。"
         )
 
     # 日志记录

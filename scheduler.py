@@ -428,6 +428,16 @@ def main_loop():
     # 多账号修复：遍历所有账号分别校验，而不是只校验活跃账号；否则非活跃账号
     # 的死配置（譬如 stake > balance）切换过去前不会被发现，切换瞬间风控全拒。
     try:
+        # P2-3 修复延伸（2026-05）：启动一致性检查必须先 apply_overrides 一次，
+        # 否则 _position_scale_state 还是初始值（effective_balance=None），
+        # proportional 模式下校验会 fallback 到 baseline 100U → 错误地报
+        # COMPOUND_MAX_STAKE > 100U 警告 spam 启动日志。
+        try:
+            from runtime_config import apply_overrides as _early_apply
+            _early_apply(force=True)
+        except Exception as _ae:
+            logger.debug(f"启动 apply_overrides 失败（非致命）: {_ae}")
+
         from runtime_config import (
             validate_cross_field_consistency, load_account_overrides,
             load_global_overrides,

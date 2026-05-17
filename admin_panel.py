@@ -694,6 +694,39 @@ def create_blueprint(url_secret: str) -> Blueprint:
         if errors:
             return jsonify({'error': 'validation', 'details': errors}), 400
 
+        # P2-4 修复（2026-05）：proportional 模式下，被自动缩放的 4 个字段
+        # （DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE）
+        # 应该由系统按 PRISTINE × scale 计算，前端 UI 已设为 readOnly，但 server
+        # 端必须二次校验拒绝直接 API 写入，否则会有"看不见的脏数据"——切回 manual
+        # 时突然冒出一个用户没意识到自己改过的值。
+        # 例外：用户在同一次请求里同时切到 manual + 改这些字段是允许的（语义清晰）。
+        try:
+            from runtime_config import _PROPORTIONAL_FIELDS as _PF
+            import config as _cfg_check
+            # 决定"保存后将生效的 POSITION_MODE"：如果本次 changes 里改了它就用新值
+            future_position_mode = cleaned.get(
+                'POSITION_MODE',
+                getattr(_cfg_check, 'POSITION_MODE', 'manual'),
+            )
+            if future_position_mode == 'proportional':
+                blocked = [k for k in cleaned.keys() if k in _PF]
+                if blocked:
+                    _audit('config.update.blocked', changes=cleaned,
+                           account_id=target_account_id,
+                           reason='proportional_mode_locks_scaled_fields',
+                           blocked_fields=blocked)
+                    return jsonify({
+                        'error': 'proportional_locked',
+                        'message': (
+                            f"proportional 模式下 {', '.join(blocked)} 由系统按余额比例"
+                            f"自动计算，不接受手动覆盖。要手动调请先切到 manual 模式。"
+                        ),
+                        'blocked_fields': blocked,
+                    }), 400
+        except ImportError:
+            # runtime_config 旧版没有 _PROPORTIONAL_FIELDS，跳过本校验
+            pass
+
         # 拆分字段：全局字段 vs 账号字段
         global_changes = {k: v for k, v in cleaned.items()
                           if k in runtime_config.GLOBAL_FIELDS}

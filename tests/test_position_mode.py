@@ -465,3 +465,105 @@ class TestAccountParamShortCircuit:
         from common import _account_param
         # LEVERAGE 不在 _PROPORTIONAL_FIELDS 里 → 仍优先 per-account 的 5
         assert _account_param('acc_test', 'LEVERAGE', fallback=999) == 5
+
+
+# ══════════════════════════════════════════════════════════════════
+#  P2-2: validate_cross_field_consistency 在 proportional 模式下用 PRISTINE × scale
+# ══════════════════════════════════════════════════════════════════
+
+class TestConsistencyCheckProportional:
+    """proportional 模式下：一致性检查用 PRISTINE × scale 而不是 override 值"""
+
+    def test_proportional_uses_scaled_stake_not_override(self, monkeypatch):
+        # 切到 proportional + 大余额
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        # 模拟 apply_position_scale 已经跑过，scale=5
+        runtime_config._position_scale_state.update({
+            'mode': 'proportional',
+            'effective_balance': 500.0,
+            'scale': 5.0,
+            'balance_source': 'binance',
+            'scaled_fields': {
+                'DEFAULT_STAKE': 150,  # 30 × 5
+                'RISK_MAX_DAILY_LOSS': 150,
+                'COMPOUND_STEP': 250,
+                'COMPOUND_INCREASE': 125,
+            },
+        })
+
+        # admin override 里 stake=30（manual 时用的）
+        # 校验时应用 scaled 150，而不是 override 的 30
+        errors, warnings_out = runtime_config.validate_cross_field_consistency({
+            'DEFAULT_STAKE': 30,  # 这是 admin override
+        })
+        # 没有 ERROR，因为缩放后 150 < 500
+        assert not errors, f"不应该有 error，实际: {errors}"
+
+    def test_proportional_warns_when_scaled_exceeds_balance(self, monkeypatch):
+        """缩放后 stake 超过 effective_balance 时应有 ERROR"""
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        # 模拟 effective_balance 极小，scale 巨大
+        runtime_config._position_scale_state.update({
+            'mode': 'proportional',
+            'effective_balance': 50.0,
+            'scale': 0.5,
+            'balance_source': 'binance',
+            'scaled_fields': {
+                'DEFAULT_STAKE': 200,  # 假设 PRISTINE 巨大
+                'RISK_MAX_DAILY_LOSS': 200,
+                'COMPOUND_STEP': 500,
+                'COMPOUND_INCREASE': 250,
+            },
+        })
+
+        errors, _warnings = runtime_config.validate_cross_field_consistency({})
+        # stake 200 > balance 50 → ERROR
+        assert any('DEFAULT_STAKE' in e for e in errors), f"应该报 stake>balance 错误，实际: {errors}"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  P2-3: COMPOUND_MAX_STAKE warning 用 effective_balance
+# ══════════════════════════════════════════════════════════════════
+
+class TestCompoundMaxStakeWarning:
+    """proportional 下 300U vs 100U baseline 不再触发 warning"""
+
+    def test_proportional_uses_effective_balance_not_baseline(self, monkeypatch):
+        # 用户实际余额 500U（远大于 baseline 100），COMPOUND_MAX_STAKE=300
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        runtime_config._position_scale_state.update({
+            'mode': 'proportional',
+            'effective_balance': 500.0,
+            'scale': 5.0,
+            'balance_source': 'binance',
+            'scaled_fields': {'DEFAULT_STAKE': 150, 'RISK_MAX_DAILY_LOSS': 150,
+                              'COMPOUND_STEP': 250, 'COMPOUND_INCREASE': 125},
+        })
+
+        _errors, warnings_out = runtime_config.validate_cross_field_consistency({
+            'AUTO_COMPOUND_ENABLED': True,
+            'COMPOUND_MAX_STAKE': 300,
+            'ACCOUNT_BALANCE': 100,  # baseline 值，会被 effective_balance 覆盖
+        })
+        # 300 < 500，应不报 COMPOUND_MAX_STAKE 警告
+        assert not any('COMPOUND_MAX_STAKE(300U)' in w and '实际可用本金(500U)' in w
+                       for w in warnings_out
+                       if 'COMPOUND_MAX_STAKE' in w and '本金' in w), (
+            f"proportional + 余额够用时不应报 COMPOUND_MAX_STAKE 超过本金的警告，实际: {warnings_out}"
+        )
+
+    def test_manual_mode_still_uses_baseline(self, monkeypatch):
+        """manual 模式行为保持原样：用 baseline 100 比较"""
+        monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
+        runtime_config._position_scale_state.update({'mode': 'manual'})
+
+        _errors, warnings_out = runtime_config.validate_cross_field_consistency({
+            'AUTO_COMPOUND_ENABLED': True,
+            'COMPOUND_MAX_STAKE': 300,
+            'ACCOUNT_BALANCE': 100,
+            'DEFAULT_STAKE': 30,
+        })
+        # 300 > 100 → 应有警告
+        assert any('COMPOUND_MAX_STAKE(300U)' in w for w in warnings_out), (
+            f"manual 模式仍应按 baseline 报警，实际: {warnings_out}"
+        )

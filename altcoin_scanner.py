@@ -968,6 +968,8 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     score_result = payload['score_result']
 
     # 根据评分决定仓位（结合自动复利）
+    # 注意：这是 active 账号的 base_stake，用于"展示+回退"。每个账号实际开仓 stake
+    # 在下方 _trading_accts 循环里独立计算（P2-1 修复，2026-05）。
     base_stake = get_compound_stake()
     if score_result["grade"] == "A":
         actual_stake = base_stake
@@ -977,6 +979,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     # ── 风控检查（全局预检）──
     # H8: 用每个账户"实际将占用的保证金总额"去做 can_open_trade 检查，
     # 避免 PRIMARY_EXCHANGE='both' 模式下用原始 stake 误判为超额度。
+    # P2-1 修复（2026-05）：之前用 active 账号算的 stake 给所有账号做风控检查，
+    # 多账号 manual 模式下不同账号有不同 DEFAULT_STAKE 时会用错值（active=A
+    # 但检查 B 用的是 A 的 stake）。改为每个账号独立 get_compound_stake(acc_id)。
     try:
         from admin_secrets import (
             get_all_trading_accounts as _get_trading_accts,
@@ -992,20 +997,35 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     except Exception:
         _trading_accts = [{'id': ''}]
 
-    _routes_preview = _resolve_exchange_routes(c.symbol, actual_stake)
-    _live_route_stake_sum = sum(
-        s for ex, s in _routes_preview if ex != 'shadow'
-    ) or actual_stake
-    _shadow_route_stake = next(
-        (s for ex, s in _routes_preview if ex == 'shadow'), actual_stake
-    )
-
     any_allowed = False
     first_reason = ""
     for _acc in _trading_accts:
         _acc_id = _acc.get('id') or None
         _is_shadow_acc = _acc.get('is_shadow', False)
-        _acc_check_stake = _shadow_route_stake if _is_shadow_acc else _live_route_stake_sum
+
+        # 该账号的独立 stake（含其复利曲线 + proportional 缩放）
+        try:
+            _acc_base_stake = get_compound_stake(_acc_id)
+        except Exception:
+            _acc_base_stake = base_stake  # fallback：用 active 算的，兼容老路径
+        _acc_actual_stake = (
+            _acc_base_stake if score_result["grade"] == "A"
+            else round(_acc_base_stake * 0.5)
+        )
+
+        # 该账号的路由分配（PRIMARY_EXCHANGE='both' 时拆分到两所）
+        _acc_routes_preview = _resolve_exchange_routes(c.symbol, _acc_actual_stake)
+        _acc_live_route_sum = sum(
+            s for ex, s in _acc_routes_preview if ex != 'shadow'
+        ) or _acc_actual_stake
+        _acc_shadow_route = next(
+            (s for ex, s in _acc_routes_preview if ex == 'shadow'),
+            _acc_actual_stake,
+        )
+        _acc_check_stake = (
+            _acc_shadow_route if _is_shadow_acc else _acc_live_route_sum
+        )
+
         _ok, _rsn = can_open_trade(_acc_check_stake, account_id=_acc_id)
         if _ok:
             any_allowed = True
@@ -1100,10 +1120,26 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                     )
                     continue
 
+            # P2-1 修复（2026-05）：用该账号自己的 compound_stake 算路由，
+            # 而不是用 active 账号的 actual_stake（外层闭包变量）。
+            try:
+                _acc_base = get_compound_stake(acc_id) if acc_id else base_stake
+            except Exception:
+                _acc_base = base_stake
+            _acc_actual = (
+                _acc_base if score_result["grade"] == "A"
+                else round(_acc_base * 0.5)
+            )
+
             if account.get('force_shadow_route'):
-                acc_routes = [('shadow', actual_stake)]
+                acc_routes = [('shadow', _acc_actual)]
             else:
-                acc_routes = routes
+                acc_routes = _resolve_exchange_routes(c.symbol, _acc_actual)
+                if not acc_routes:
+                    logger.info(
+                        f"  ⏩ 跳过账户 {account['name']}({acc_id}): 无可用交易所路由"
+                    )
+                    continue
 
             acc_stake_total = sum(s for _ex, s in acc_routes)
             acc_allowed, acc_risk_reason = can_open_trade(

@@ -91,6 +91,8 @@ docker-compose up -d
 - `PRIMARY_EXCHANGE='auto'` → 取较大者
 - 影子模式 → 用 admin 面板填的 `ACCOUNT_BALANCE`
 
+> 📌 **多账号 + 影子模式的边界**：`POSITION_MODE` 是**全局开关**，`scale` 是个**全局值**。影子模式下多个账号的 `ACCOUNT_BALANCE` 各不相同时，系统会用**当前活跃账号**（`admin_secrets.get_active_account_id()`）的 `ACCOUNT_BALANCE` 作为缩放基准；其他非活跃账号的 `ACCOUNT_BALANCE` 在 proportional 模式下被忽略。要让不同账号有不同的 stake，请用 `manual` 模式。
+
 ### 不参与缩放的字段
 
 - **`COMPOUND_MAX_STAKE`**：保持绝对值（默认 300U），即使账户涨到 1000U，单笔保证金也不会超过 300U
