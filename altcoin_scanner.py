@@ -24,7 +24,7 @@ from common import (
     CANDIDATES_FILE, TRADES_FILE,
     setup_logger, send_tg, load_json, tg_escape,
     to_binance_symbol, utcnow, utcnow_iso, parse_iso,
-    LockedJsonFile, get_compound_stake,
+    LockedJsonFile, get_compound_stake, account_param,
 )
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened, is_in_cooldown
@@ -1174,7 +1174,11 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     for acc_id, _acc_name, r_exchange, r_stake, coid in prepared_tasks:
         if r_exchange == 'shadow':
             continue
-        lev = config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE
+        # 阶段 4：按账号取 leverage
+        if r_exchange == 'okx':
+            lev = int(account_param(acc_id, 'OKX_DEFAULT_LEVERAGE', config.OKX_DEFAULT_LEVERAGE))
+        else:
+            lev = int(account_param(acc_id, 'LEVERAGE', config.LEVERAGE))
         try:
             journal_add_pending(
                 client_order_id=coid, exchange=r_exchange,
@@ -1192,7 +1196,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         result = execute_open(
             c.symbol, 'SHORT', r_stake,
             exchange_name=r_exchange,
-            leverage=(config.OKX_DEFAULT_LEVERAGE if r_exchange == 'okx' else config.LEVERAGE),
+            leverage=(int(account_param(acc_id, 'OKX_DEFAULT_LEVERAGE', config.OKX_DEFAULT_LEVERAGE))
+                      if r_exchange == 'okx'
+                      else int(account_param(acc_id, 'LEVERAGE', config.LEVERAGE))),
             client_order_id=coid,
             account_id=acc_id if acc_id else None,
         )
@@ -1243,7 +1249,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                 c.symbol, entry_price,
                 reason=trigger_reason_for_create(trigger_abandon, abandon, rsi_4h_peak, rsi_4h),
                 stake=route_stake,
-                leverage=(config.OKX_DEFAULT_LEVERAGE if route_exchange == 'okx' else config.LEVERAGE),
+                leverage=(int(account_param(acc_id, 'OKX_DEFAULT_LEVERAGE', config.OKX_DEFAULT_LEVERAGE))
+                          if route_exchange == 'okx'
+                          else int(account_param(acc_id, 'LEVERAGE', config.LEVERAGE))),
                 exchange=route_exchange,
                 live_order_id=live_result.get("order_id") or None,
                 client_order_id=coid,
@@ -1400,9 +1408,11 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             f"4h RSI：{rsi_4h}（峰值 {rsi_4h_peak:.0f}，回落 {drop:.0f} 点）"
         )
 
-    tp1_pct = round((1 - config.TP1_MULTIPLIER) * 100, 1)
-    tp2_pct = round((1 - config.TP2_MULTIPLIER) * 100, 1)
-    hard_stop_pct = config.HARD_STOP_LOSS_PCT
+    # 阶段 4：按第一个 trade 的 account_id 取阈值（per-account 缩放感知）
+    _msg_acc = (opened_trades[0][0].account_id if opened_trades else None) or None
+    tp1_pct = round((1 - float(account_param(_msg_acc, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))) * 100, 1)
+    tp2_pct = round((1 - float(account_param(_msg_acc, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))) * 100, 1)
+    hard_stop_pct = float(account_param(_msg_acc, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT))
 
     primary_trade, primary_price, primary_ex, _, _ = opened_trades[0]
 

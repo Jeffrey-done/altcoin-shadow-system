@@ -963,15 +963,19 @@ def api_backtest():
     """返回最近一次单币回测结果，附带当前config参数用于对比"""
     bt_file = os.path.join(SCRIPT_DIR, 'backtest_results.json')
     data = load_json(bt_file, {})
+    # 阶段 2（2026-05）：按当前活跃账号取 ALLOWED 字段（含 proportional 缩放）；
+    # 非 ALLOWED 字段（DAILY_RSI_MIN / TRAIL_STOP_ACTIVATE_PCT / MAX_HOLD_DAYS）
+    # 是常量直接从 config 读
+    _active = get_current_account_id()
     data['current_config'] = {
         'daily_rsi_min': config.DAILY_RSI_MIN,
-        'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
-        'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
-        'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+        'tp1_pct': round((1 - float(account_param(_active, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))) * 100, 2),
+        'tp2_pct': round((1 - float(account_param(_active, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))) * 100, 2),
+        'hard_stop_pct': float(account_param(_active, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
         'h4_rsi_drop': config.H4_RSI_DROP,
         'trail_activate_pct': config.TRAIL_STOP_ACTIVATE_PCT,
-        'leverage': config.LEVERAGE,
-        'stake': config.DEFAULT_STAKE,
+        'leverage': int(account_param(_active, 'LEVERAGE', config.LEVERAGE)),
+        'stake': float(account_param(_active, 'DEFAULT_STAKE', config.DEFAULT_STAKE)),
     }
     return _make_etag_response(data)
 
@@ -981,11 +985,12 @@ def api_backtest():
 def api_batch_backtest():
     """返回批量回测结果，附带当前config参数用于对比"""
     data = load_json(BATCH_BACKTEST_RESULTS_FILE, {})
+    _active = get_current_account_id()
     data['current_config'] = {
         'daily_rsi_min': config.DAILY_RSI_MIN,
-        'tp1_pct': round((1 - config.TP1_MULTIPLIER) * 100, 2),
-        'tp2_pct': round((1 - config.TP2_MULTIPLIER) * 100, 2),
-        'hard_stop_pct': config.HARD_STOP_LOSS_PCT,
+        'tp1_pct': round((1 - float(account_param(_active, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))) * 100, 2),
+        'tp2_pct': round((1 - float(account_param(_active, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))) * 100, 2),
+        'hard_stop_pct': float(account_param(_active, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
         'batch_symbols': config.BATCH_BACKTEST_SYMBOLS,
         'batch_days': config.BATCH_BACKTEST_DAYS,
     }

@@ -492,23 +492,31 @@ def _account_param(account_id: str, key: str, fallback=None):
       - account_id=None：保留单账号语义（用 config 模块当前生效值），既兼容
         老代码也方便测试 monkey-patch config。
     """
-    # ── proportional 模式 short-circuit（v5.1）─────────────────────────
-    # POSITION_MODE='proportional' 时，被全局缩放的 4 个字段
-    # （DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE）
-    # 必须忽略 per-account override，统一从 config 模块读（已被 apply_position_scale
-    # 缩放好的全局值）。否则 admin 给某账号填过 DEFAULT_STAKE=48 后，proportional
-    # 缩放对该账号无效，用户报告的"对不上数据"就是这种情况。
-    # manual 模式下走原有逻辑，per-account 优先（向后兼容）。
-    try:
-        import config as _cfg_pos
-        if getattr(_cfg_pos, 'POSITION_MODE', 'manual') == 'proportional':
-            from runtime_config import _PROPORTIONAL_FIELDS as _PF
-            if key in _PF:
-                v = getattr(_cfg_pos, key, None)
-                if v is not None:
-                    return v
-    except Exception:
-        pass
+    # ── 阶段 1（2026-05）每账号独立 POSITION_MODE + 独立 scale ─────────
+    #
+    # 设计变更：之前的 short-circuit 读"全局 config.POSITION_MODE"（=
+    # 活跃账号的 mode），不管 query 进来的 account_id 是谁，造成
+    # "改一个账号动到另一个"。现在改为：
+    #
+    #   1) 显式 account_id：调 runtime_config.get_account_scaled_value，
+    #      按该账号自己的 POSITION_MODE + override + per-account scale 计算；
+    #   2) account_id=None/'_default'：保留单账号兼容路径（用 fallback，
+    #      通常调用方已经传入 config.X 当前生效值）。
+    #
+    # account_id 路径返回的值已经包含了 proportional 缩放（cache 里），
+    # 所以走完这条路径直接 return；不再向下进入 override → PRISTINE 的
+    # 重复查询。
+    if account_id and account_id != '_default':
+        try:
+            import runtime_config
+            scaled = runtime_config.get_account_scaled_value(account_id, key)
+            if scaled is not None:
+                return scaled
+        except Exception:
+            # 任何异常（runtime_config 模块加载失败等）→ 保守 fallback
+            pass
+        # cache 里没有该账号 → 走老路径（override → PRISTINE → fallback）
+        # 见下方 "if account_id and account_id != '_default'" 分支
 
     # 视空字符串 / None / "_default" 哨兵都为"无具体账号"
     if account_id and account_id != '_default':

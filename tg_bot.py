@@ -151,7 +151,10 @@ def cmd_positions() -> str:
         entry = t.get('entry_price', 0)
         current = t.get('current_price', entry)
         stake = t.get('stake_remaining', t.get('stake', 0))
-        leverage = t.get('leverage', config.LEVERAGE)
+        # 阶段 2：trade 没存 leverage 时按该 trade 的 account_id 兜底
+        _t_acc = t.get('account_id') or None
+        leverage = t.get('leverage') or int(account_param(
+            _t_acc, 'LEVERAGE', config.LEVERAGE))
         direction = t.get('direction', 'SHORT')
 
         # 计算浮盈
@@ -234,22 +237,33 @@ def cmd_risk() -> str:
     paused = state.paused_until
     stake = state.total_open_stake
 
+    # 阶段 2（2026-05）：按当前账号取阈值（per-account proportional 缩放感知）
+    account_id = get_current_account_id()
+    _max_daily_loss = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                          config.RISK_MAX_DAILY_LOSS))
+    _max_daily_trades = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES',
+                                          config.RISK_MAX_DAILY_TRADES))
+    _consec_pause = int(account_param(account_id, 'RISK_CONSECUTIVE_LOSS_PAUSE',
+                                      config.RISK_CONSECUTIVE_LOSS_PAUSE))
+    _cooldown = int(account_param(account_id, 'COOLDOWN_HOURS',
+                                  config.COOLDOWN_HOURS))
+
     status = "🟢 正常"
     if paused:
         status = f"🔴 暂停至 {paused[:16]} UTC"
-    elif daily_loss >= config.RISK_MAX_DAILY_LOSS:
+    elif daily_loss >= _max_daily_loss:
         status = "🔴 今日停止（亏损达上限）"
-    elif daily_loss >= config.RISK_MAX_DAILY_LOSS * 0.7:
+    elif daily_loss >= _max_daily_loss * 0.7:
         status = "🟡 接近限额"
 
     return (
         f"🛡️ <b>风控状态</b>\n\n"
         f"状态：{status}\n"
-        f"今日亏损：{daily_loss:.1f} / {config.RISK_MAX_DAILY_LOSS}U\n"
-        f"今日开仓：{trades_opened} / {config.RISK_MAX_DAILY_TRADES} 次\n"
-        f"连续亏损：{consec} / {config.RISK_CONSECUTIVE_LOSS_PAUSE} 次\n"
+        f"今日亏损：{daily_loss:.1f} / {_max_daily_loss:.0f}U\n"
+        f"今日开仓：{trades_opened} / {_max_daily_trades} 次\n"
+        f"连续亏损：{consec} / {_consec_pause} 次\n"
         f"持仓占用：{stake:.0f}U\n"
-        f"冷却期：{config.COOLDOWN_HOURS}h\n"
+        f"冷却期：{_cooldown}h\n"
     )
 
 
@@ -268,7 +282,10 @@ def cmd_status() -> str:
             entry = t.get('entry_price', 0)
             current = t.get('current_price', entry)
             stake = t.get('stake_remaining', t.get('stake', 0))
-            leverage = t.get('leverage', config.LEVERAGE)
+            # 阶段 2：trade 没存 leverage 时按该 trade 的 account_id 兜底
+            t_acc = t.get('account_id') or account_id
+            leverage = t.get('leverage') or int(account_param(
+                t_acc, 'LEVERAGE', config.LEVERAGE))
             direction = t.get('direction', 'SHORT')
 
             if direction == 'LONG':
@@ -298,13 +315,16 @@ def cmd_status() -> str:
     rstate = _load_state()
     daily_loss = rstate.daily_loss
     paused = rstate.paused_until
-    risk_status = "🟢" if not paused and daily_loss < config.RISK_MAX_DAILY_LOSS else "🔴"
+    # 阶段 2（2026-05）：按当前账号取阈值
+    _max_daily_loss_status = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                                 config.RISK_MAX_DAILY_LOSS))
+    risk_status = "🟢" if not paused and daily_loss < _max_daily_loss_status else "🔴"
 
     balance = get_dynamic_balance(account_id)
 
     return (
         f"{header}\n\n"
-        f"💰 余额: {balance:.2f}U | {risk_status} 风控: 亏{daily_loss:.1f}/{config.RISK_MAX_DAILY_LOSS}U"
+        f"💰 余额: {balance:.2f}U | {risk_status} 风控: 亏{daily_loss:.1f}/{_max_daily_loss_status:.0f}U"
     )
 
 

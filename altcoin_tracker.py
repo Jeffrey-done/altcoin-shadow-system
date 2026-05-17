@@ -32,6 +32,7 @@ from common import (
     TRADES_FILE,
     setup_logger, send_tg, load_json, tg_escape,
     utcnow_iso, hold_hours, LockedJsonFile,
+    account_param,
 )
 from models import Trade, CloseType
 from risk_control import record_trade_closed, release_partial_stake
@@ -85,6 +86,15 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     """
     entry = trade.entry_price
     leverage = trade.leverage
+
+    # 阶段 2（2026-05）：所有展示文本用 ALLOWED 字段按该 trade 自己的
+    # account_id 取，避免显示成"活跃账号阈值"造成误导
+    _t_acc = getattr(trade, 'account_id', None) or None
+    _hard_stop_pct = float(account_param(_t_acc, 'HARD_STOP_LOSS_PCT',
+                                         config.HARD_STOP_LOSS_PCT))
+    _tp1_mult = float(account_param(_t_acc, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))
+    _tp2_mult = float(account_param(_t_acc, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))
+    _tp1_ratio = float(account_param(_t_acc, 'TP1_CLOSE_RATIO', config.TP1_CLOSE_RATIO))
 
     # L-7 修复：异常价格守卫，防止 entry=0 / 数据迁移残留造成 ZeroDivisionError
     if entry <= 0 or current_price <= 0:
@@ -162,12 +172,12 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.pnl_usd = round(total_pnl, 2)
         result.pending_exchange_action = 'full_close'
         result.pending_close_amount = remaining_shares
-        result.close_reason = f"🛑 硬止损触发（+{config.HARD_STOP_LOSS_PCT}%，合计{total_pnl:+.1f}U）"
+        result.close_reason = f"🛑 硬止损触发（+{_hard_stop_pct}%，合计{total_pnl:+.1f}U）"
         result.alert_msg = (
             f"🛑 <b>硬止损触发</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
-            f"价格反弹：{-pnl_pct:.2f}% > 止损线{config.HARD_STOP_LOSS_PCT}%\n"
+            f"价格反弹：{-pnl_pct:.2f}% > 止损线{_hard_stop_pct}%\n"
             f"合计盈亏：<b>{total_pnl:+.2f}U</b>（TP1锁定{trade.tp1_locked_pnl:+.2f} + 剩余{remaining_pnl:+.2f}，保证金{trade.stake}U×{leverage}x）\n"
             f"已自动平仓，严格执行纪律 ✅"
         )
@@ -213,15 +223,16 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
     if tp1_hit:
         trade.tp1_triggered = True
         # 锁定 50% 仓位的利润（杠杆后）
-        locked_notional = trade.stake * config.TP1_CLOSE_RATIO * leverage
+        # 阶段 2：用 _tp1_ratio（per-account），不再读全局 config.TP1_CLOSE_RATIO
+        locked_notional = trade.stake * _tp1_ratio * leverage
         locked_pnl = locked_notional * pnl_pct / 100
         trade.tp1_locked_pnl = round(locked_pnl, 2)
         # M-1 修复：TP1 平仓后，被释放的保证金 = stake × TP1_CLOSE_RATIO
         # 上层在出锁后会用它调 record_trade_closed，更新 total_open_stake
-        tp1_released_stake = trade.stake * config.TP1_CLOSE_RATIO
-        trade.stake_remaining = trade.stake * (1 - config.TP1_CLOSE_RATIO)
+        tp1_released_stake = trade.stake * _tp1_ratio
+        trade.stake_remaining = trade.stake * (1 - _tp1_ratio)
         # 真实平仓：TP1 半仓（发单前的全量 shares × TP1_CLOSE_RATIO）
-        tp1_close_amount = trade.shares * config.TP1_CLOSE_RATIO
+        tp1_close_amount = trade.shares * _tp1_ratio
         # H7: 先按计划值记录 tp1_closed_shares（影子交易路径不会被后续回填覆盖）
         # 真实实盘路径由 _perform_exchange_close 的 _backfill_order_id 用 filled 实际值覆盖
         trade.tp1_closed_shares = round(tp1_close_amount, 6)
@@ -247,13 +258,13 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         # 注意 pnl 是 TP1 实际锁定的盈利（正值），不会触发连亏计数。
         result.pending_risk_partial = (round(locked_pnl, 2), round(tp1_released_stake, 4))
         result.alert_msg = (
-            f"🎯 <b>第一档止盈触发（-{(1-config.TP1_MULTIPLIER)*100:.0f}%）</b>\n\n"
+            f"🎯 <b>第一档止盈触发（-{(1-_tp1_mult)*100:.0f}%）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
-            f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（{int(config.TP1_CLOSE_RATIO*100)}%仓位）\n"
+            f"锁定盈利：<b>{locked_pnl:+.2f}U</b>（{int(_tp1_ratio*100)}%仓位）\n"
             f"名义仓位：{trade.stake}×{leverage}x → 剩余{trade.stake_remaining}×{leverage}x\n"
             f"保本止损已激活：剩余仓位止损 = 入场价\n"
-            f"剩余等待TP2（-{(1-config.TP2_MULTIPLIER)*100:.0f}%）✅"
+            f"剩余等待TP2（-{(1-_tp2_mult)*100:.0f}%）✅"
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U, 保本止损已激活")
 
@@ -277,7 +288,7 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         trade.pnl = round(remaining_pnl, 2)
         trade.status = 'closed'
         trade.closed_at = utcnow_iso()
-        trade.close_reason = f"TP2止盈-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓"
+        trade.close_reason = f"TP2止盈-{(1-_tp2_mult)*100:.0f}%全仓平仓"
         trade.close_type = CloseType.TP2
         trade.exit_ref_price = current_price
         total_pnl = trade.tp1_locked_pnl + remaining_pnl
@@ -286,9 +297,9 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         result.pnl_usd = round(total_pnl, 2)
         result.pending_exchange_action = 'full_close'
         result.pending_close_amount = remaining_shares
-        result.close_reason = f"✅ 第二档止盈（-{(1-config.TP2_MULTIPLIER)*100:.0f}%，全仓平仓）"
+        result.close_reason = f"✅ 第二档止盈（-{(1-_tp2_mult)*100:.0f}%，全仓平仓）"
         result.alert_msg = (
-            f"🎯 <b>第二档止盈触发（-{(1-config.TP2_MULTIPLIER)*100:.0f}%全仓平仓）</b>\n\n"
+            f"🎯 <b>第二档止盈触发（-{(1-_tp2_mult)*100:.0f}%全仓平仓）</b>\n\n"
             f"币种：<b>{trade.symbol}</b>\n"
             f"入场价：{entry:.5f} → 现价：{current_price:.5f}\n"
             f"TP1锁定：{trade.tp1_locked_pnl:+.2f}U\n"
@@ -620,10 +631,16 @@ def run(check_only: bool = False):
     binance = get_binance()
 
     # 日报行
+    # 阶段 2：日报标题里展示用全局阈值（取活跃账号；多账号场景应改为按账号分组日报，
+    # 但 run() 当前是单账号视图，按当前活跃账号取已经是最贴近原意的语义）
+    from common import get_current_account_id as _gcid
+    _run_acc = _gcid() or None
+    _run_lev = int(account_param(_run_acc, 'LEVERAGE', config.LEVERAGE))
+    _run_stake = float(account_param(_run_acc, 'DEFAULT_STAKE', config.DEFAULT_STAKE))
     lines = [
         "📊 <b>影子空单日报</b>（杠杆模式）",
         f"⏰ {utcnow_iso()[:16].replace('T', ' ')} UTC",
-        f"📐 杠杆：{config.LEVERAGE}x | 保证金/单：{config.DEFAULT_STAKE}U",
+        f"📐 杠杆：{_run_lev}x | 保证金/单：{_run_stake:.0f}U",
         "",
     ]
 
@@ -735,15 +752,19 @@ def run(check_only: bool = False):
                     )
                     trail_str = f" | 移动止损: {trade.trail_stop_price:.5f}" if trade.trail_stop_price else ""
                     hard_str = f" | 硬止损: {trade.hard_stop_price:.5f}" if trade.hard_stop_price else ""
+                    # 阶段 2：按 trade.account_id 取 TP1/TP2（per-account 缩放感知）
+                    _row_acc = getattr(trade, 'account_id', None) or None
+                    _row_tp1m = float(account_param(_row_acc, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))
+                    _row_tp2m = float(account_param(_row_acc, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))
                     if trade.tp1_triggered:
                         lines.append(
                             f"   ✅TP1已锁定{trade.tp1_locked_pnl:+.2f}U | "
-                            f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){trail_str}"
+                            f"TP2: {trade.take_profit_2:.5f}(-{(1-_row_tp2m)*100:.0f}%){trail_str}"
                         )
                     else:
                         lines.append(
-                            f"   TP1: {trade.take_profit_1:.5f}(-{(1-config.TP1_MULTIPLIER)*100:.0f}%) | "
-                            f"TP2: {trade.take_profit_2:.5f}(-{(1-config.TP2_MULTIPLIER)*100:.0f}%){hard_str}{trail_str}"
+                            f"   TP1: {trade.take_profit_1:.5f}(-{(1-_row_tp1m)*100:.0f}%) | "
+                            f"TP2: {trade.take_profit_2:.5f}(-{(1-_row_tp2m)*100:.0f}%){hard_str}{trail_str}"
                         )
                 lines.append("")
 

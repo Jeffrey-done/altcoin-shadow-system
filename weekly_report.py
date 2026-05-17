@@ -440,7 +440,12 @@ def format_tg_report(stats, suggestions, week_start, week_end):
 
     lines.append("")
     lines.append(f"最大单日亏损：<code>{stats['max_drawdown_day']:+.2f}U</code>")
-    lines.append(f"本金：{config.ACCOUNT_BALANCE}U | 杠杆：{config.LEVERAGE}x")
+    # 阶段 4：按当前活跃账号取展示参数
+    from common import get_current_account_id, account_param as _ap
+    _wa = get_current_account_id() or None
+    _wa_bal = float(_ap(_wa, 'ACCOUNT_BALANCE', config.ACCOUNT_BALANCE))
+    _wa_lev = int(_ap(_wa, 'LEVERAGE', config.LEVERAGE))
+    lines.append(f"本金：{_wa_bal:.0f}U | 杠杆：{_wa_lev}x")
 
     return "\n".join(lines)
 
@@ -458,6 +463,10 @@ def generate_json_report(stats, suggestions, week_start, week_end):
     """
     grade, roi = _get_weekly_grade(stats['total_pnl'])
 
+    # 阶段 4：按当前活跃账号取展示参数
+    from common import get_current_account_id, account_param as _ap
+    _wa = get_current_account_id() or None
+
     report = {
         'metadata': {
             'generated_at': utcnow_iso(),
@@ -469,9 +478,9 @@ def generate_json_report(stats, suggestions, week_start, week_end):
         'stats': stats,
         'suggestions': suggestions,
         'config_snapshot': {
-            'account_balance': config.ACCOUNT_BALANCE,
-            'leverage': config.LEVERAGE,
-            'default_stake': config.DEFAULT_STAKE,
+            'account_balance': float(_ap(_wa, 'ACCOUNT_BALANCE', config.ACCOUNT_BALANCE)),
+            'leverage': int(_ap(_wa, 'LEVERAGE', config.LEVERAGE)),
+            'default_stake': float(_ap(_wa, 'DEFAULT_STAKE', config.DEFAULT_STAKE)),
         },
     }
 

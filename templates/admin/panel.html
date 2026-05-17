@@ -619,6 +619,8 @@ async function loadState() {
     lastConfigState.config_active_snapshot = s.config || {};
     lastConfigState.config_defaults = s.config_defaults || {};
     lastConfigState.compound_per_account = s.compound_per_account || {};
+    lastConfigState.position_scale = s.position_scale || {};
+    lastConfigState.position_scale_per_account = s.position_scale_per_account || {};
 
     // 1. 全局字段：始终从 global_config 读（落到 #cfg-LIVE_MODE 等）
     Object.entries(s.config || {}).forEach(([k, v]) => {
@@ -648,11 +650,21 @@ async function loadState() {
     // 5. 复利显示（基于 cfgTargetAccountId）
     refreshCompoundDisplay();
 
-    // 6. 仓位模式状态显示（v5.1）
-    renderPositionScaleState(s.position_scale || {});
+    // 6. 仓位模式状态显示（v5.1 / 阶段 3：每账号独立）
+    renderPositionScaleStateForCurrentTarget();
 
     lucide.createIcons();
   } catch (e) { alertBox('加载失败: ' + e.message, 'error'); }
+}
+
+// 阶段 3（2026-05）：选当前目标账号的 scale state 渲染
+// 切账号时也要重渲染，所以独立成一个 helper
+function renderPositionScaleStateForCurrentTarget() {
+  const perAcc = (lastConfigState.position_scale_per_account || {});
+  const aid = cfgTargetAccountId || '';
+  // 优先用该账号自己的 state；找不到时 fallback 到全局（活跃账号的）
+  const ps = (aid && perAcc[aid]) ? perAcc[aid] : (lastConfigState.position_scale || {});
+  renderPositionScaleState(ps);
 }
 
 // 渲染仓位模式状态卡片，并在 proportional 模式下把被缩放的 4 个字段

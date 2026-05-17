@@ -428,6 +428,45 @@ def _load_raw_config() -> dict:
         _save_raw_config(v2)
         return v2
 
+    # v2 → v2.1 残留清理（2026-05 阶段 5）：旧版本里 POSITION_MODE 等被
+    # 错误存到 _global 段（当时 POSITION_MODE 是全局字段），新版本里它是
+    # 账号字段。如果发现 _global 里有 ACCOUNT_FIELDS 残留：
+    #   1. 把残留 key 复制到所有"没有自己 override"的账号下；
+    #   2. 从 _global 中删除。
+    # 这样旧用户的"想让所有账号都 proportional"的意图被保留。
+    global_data = data.get('_global', {})
+    legacy_keys = [k for k in list(global_data.keys()) if k in ACCOUNT_FIELDS]
+    if legacy_keys:
+        logger.info(f"runtime_config: 检测到 _global 残留账号字段 {legacy_keys}，自动迁移到各账号下")
+        # 收集所有账号 ID（admin_secrets + 已有 override 的）
+        all_ids = set()
+        try:
+            import admin_secrets
+            for acc in (admin_secrets.list_accounts() or []):
+                aid = acc.get('id') if isinstance(acc, dict) else None
+                if aid:
+                    all_ids.add(aid)
+        except Exception:
+            pass
+        for aid in data.keys():
+            if aid and not aid.startswith('_'):
+                all_ids.add(aid)
+
+        # 给每个账号补全（不覆盖已有 override）
+        for aid in all_ids:
+            acc_seg = data.setdefault(aid, {})
+            for k in legacy_keys:
+                if k not in acc_seg:
+                    acc_seg[k] = global_data[k]
+        # 从 _global 移除残留
+        for k in legacy_keys:
+            del global_data[k]
+
+        try:
+            _save_raw_config(data)
+        except Exception as e:
+            logger.warning(f"runtime_config: v2.1 迁移写盘失败（非致命，下次再试）: {e}")
+
     return data
 
 
@@ -652,10 +691,209 @@ _PROPORTIONAL_FIELDS = (
     'COMPOUND_INCREASE',
 )
 
+# ── 每账号独立 scale 状态缓存（2026-05 重构：阶段 1）─────────────────
+# 结构: { account_id: {
+#     'mode': 'manual' | 'proportional',
+#     'effective_balance': float,
+#     'scale': float,
+#     'balance_source': 'config' | 'binance' | 'okx' | 'both' | 'unavailable',
+#     'scaled_fields': { 'DEFAULT_STAKE': int, 'RISK_MAX_DAILY_LOSS': int, ... },
+#     'last_applied_at': float,
+# } }
+#
+# 由 compute_per_account_scaled() 写入；get_account_scale_state /
+# get_all_account_scale_states / get_account_scaled_value 读取。
+#
+# 重要：_account_param 走这个 cache 后，不再被"活跃账号写入 config 模块"污染。
+# 旧的 _position_scale_state 仍保留并同步活跃账号的快照（向后兼容
+# get_position_scale_state、admin panel 旧字段、单账号路径）。
+_per_account_state: Dict[str, dict] = {}
+
 
 def get_position_scale_state() -> dict:
     """返回最近一次 apply_position_scale() 的执行状态（admin panel /api/state 用）"""
     return dict(_position_scale_state)
+
+
+def get_account_scale_state(account_id: str) -> dict:
+    """
+    返回指定账号的 scale state 副本。
+    若该账号尚未被 compute_per_account_scaled 算过，返回空 dict。
+    """
+    if not account_id:
+        return {}
+    return dict(_per_account_state.get(account_id, {}))
+
+
+def get_all_account_scale_states() -> dict:
+    """返回所有账号的 scale state 副本（admin panel /api/state 用）"""
+    return {k: dict(v) for k, v in _per_account_state.items()}
+
+
+def get_account_scaled_value(account_id: str, key: str):
+    """
+    返回该账号在 key 上"应用了自身 POSITION_MODE 后"的最终值。
+
+    优先级：
+      1. 该账号是 proportional 且 key ∈ _PROPORTIONAL_FIELDS
+         → 返回 _per_account_state[acc][scaled_fields][key]
+           （= PRISTINE × per-account scale；该账号自己的 ACCOUNT_BALANCE / 实盘余额算的）
+      2. 该账号在 runtime_config.json 里有 override
+         → 返回该 override 值（manual 模式下生效；proportional 模式下被 _PROPORTIONAL_FIELDS
+           的特殊处理盖过 — 上面分支命中后已返回）
+      3. config.py 的 PRISTINE 默认值
+
+    返回 None 表示既无缓存也无 override 也无 PRISTINE（极少；调用方自己兜底）。
+
+    永远不读 config 模块（避免被活跃账号污染），也永远不写 config 模块。
+    """
+    if not account_id or account_id == '_default':
+        return None
+
+    # 触发 cache 填充（first-call 或 cache miss 时）
+    st = _per_account_state.get(account_id)
+    if st is None:
+        try:
+            compute_per_account_scaled()
+        except Exception as e:
+            logger.debug(f"get_account_scaled_value: compute_per_account_scaled 失败 {e}")
+            return None
+        st = _per_account_state.get(account_id)
+        if st is None:
+            # 该账号在 admin_secrets / runtime_config.json 都不存在 → 无数据
+            return None
+
+    # 1. proportional + 缩放字段：直接读 cache（per-account scale 算好的值）
+    if key in _PROPORTIONAL_FIELDS:
+        v = st.get('scaled_fields', {}).get(key)
+        if v is not None:
+            return v
+
+    # 2. 账号的显式 override
+    try:
+        overrides = load_account_overrides(account_id) or {}
+        if key in overrides:
+            return overrides[key]
+    except Exception:
+        pass
+
+    # 3. PRISTINE 兜底
+    return get_pristine_default(key)
+
+
+def compute_per_account_scaled() -> dict:
+    """
+    遍历所有账号独立计算 mode + scale + scaled_fields，写入 _per_account_state。
+
+    账号集合 = admin_secrets.list_accounts() ∪ runtime_config.json 中有 override 的账号 ID。
+
+    多账号 + 实盘的边界（已知限制）：
+      - 影子模式（LIVE_MODE/OKX_LIVE_MODE 都关）：每个账号用自己的
+        ACCOUNT_BALANCE override 算 scale，账号间独立；
+      - 实盘模式：所有账号共享 _fetch_live_balance_cached() 拉到的全局 balance。
+        按账号 API key 独立拉余额是更深层重构，不在本期范围。
+
+    返回 _per_account_state 的副本。
+    """
+    import time as _time
+    import config as _config
+
+    now = _time.time()
+    try:
+        baseline = float(getattr(_config, 'BASELINE_BALANCE', 100) or 100)
+    except (TypeError, ValueError):
+        baseline = 100.0
+    if baseline <= 0:
+        baseline = 100.0
+
+    # 1. 收集账号 ID
+    all_ids = set()
+    try:
+        from admin_secrets import list_accounts as _list_accounts
+        for acc in (_list_accounts() or []):
+            aid = acc.get('id') if isinstance(acc, dict) else None
+            if aid:
+                all_ids.add(aid)
+    except Exception as e:
+        logger.debug(f"compute_per_account_scaled: list_accounts 失败 {e}")
+    try:
+        all_overrides = load_all_account_overrides() or {}
+        for aid in all_overrides.keys():
+            if aid and not aid.startswith('_'):
+                all_ids.add(aid)
+    except Exception as e:
+        logger.debug(f"compute_per_account_scaled: load_all_account_overrides 失败 {e}")
+        all_overrides = {}
+
+    # 2. 实盘 fetch 一次（所有账号共享；影子模式返回 None）
+    live_balance, live_source = _fetch_live_balance_cached()
+
+    state_map: Dict[str, dict] = {}
+    pristine_balance = get_pristine_default('ACCOUNT_BALANCE')
+    pristine_position_mode = get_pristine_default('POSITION_MODE') or 'manual'
+
+    for acc_id in all_ids:
+        overrides = all_overrides.get(acc_id, {}) if isinstance(all_overrides, dict) else {}
+
+        # 决定 mode
+        mode = overrides.get('POSITION_MODE')
+        if mode not in ('manual', 'proportional'):
+            mode = pristine_position_mode
+
+        # 决定 effective_balance
+        if live_balance is not None:
+            # 实盘：所有账号共享
+            effective_balance = float(live_balance)
+            balance_source = live_source or 'unavailable'
+        else:
+            # 影子：用账号自己的 ACCOUNT_BALANCE override
+            bal = overrides.get('ACCOUNT_BALANCE')
+            if bal is None:
+                bal = pristine_balance
+            try:
+                effective_balance = float(bal) if bal is not None else baseline
+            except (TypeError, ValueError):
+                effective_balance = baseline
+            balance_source = 'config'
+
+        st = {
+            'mode': mode,
+            'effective_balance': round(float(effective_balance), 2)
+                if effective_balance is not None else None,
+            'scale': 1.0,
+            'balance_source': balance_source,
+            'scaled_fields': {},
+            'last_applied_at': now,
+        }
+
+        if mode == 'proportional' and effective_balance and effective_balance > 0:
+            scale = effective_balance / baseline
+            st['scale'] = round(scale, 4)
+            for key in _PROPORTIONAL_FIELDS:
+                base_value = get_pristine_default(key)
+                if base_value is None:
+                    continue
+                if isinstance(base_value, int):
+                    scaled = max(1, int(round(base_value * scale)))
+                else:
+                    scaled = round(float(base_value) * scale, 2)
+                st['scaled_fields'][key] = scaled
+        else:
+            # manual 模式 或 proportional + balance 无效:
+            # scaled_fields = override 或 PRISTINE（让 get_account_scaled_value
+            # 直接读 scaled_fields 也能命中正确的 manual 值）
+            for key in _PROPORTIONAL_FIELDS:
+                v = overrides.get(key)
+                if v is None:
+                    v = get_pristine_default(key)
+                if v is not None:
+                    st['scaled_fields'][key] = v
+
+        state_map[acc_id] = st
+
+    _per_account_state.clear()
+    _per_account_state.update(state_map)
+    return {k: dict(v) for k, v in state_map.items()}
 
 
 def _fetch_live_balance_cached() -> tuple:
@@ -932,6 +1170,22 @@ def apply_overrides(force: bool = False) -> dict:
         apply_position_scale()
     except Exception as e:
         logger.warning(f"apply_position_scale 异常（非致命）: {e}")
+
+    # 阶段 1：每账号独立 scale 计算（compute_per_account_scaled 写入
+    # _per_account_state，供 _account_param 按账号查参数；不污染 config 模块）
+    try:
+        compute_per_account_scaled()
+        # 同步：把活跃账号的 state 写到 _position_scale_state，
+        # 让 get_position_scale_state() / 老的 admin panel 字段仍能拿到合理值
+        try:
+            from admin_secrets import get_active_account_id as _gaa
+            _active = _gaa()
+        except Exception:
+            _active = ''
+        if _active and _active in _per_account_state:
+            _position_scale_state.update(_per_account_state[_active])
+    except Exception as e:
+        logger.warning(f"compute_per_account_scaled 异常（非致命）: {e}")
 
     return applied
 

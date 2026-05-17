@@ -277,18 +277,23 @@ def reconcile_risk_state(account_id: Optional[str] = None, notify: bool = False)
 #  核心风控检查
 # ══════════════════════════════════════════════════════════════════
 
-def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
+def can_open_trade(stake: float = None, strategy: str = 'short',
                    account_id: Optional[str] = None) -> tuple:
     """
     检查指定账户是否允许开仓。
 
     参数:
-      stake: 本次开仓保证金
+      stake: 本次开仓保证金；None → 取该账号的 DEFAULT_STAKE（含 proportional 缩放）
       strategy: 策略类型（保留参数向后兼容）
       account_id: 账户 ID（None 使用活跃账户）
 
     返回: (allowed: bool, reason: str)
     """
+    # 阶段 2（2026-05）：default=None 而不是 config.DEFAULT_STAKE，避免 import
+    # 时把 PRISTINE 30 锁进 default。改为函数体内按账号取（含 proportional 缩放）。
+    if stake is None:
+        stake = float(account_param(account_id, 'DEFAULT_STAKE',
+                                    config.DEFAULT_STAKE))
     # 所有读-判-写操作统一在锁内执行，避免并发 can_open_trade 重复清理 paused_until
     # 或 total_open_stake 双写漂移
     # 多账户合规（2026-05）：所有账户级阈值（RISK_MAX_DAILY_LOSS / DAILY_TRADES /
@@ -366,9 +371,12 @@ def can_open_trade(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
     return True, "OK"
 
 
-def record_trade_opened(stake: float = config.DEFAULT_STAKE, strategy: str = 'short',
+def record_trade_opened(stake: float = None, strategy: str = 'short',
                         account_id: Optional[str] = None) -> None:
     """记录指定账户的开仓事件（全程加锁）"""
+    if stake is None:
+        stake = float(account_param(account_id, 'DEFAULT_STAKE',
+                                    config.DEFAULT_STAKE))
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
         state.daily_trades_opened += 1
@@ -381,7 +389,7 @@ def record_trade_opened(stake: float = config.DEFAULT_STAKE, strategy: str = 'sh
     )
 
 
-def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
+def record_trade_closed(pnl: float, stake: float = None,
                         account_id: Optional[str] = None,
                         trade_account_id: Optional[str] = None) -> None:
     """
@@ -395,6 +403,11 @@ def record_trade_closed(pnl: float, stake: float = config.DEFAULT_STAKE,
     # NF-4: 优先用 trade 自带的 account_id
     if account_id is None and trade_account_id is not None:
         account_id = trade_account_id
+    # 阶段 2（2026-05）：stake 默认值改为 None，避免 import 时锁定 PRISTINE。
+    # 必须在 account_id 解析之后再取（否则可能用错账号的 stake）。
+    if stake is None:
+        stake = float(account_param(account_id, 'DEFAULT_STAKE',
+                                    config.DEFAULT_STAKE))
     # 多账户合规（2026-05）：连亏暂停 / 暂停时长 / 单日亏损告警阈值都按
     # 账户级覆盖取，避免活跃账户的阈值被 apply_overrides 写到 config 后污染
     # 非活跃账户的判定。

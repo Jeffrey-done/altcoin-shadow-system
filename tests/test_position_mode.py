@@ -460,27 +460,36 @@ class TestAccountParamShortCircuit:
         assert _account_param('acc_test', 'DEFAULT_STAKE', fallback=999) == 48
 
     def test_proportional_mode_ignores_account_override(self, tmp_path, monkeypatch):
-        """proportional 模式下：4 个被缩放字段忽略 per-account override"""
+        """proportional 模式下：4 个被缩放字段忽略 per-account override，按 per-account scale 算"""
         rt_path = str(tmp_path / "runtime_config.json")
         monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
         monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
 
         import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_test', 'name': 'T'}], raising=False)
         monkeypatch.setattr(admin_secrets, 'get_active_account_id',
                             lambda: 'acc_test', raising=False)
         runtime_config.save_account_overrides('acc_test', {
+            'POSITION_MODE': 'proportional',
             'ACCOUNT_BALANCE': 1000,
-            'DEFAULT_STAKE': 48,  # 用户在 admin 改过的值
+            'DEFAULT_STAKE': 48,  # 用户在 admin 改过的值（proportional 下应被忽略）
         })
 
-        # 切到 proportional 并模拟 apply_position_scale 把 config.DEFAULT_STAKE 缩到 86
-        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
-        monkeypatch.setattr(config, 'DEFAULT_STAKE', 86)
+        # 影子模式 → compute 用账号自己的 ACCOUNT_BALANCE
+        monkeypatch.setattr(config, 'LIVE_MODE', False)
+        monkeypatch.setattr(config, 'OKX_LIVE_MODE', False)
+        runtime_config._balance_cache.update({'value': None, 'source': None, 'expires_at': 0.0})
+        runtime_config._per_account_state.clear()
+        runtime_config.compute_per_account_scaled()
 
         from common import _account_param
-        # proportional 模式下：忽略 acc_test 的 48，返回 config.DEFAULT_STAKE = 86
+        # proportional 模式下：忽略 acc_test 的 48，按 scale=10 缩放 PRISTINE
+        pristine = runtime_config.get_pristine_default('DEFAULT_STAKE')
+        expected = max(1, int(round(pristine * 10)))  # 1000/100 = 10
         result = _account_param('acc_test', 'DEFAULT_STAKE', fallback=999)
-        assert result == 86, f"proportional 模式应返回 config.DEFAULT_STAKE=86，实际 {result}"
+        assert result == expected, \
+            f"proportional 模式应返回 PRISTINE × scale = {expected}，实际 {result}"
 
     def test_proportional_mode_does_not_affect_other_fields(self, tmp_path, monkeypatch):
         """proportional 模式下：非缩放字段（如 LEVERAGE）仍走 per-account override"""
@@ -489,18 +498,24 @@ class TestAccountParamShortCircuit:
         monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
 
         import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_test', 'name': 'T'}], raising=False)
         monkeypatch.setattr(admin_secrets, 'get_active_account_id',
                             lambda: 'acc_test', raising=False)
         runtime_config.save_account_overrides('acc_test', {
+            'POSITION_MODE': 'proportional',
             'ACCOUNT_BALANCE': 1000,
-            'LEVERAGE': 5,  # 用户给该账号设的杠杆
+            'LEVERAGE': 5,
         })
 
-        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
-        monkeypatch.setattr(config, 'LEVERAGE', 10)  # 全局值
+        monkeypatch.setattr(config, 'LIVE_MODE', False)
+        monkeypatch.setattr(config, 'OKX_LIVE_MODE', False)
+        runtime_config._balance_cache.update({'value': None, 'source': None, 'expires_at': 0.0})
+        runtime_config._per_account_state.clear()
+        runtime_config.compute_per_account_scaled()
 
         from common import _account_param
-        # LEVERAGE 不在 _PROPORTIONAL_FIELDS 里 → 仍优先 per-account 的 5
+        # LEVERAGE 不在 _PROPORTIONAL_FIELDS → 仍优先 per-account 的 5
         assert _account_param('acc_test', 'LEVERAGE', fallback=999) == 5
 
 
@@ -604,3 +619,334 @@ class TestCompoundMaxStakeWarning:
         assert any('COMPOUND_MAX_STAKE(300U)' in w for w in warnings_out), (
             f"manual 模式仍应按 baseline 报警，实际: {warnings_out}"
         )
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  阶段 1（2026-05）每账号独立 POSITION_MODE + 独立 scale
+#
+#  回归用户原始 bug:
+#    "我改了一个账号的单笔仓位，另一个账号也跟着变"
+#  根因:
+#    apply_position_scale 用全局 config.POSITION_MODE 决定 mode；
+#    common._account_param short-circuit 又用 config.POSITION_MODE，
+#    所以"活跃账号是 RN(proportional, balance=286)"时，主账户(manual,
+#    DEFAULT_STAKE=99)的 stake 也被 proportional short-circuit 拉到
+#    86 (PRISTINE 30 × 2.86)。
+#
+#  修复（阶段 1）:
+#    - runtime_config.compute_per_account_scaled() 按每个账号独立算 scale
+#    - common._account_param 改走 runtime_config.get_account_scaled_value
+#      （读 _per_account_state cache，不再读 config.POSITION_MODE）
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestPerAccountIsolation:
+    """每个账号自己的 POSITION_MODE / ACCOUNT_BALANCE / scale 互不污染"""
+
+    def _setup_two_accounts(self, tmp_path, monkeypatch,
+                            acc_a_overrides: dict, acc_b_overrides: dict,
+                            active='acc_a'):
+        """
+        通用 setup: 准备两个账号 acc_a / acc_b 各自的 overrides，
+        并 mock admin_secrets.list_accounts / get_active_account_id。
+        """
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_a', 'name': 'A'},
+                                     {'id': 'acc_b', 'name': 'B'}],
+                            raising=False)
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: active, raising=False)
+
+        runtime_config.save_account_overrides('acc_a', acc_a_overrides)
+        runtime_config.save_account_overrides('acc_b', acc_b_overrides)
+
+        # 影子模式（两个账号都用自己的 ACCOUNT_BALANCE）
+        monkeypatch.setattr(config, 'LIVE_MODE', False)
+        monkeypatch.setattr(config, 'OKX_LIVE_MODE', False)
+        monkeypatch.setattr(config, 'BASELINE_BALANCE', 100)
+
+        # 清缓存确保 compute_per_account_scaled 拿到新数据
+        runtime_config._balance_cache.update({'value': None, 'source': None, 'expires_at': 0.0})
+        runtime_config._per_account_state.clear()
+
+    def test_M_plus_P__per_account_stake_independent(self, tmp_path, monkeypatch):
+        """A=manual stake=99 / B=proportional balance=286，互不污染（用户原始 bug 场景）"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 99},
+            acc_b_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 286},
+            active='acc_b')  # B 是活跃账号（最容易污染 A 的场景）
+
+        runtime_config.compute_per_account_scaled()
+
+        from common import _account_param
+        # A: manual → 应该返回自己的 99，不被 B 的 proportional 污染
+        assert _account_param('acc_a', 'DEFAULT_STAKE') == 99
+        # B: proportional → PRISTINE 30 × (286/100) = 86
+        assert _account_param('acc_b', 'DEFAULT_STAKE') == 86
+
+    def test_M_plus_P__switch_active_does_not_change_per_account(self, tmp_path, monkeypatch):
+        """切换活跃账号，每个账号自己的 stake 不变"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 99},
+            acc_b_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 286},
+            active='acc_a')
+
+        runtime_config.compute_per_account_scaled()
+
+        from common import _account_param
+        a_stake_when_a_active = _account_param('acc_a', 'DEFAULT_STAKE')
+        b_stake_when_a_active = _account_param('acc_b', 'DEFAULT_STAKE')
+
+        # 切换活跃到 B
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_b', raising=False)
+        runtime_config._per_account_state.clear()
+        runtime_config.compute_per_account_scaled()
+
+        a_stake_when_b_active = _account_param('acc_a', 'DEFAULT_STAKE')
+        b_stake_when_b_active = _account_param('acc_b', 'DEFAULT_STAKE')
+
+        assert a_stake_when_a_active == a_stake_when_b_active == 99, \
+            "主账户(manual) stake 不应受活跃账号切换影响"
+        assert b_stake_when_a_active == b_stake_when_b_active == 86, \
+            "RN(proportional) stake 不应受活跃账号切换影响"
+
+    def test_P_plus_P__different_balance_yields_different_scale(self, tmp_path, monkeypatch):
+        """两个账号都 proportional 但 balance 不同 → 各自独立 scale"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 200},
+            acc_b_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 500},
+            active='acc_a')
+
+        runtime_config.compute_per_account_scaled()
+
+        from common import _account_param
+        pristine_stake = runtime_config.get_pristine_default('DEFAULT_STAKE')
+        # A: scale = 200/100 = 2.0
+        assert _account_param('acc_a', 'DEFAULT_STAKE') == max(1, int(round(pristine_stake * 2.0)))
+        # B: scale = 500/100 = 5.0
+        assert _account_param('acc_b', 'DEFAULT_STAKE') == max(1, int(round(pristine_stake * 5.0)))
+
+    def test_modify_one_account_balance_does_not_affect_other(self, tmp_path, monkeypatch):
+        """改 A 的 ACCOUNT_BALANCE 不影响 B 的 stake（核心隔离测试）"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 100},
+            acc_b_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 50},
+            active='acc_a')
+
+        runtime_config.compute_per_account_scaled()
+
+        from common import _account_param
+        b_stake_before = _account_param('acc_b', 'DEFAULT_STAKE')
+
+        # 改 A 的 balance: 100 → 1000（应该让 A 的 stake 翻 10 倍但 B 不变）
+        runtime_config.save_account_overrides('acc_a', {'ACCOUNT_BALANCE': 1000})
+        runtime_config._per_account_state.clear()
+        runtime_config.compute_per_account_scaled()
+
+        a_stake_after = _account_param('acc_a', 'DEFAULT_STAKE')
+        b_stake_after = _account_param('acc_b', 'DEFAULT_STAKE')
+
+        pristine_stake = runtime_config.get_pristine_default('DEFAULT_STAKE')
+        assert a_stake_after == max(1, int(round(pristine_stake * 10.0))), \
+            f"A 的 stake 应该 = PRISTINE × 10，实际 {a_stake_after}"
+        assert b_stake_after == 50, \
+            f"B(manual stake=50) 不应被 A 的 balance 改动影响，实际 {b_stake_after} (改前 {b_stake_before})"
+
+    def test_modify_one_account_stake_does_not_affect_other(self, tmp_path, monkeypatch):
+        """改 A 的 DEFAULT_STAKE (manual)，不影响 B 的 stake"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 30},
+            acc_b_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 80},
+            active='acc_a')
+
+        runtime_config.compute_per_account_scaled()
+
+        from common import _account_param
+        # 改 A 的 stake: 30 → 120
+        runtime_config.save_account_overrides('acc_a', {'DEFAULT_STAKE': 120})
+        runtime_config._per_account_state.clear()
+        runtime_config.compute_per_account_scaled()
+
+        assert _account_param('acc_a', 'DEFAULT_STAKE') == 120
+        assert _account_param('acc_b', 'DEFAULT_STAKE') == 80, \
+            "B 的 manual stake 不应被 A 的修改影响"
+
+    def test_get_account_scaled_value_returns_none_for_unknown_account(self, tmp_path, monkeypatch):
+        """未知账号 → get_account_scaled_value 返回 None，不抛异常"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts', lambda: [], raising=False)
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id', lambda: '', raising=False)
+
+        runtime_config._per_account_state.clear()
+        # 该账号在 admin_secrets 和 runtime_config.json 都不存在
+        v = runtime_config.get_account_scaled_value('acc_does_not_exist', 'DEFAULT_STAKE')
+        assert v is None
+
+    def test_get_all_account_scale_states_returns_per_account_dict(self, tmp_path, monkeypatch):
+        """get_all_account_scale_states 返回每个账号的状态副本（admin panel 用）"""
+        self._setup_two_accounts(tmp_path, monkeypatch,
+            acc_a_overrides={'POSITION_MODE': 'manual', 'ACCOUNT_BALANCE': 100,
+                             'DEFAULT_STAKE': 30},
+            acc_b_overrides={'POSITION_MODE': 'proportional', 'ACCOUNT_BALANCE': 500},
+            active='acc_a')
+
+        runtime_config.compute_per_account_scaled()
+        states = runtime_config.get_all_account_scale_states()
+
+        assert 'acc_a' in states
+        assert 'acc_b' in states
+        assert states['acc_a']['mode'] == 'manual'
+        assert states['acc_b']['mode'] == 'proportional'
+        assert states['acc_a']['scale'] == 1.0
+        assert states['acc_b']['scale'] == 5.0
+        # scaled_fields 都该有 4 个字段
+        for acc in ('acc_a', 'acc_b'):
+            for k in SCALED:
+                assert k in states[acc]['scaled_fields'], \
+                    f"{acc} 缺少 scaled_fields[{k}]"
+
+    def test_account_param_for_unknown_account_falls_back_safely(self, tmp_path, monkeypatch):
+        """对未知账号调 _account_param 不应崩，应返回 PRISTINE（设计：显式 account_id 时 PRISTINE 优先于 fallback）"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts', lambda: [], raising=False)
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id', lambda: '', raising=False)
+        runtime_config._per_account_state.clear()
+
+        from common import _account_param
+        pristine = runtime_config.get_pristine_default('DEFAULT_STAKE')
+        # 设计：显式 account_id 时 PRISTINE 优先于 fallback（中性值，不被 active 账号污染）
+        assert _account_param('acc_unknown', 'DEFAULT_STAKE', fallback=42) == pristine
+        assert _account_param('acc_unknown', 'DEFAULT_STAKE') == pristine
+
+
+# ══════════════════════════════════════════════════════════════════
+#  阶段 5（2026-05）_global 残留账号字段的自动迁移
+#
+#  旧版本里 POSITION_MODE 是全局字段，存在 _global 段；新版改成账号字段。
+#  _load_raw_config 检测到 _global 里有 ACCOUNT_FIELDS 时，把它复制到
+#  所有"没有自己 override"的账号下，再从 _global 删除。
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestLegacyGlobalMigration:
+    def test_global_position_mode_propagates_to_all_accounts(self, tmp_path, monkeypatch):
+        """_global.POSITION_MODE='proportional' 应被复制到没有自己 mode 的账号下"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        # 写一个旧版结构的 runtime_config.json
+        import json
+        legacy = {
+            '_global': {
+                'LIVE_MODE': False,
+                'POSITION_MODE': 'proportional',  # ← 残留账号字段
+            },
+            'acc_a': {
+                'ACCOUNT_BALANCE': 100,
+                # 没有自己的 POSITION_MODE → 应被 _global 的 'proportional' 填充
+            },
+            'acc_b': {
+                'ACCOUNT_BALANCE': 500,
+                'POSITION_MODE': 'manual',  # 已有自己的 → 不应被覆盖
+            },
+        }
+        with open(rt_path, 'w', encoding='utf-8') as f:
+            json.dump(legacy, f)
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_a', 'name': 'A'},
+                                     {'id': 'acc_b', 'name': 'B'}],
+                            raising=False)
+
+        data = runtime_config._load_raw_config()
+
+        # _global 中 POSITION_MODE 已被移除（LIVE_MODE 仍在，因为它是真的全局字段）
+        assert 'POSITION_MODE' not in data['_global']
+        assert data['_global'].get('LIVE_MODE') is False
+
+        # acc_a 没有自己的 POSITION_MODE → 被填充成 proportional
+        assert data['acc_a'].get('POSITION_MODE') == 'proportional'
+        # acc_b 已有 manual → 不被覆盖
+        assert data['acc_b'].get('POSITION_MODE') == 'manual'
+
+    def test_migration_persists_to_disk(self, tmp_path, monkeypatch):
+        """迁移后再读一次，应该已经是新结构"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import json
+        legacy = {
+            '_global': {'POSITION_MODE': 'proportional'},
+            'acc_a': {'ACCOUNT_BALANCE': 100},
+        }
+        with open(rt_path, 'w', encoding='utf-8') as f:
+            json.dump(legacy, f)
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_a', 'name': 'A'}], raising=False)
+
+        runtime_config._load_raw_config()  # 触发迁移
+
+        # 再读磁盘
+        with open(rt_path, 'r', encoding='utf-8') as f:
+            disk = json.load(f)
+        assert 'POSITION_MODE' not in disk.get('_global', {})
+        assert disk['acc_a'].get('POSITION_MODE') == 'proportional'
+
+    def test_no_migration_when_global_clean(self, tmp_path, monkeypatch):
+        """_global 里只有真的全局字段时，不该触发迁移逻辑"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import json
+        clean = {
+            '_global': {'LIVE_MODE': False, 'OKX_LIVE_MODE': False},
+            'acc_a': {'POSITION_MODE': 'manual', 'DEFAULT_STAKE': 50},
+        }
+        with open(rt_path, 'w', encoding='utf-8') as f:
+            json.dump(clean, f)
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'list_accounts',
+                            lambda: [{'id': 'acc_a', 'name': 'A'}], raising=False)
+
+        # 取迁移前 mtime
+        import os
+        mtime_before = os.path.getmtime(rt_path)
+        runtime_config._load_raw_config()
+        mtime_after = os.path.getmtime(rt_path)
+
+        # 没有触发写盘 → mtime 不变
+        assert mtime_after == mtime_before
+
+        # acc_a 的字段保持原样
+        with open(rt_path, 'r', encoding='utf-8') as f:
+            disk = json.load(f)
+        assert disk['acc_a'].get('POSITION_MODE') == 'manual'
+        assert disk['acc_a'].get('DEFAULT_STAKE') == 50

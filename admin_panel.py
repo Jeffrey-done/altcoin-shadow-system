@@ -584,12 +584,24 @@ def create_blueprint(url_secret: str) -> Blueprint:
             pass
 
         # 仓位模式（v5.1）：当前 POSITION_MODE / scale / 余额来源
+        # 阶段 3（2026-05）：每账号独立 scale state（前端可在切账号时显示该账号自己的）
         position_scale = {}
+        position_scale_per_account = {}
         try:
+            # 强制重算（拉新余额或读最新 overrides），保证返回的是最新状态
+            try:
+                runtime_config.compute_per_account_scaled()
+            except Exception:
+                pass
             position_scale = runtime_config.get_position_scale_state()
             position_scale['baseline_balance'] = getattr(
                 __import__('config'), 'BASELINE_BALANCE', 100
             )
+            position_scale_per_account = runtime_config.get_all_account_scale_states()
+            # 为每个账号附加 baseline（前端展示用）
+            _baseline = position_scale.get('baseline_balance', 100)
+            for _aid, _st in position_scale_per_account.items():
+                _st['baseline_balance'] = _baseline
         except Exception:
             position_scale = {
                 'mode': current.get('POSITION_MODE', 'manual'),
@@ -607,6 +619,7 @@ def create_blueprint(url_secret: str) -> Blueprint:
             'accounts_config': accounts_config,
             'config_defaults': config_defaults,
             'position_scale': position_scale,
+            'position_scale_per_account': position_scale_per_account,
             'compound': {
                 'current_stake': compound_stake,
                 'dynamic_balance': dynamic_balance,
