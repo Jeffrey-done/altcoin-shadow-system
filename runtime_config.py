@@ -301,10 +301,16 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
             f"保证金超过本金，风控将永远拒绝开仓。请提高 ACCOUNT_BALANCE 或降低 DEFAULT_STAKE。"
         )
     elif stake > max_position:
-        warnings_out.append(
-            f"⚠️ DEFAULT_STAKE({stake:.0f}U) > 最大持仓上限({max_position:.0f}U = "
+        # 2026-05 修复（P1）：升级为 ERROR。
+        # 风控 can_open_trade 检查 total_open_stake + stake > max_position 即拒绝；
+        # 当 total_open_stake=0（首笔）时 stake 单独 > max_position 就会失败 → 永远开不出仓。
+        # 这是 silent failure（用户感知"没新开仓"但不知道为什么），
+        # 必须在 admin 保存时硬阻塞，让用户立刻意识到配置不一致。
+        errors.append(
+            f"❌ DEFAULT_STAKE({stake:.0f}U) > 最大持仓上限({max_position:.0f}U = "
             f"ACCOUNT_BALANCE {balance:.0f} × RISK_MAX_POSITION_PCT {pos_pct})，"
-            f"同时存在其他持仓时新开仓将被拒绝。"
+            f"风控会永远拒绝开仓（首笔即超限）。请降低 DEFAULT_STAKE 或提高 "
+            f"ACCOUNT_BALANCE / RISK_MAX_POSITION_PCT。"
         )
 
     # 新增：复利上限 vs 持仓上限的一致性检查

@@ -727,21 +727,27 @@ def create_blueprint(url_secret: str) -> Blueprint:
             if future_position_mode == 'proportional':
                 blocked = [k for k in cleaned.keys() if k in _PF]
                 if blocked:
-                    _audit('config.update.blocked', changes=cleaned,
+                    _audit('config.update.blocked_fields_filtered', changes=cleaned,
                            account_id=target_account_id,
                            reason='proportional_mode_locks_scaled_fields',
                            blocked_fields=blocked)
-                    return jsonify({
-                        'error': 'proportional_locked',
-                        'message': (
-                            f"proportional 模式下 {', '.join(blocked)} 由系统按余额比例"
-                            f"自动计算，不接受手动覆盖。要手动调请先切到 manual 模式。"
-                        ),
-                        'blocked_fields': blocked,
-                    }), 400
+                    # 2026-05 P2 修复：原行为是一刀切 400 拒绝整个请求 →
+                    # 用户改任意非 _PF 字段（如 RISK_MAX_DAILY_TRADES）时
+                    # 因前端整表单提交会连带 _PF 字段，被全量拒绝。
+                    # 改为：过滤掉 _PF 字段，保存其余；warnings 里告知用户。
+                    consistency_warnings_extra = [
+                        f"proportional 模式下 {', '.join(blocked)} 由系统按余额比例自动计算，"
+                        f"本次请求中已忽略这些字段；其他字段照常保存。要手动调请先切到 manual 模式。"
+                    ]
+                    for k in blocked:
+                        cleaned.pop(k, None)
+                else:
+                    consistency_warnings_extra = []
+            else:
+                consistency_warnings_extra = []
         except ImportError:
             # runtime_config 旧版没有 _PROPORTIONAL_FIELDS，跳过本校验
-            pass
+            consistency_warnings_extra = []
 
         # 拆分字段：全局字段 vs 账号字段
         global_changes = {k: v for k, v in cleaned.items()
@@ -778,6 +784,9 @@ def create_blueprint(url_secret: str) -> Blueprint:
                 merged_for_check, account_id=target_account_id
             )
         )
+        # 2026-05 P2 修复：把"proportional 模式下被忽略的 _PF 字段"提示合进 warnings
+        if consistency_warnings_extra:
+            consistency_warnings = list(consistency_warnings) + consistency_warnings_extra
         if consistency_errors:
             _audit('config.update.blocked', changes=cleaned,
                    account_id=target_account_id,

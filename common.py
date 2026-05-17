@@ -503,9 +503,10 @@ def _account_param(account_id: str, key: str, fallback=None):
     #   2) account_id=None/'_default'：保留单账号兼容路径（用 fallback，
     #      通常调用方已经传入 config.X 当前生效值）。
     #
-    # account_id 路径返回的值已经包含了 proportional 缩放（cache 里），
-    # 所以走完这条路径直接 return；不再向下进入 override → PRISTINE 的
-    # 重复查询。
+    # 2026-05 P3 优化：get_account_scaled_value 内部已查 cache → override →
+    # PRISTINE，命中即返回包含 mode-aware 缩放后的值；返回 None 仅在该
+    # account_id 既不在 admin_secrets 也不在 runtime_config.json 时发生
+    # （未知账号），此时直接 fallback 即可，无需重复二次查询。
     if account_id and account_id != '_default':
         try:
             import runtime_config
@@ -513,23 +514,11 @@ def _account_param(account_id: str, key: str, fallback=None):
             if scaled is not None:
                 return scaled
         except Exception:
-            # 任何异常（runtime_config 模块加载失败等）→ 保守 fallback
+            # 任何异常（runtime_config 模块加载失败等）→ 保守回退
             pass
-        # cache 里没有该账号 → 走老路径（override → PRISTINE → fallback）
-        # 见下方 "if account_id and account_id != '_default'" 分支
-
-    # 视空字符串 / None / "_default" 哨兵都为"无具体账号"
-    if account_id and account_id != '_default':
-        # 1. 该账号的显式覆盖
-        try:
-            import runtime_config
-            overrides = runtime_config.load_account_overrides(account_id) or {}
-            val = overrides.get(key)
-            if val is not None:
-                return val
-        except Exception:
-            pass
-        # 2. config.py 的原始默认值（绝不会被 apply_overrides 污染）
+        # 未知账号：用调用方 fallback；无 fallback 时退到 PRISTINE
+        if fallback is not None:
+            return fallback
         try:
             import runtime_config
             pristine = runtime_config.get_pristine_default(key)
@@ -537,7 +526,6 @@ def _account_param(account_id: str, key: str, fallback=None):
                 return pristine
         except Exception:
             pass
-        # 3. 调用方兜底
         return fallback
 
     # account_id 为空/None/"_default"：使用调用方传入的 fallback（通常是 config.X 当前值，

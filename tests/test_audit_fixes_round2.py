@@ -173,17 +173,19 @@ class TestConfigHardBlock:
         assert errors, "stake > balance 应当返回 error"
         assert any('保证金超过本金' in e for e in errors)
 
-    def test_stake_exceeds_max_position_is_warning(self):
-        """DEFAULT_STAKE > max_position 但 ≤ balance → warnings"""
+    def test_stake_exceeds_max_position_is_error(self):
+        """DEFAULT_STAKE > max_position 但 ≤ balance → ERROR
+        （2026-05 P1：原 WARNING 升级为 ERROR，避免风控永远拒绝开仓的 silent failure）"""
         errors, warnings = runtime_config.validate_cross_field_consistency({
             'ACCOUNT_BALANCE': 100,
             'DEFAULT_STAKE': 80,
             'RISK_MAX_POSITION_PCT': 0.5,
         })
-        # 80 < 100 → 不是 error；但 80 > 50（=100*0.5） → warning
-        assert not errors
-        assert warnings
-        assert any('最大持仓上限' in w for w in warnings)
+        # 80 < 100 → 不超本金；但 80 > 50（=100*0.5） → ERROR
+        assert errors
+        assert any('最大持仓上限' in e for e in errors)
+        # 不应同时报 warning（避免重复）
+        assert not any('最大持仓上限' in w for w in warnings)
 
     def test_safe_config_no_errors_no_warnings(self):
         """合理配置 → 都为空"""
@@ -210,15 +212,21 @@ class TestConfigHardBlock:
         # 文件不应被创建（拒绝写盘）
         assert not os.path.exists(rt_file)
 
-    def test_save_overrides_succeeds_on_warning_only(self, tmp_path, monkeypatch):
-        """warnings（非 errors）不阻止 save_overrides"""
+    def test_save_overrides_succeeds_on_safe_config(self, tmp_path, monkeypatch):
+        """合理配置（无 errors 也无 warnings）→ save_overrides 正常写盘
+        
+        2026-05 P1 修复：原 stake > max_position 的 WARNING 已升级为 ERROR，
+        当前一致性校验里几乎不再有 WARNING-only 路径。本测试改为验证
+        "无任何 errors 时正常写盘"，覆盖 save_overrides 的成功路径。
+        """
         rt_file = str(tmp_path / "runtime_config.json")
         monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_file)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_file + '.lock')
 
-        # warning 级别：80 < 100 但 80 > 50（max_position）
+        # 合理配置：30 < 50（=100*0.5），不报 error，也不报 warning
         runtime_config.save_overrides({
             'ACCOUNT_BALANCE': 100,
-            'DEFAULT_STAKE': 80,
+            'DEFAULT_STAKE': 30,
             'RISK_MAX_POSITION_PCT': 0.5,
         })
         assert os.path.exists(rt_file)

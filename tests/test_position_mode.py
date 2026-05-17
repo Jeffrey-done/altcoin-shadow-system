@@ -823,7 +823,12 @@ class TestPerAccountIsolation:
                     f"{acc} 缺少 scaled_fields[{k}]"
 
     def test_account_param_for_unknown_account_falls_back_safely(self, tmp_path, monkeypatch):
-        """对未知账号调 _account_param 不应崩，应返回 PRISTINE（设计：显式 account_id 时 PRISTINE 优先于 fallback）"""
+        """对未知账号调 _account_param 不应崩
+        
+        2026-05 P3 优化：未知账号 + 显式 fallback → 直接返回 fallback；
+        无 fallback → 退到 PRISTINE。get_account_scaled_value 内部已查过
+        cache/override/PRISTINE，外层不再重复查询。
+        """
         rt_path = str(tmp_path / "runtime_config.json")
         monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
         monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
@@ -834,9 +839,10 @@ class TestPerAccountIsolation:
         runtime_config._per_account_state.clear()
 
         from common import _account_param
+        # 未知账号 + 显式 fallback → 用 fallback
+        assert _account_param('acc_unknown', 'DEFAULT_STAKE', fallback=42) == 42
+        # 未知账号 + 无 fallback → 退到 PRISTINE
         pristine = runtime_config.get_pristine_default('DEFAULT_STAKE')
-        # 设计：显式 account_id 时 PRISTINE 优先于 fallback（中性值，不被 active 账号污染）
-        assert _account_param('acc_unknown', 'DEFAULT_STAKE', fallback=42) == pristine
         assert _account_param('acc_unknown', 'DEFAULT_STAKE') == pristine
 
 
@@ -950,3 +956,62 @@ class TestLegacyGlobalMigration:
             disk = json.load(f)
         assert disk['acc_a'].get('POSITION_MODE') == 'manual'
         assert disk['acc_a'].get('DEFAULT_STAKE') == 50
+
+
+# ══════════════════════════════════════════════════════════════════
+#  P1 修复（2026-05）：DEFAULT_STAKE > balance × pos_pct 升级为 ERROR
+#
+#  之前是 WARNING（允许保存），但风控会永远拒绝开仓导致 silent failure。
+#  现在改为 ERROR：admin_panel 保存时硬阻塞返回 400，启动时报 TG 告警。
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestStakeExceedsMaxPositionIsError:
+    def test_basic_case_now_error(self, monkeypatch):
+        """主账户实际场景：balance=100, stake=99, pos_pct=0.5 → max_position=50 → ERROR"""
+        monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
+        runtime_config._position_scale_state.update({'mode': 'manual'})
+
+        errors, warnings_out = runtime_config.validate_cross_field_consistency({
+            'POSITION_MODE': 'manual',
+            'ACCOUNT_BALANCE': 100,
+            'DEFAULT_STAKE': 99,
+            'RISK_MAX_POSITION_PCT': 0.5,
+        })
+        # 99 < 100 → 不是 stake>balance 的 ERROR；99 > 50 → 升级后是 ERROR（不是 warning）
+        assert errors, f"期望 errors 非空，实际: errors={errors}, warnings={warnings_out}"
+        assert any('最大持仓上限' in e for e in errors)
+        assert not any('最大持仓上限' in w for w in warnings_out)
+
+    def test_save_overrides_rejects_silent_failure_config(self, tmp_path, monkeypatch):
+        """save_overrides 在 stake > max_position 时拒绝写盘"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_test', raising=False)
+
+        with pytest.raises(ValueError, match="最大持仓上限"):
+            runtime_config.save_overrides({
+                'POSITION_MODE': 'manual',
+                'ACCOUNT_BALANCE': 100,
+                'DEFAULT_STAKE': 99,
+                'RISK_MAX_POSITION_PCT': 0.5,
+            })
+
+    def test_safe_config_no_error(self, monkeypatch):
+        """合理配置（stake <= max_position）→ 不报错"""
+        monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
+        runtime_config._position_scale_state.update({'mode': 'manual'})
+
+        errors, warnings_out = runtime_config.validate_cross_field_consistency({
+            'POSITION_MODE': 'manual',
+            'ACCOUNT_BALANCE': 100,
+            'DEFAULT_STAKE': 30,
+            'RISK_MAX_POSITION_PCT': 0.5,
+        })
+        # 30 < 50 → 一切正常
+        assert not any('最大持仓上限' in e for e in errors)
+        assert not any('最大持仓上限' in w for w in warnings_out)
