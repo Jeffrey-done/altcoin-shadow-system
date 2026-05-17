@@ -33,6 +33,28 @@ logger = setup_logger("backtest")
 
 
 # ══════════════════════════════════════════════════════════════════
+#  P1-1 修复（2026-05）：让 BacktestParams 的 dataclass default 求值前
+#  先把 active 账号的 runtime override 写到 config 模块。
+#
+#  关键：dataclass field default 在类定义时就求值并锁定，apply_overrides
+#  在 `__main__` 块内调（即类定义之后）就晚了——BacktestParams.stake 默认
+#  仍是 PRISTINE 30，admin 改的 ACCOUNT_BALANCE / DEFAULT_STAKE / proportional
+#  缩放后的值都拿不到，回测和实盘配置脱节。
+#
+#  挪到模块顶部后：
+#    - 任何方式 import backtest（包括 `python3 backtest.py` CLI）
+#      都会先把 active 账号配置 apply 到 config 模块；
+#    - 之后才执行 @dataclass class BacktestParams 类定义，
+#      stake = config.DEFAULT_STAKE 此时已是 active 账号的值。
+# ══════════════════════════════════════════════════════════════════
+try:
+    from runtime_config import apply_overrides as _apply_rc
+    _apply_rc(force=True)
+except Exception as _e:
+    logger.warning(f"runtime_config 加载失败，BacktestParams default 用 PRISTINE: {_e}")
+
+
+# ══════════════════════════════════════════════════════════════════
 #  数据结构
 # ══════════════════════════════════════════════════════════════════
 
@@ -1946,15 +1968,8 @@ BATCH_BACKTEST_RESULTS_FILE = os.path.join(
 if __name__ == '__main__':
     import argparse
 
-    # P1-1 修复（2026-05）：让 backtest 也读 admin 设的 runtime_config 和 POSITION_MODE 缩放，
-    # 否则 BacktestParams 默认值始终来自 config.py PRISTINE，admin 改的 ACCOUNT_BALANCE /
-    # DEFAULT_STAKE / proportional 缩放后的值都拿不到，回测和实盘配置脱节。
-    try:
-        from runtime_config import apply_overrides as _apply_rc
-        _apply_rc(force=True)
-    except Exception as _e:
-        # 非致命：runtime_config.json 不存在或加载失败时退回 PRISTINE
-        print(f"⚠️  runtime_config 加载失败，使用 config.py PRISTINE 默认值: {_e}")
+    # P1-1 修复（2026-05）：apply_overrides 已经在模块顶部调过（在 BacktestParams
+    # 类定义之前），这里不需要再调了。
 
     parser = argparse.ArgumentParser(description='影子做空策略回测引擎')
     parser.add_argument('--symbol', default='PEPE/USDT', help='回测币种 (默认: PEPE/USDT)')
