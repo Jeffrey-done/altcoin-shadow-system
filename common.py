@@ -610,7 +610,15 @@ def get_compound_stake(account_id: str = None) -> float:
     # 平滑复利：用比例代替整数步数，stake 随 total_pnl 连续增长
     ratio = total_pnl / step
     stake = default_stake + ratio * increase
-    stake = min(stake, max_stake)
+
+    # 动态 cap：min(COMPOUND_MAX_STAKE, balance × RISK_MAX_POSITION_PCT)
+    # 防止复利增长超过本金承载能力导致风控永久拒绝开仓
+    _balance = float(_account_param(account_id, 'ACCOUNT_BALANCE',
+                                    getattr(config, 'ACCOUNT_BALANCE', 100)))
+    _pos_pct = float(_account_param(account_id, 'RISK_MAX_POSITION_PCT',
+                                    getattr(config, 'RISK_MAX_POSITION_PCT', 0.5)))
+    dynamic_cap = min(max_stake, _balance * _pos_pct)
+    stake = min(stake, dynamic_cap)
 
     # 四舍五入到整数 U（交易所最小精度，也避免浮点尾数扰动风控比对）
     return round(stake)

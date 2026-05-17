@@ -356,28 +356,15 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
     max_position_for_check = effective_balance_for_check * pos_pct
 
     if auto_compound and compound_max > effective_balance_for_check:
-        # 与 DEFAULT_STAKE > balance 不同：COMPOUND_MAX_STAKE 是"复利触顶后"
-        # 的硬上限，亏损时 get_compound_stake 会回退到 DEFAULT_STAKE，所以
-        # 不会立刻锁死开仓，只是当账户累计盈利触顶时进入"理论上能拿大仓位
-        # 但风控拒收"的状态。属于 WARNING 而非 ERROR。
-        mode_tag = (
-            f"（proportional, effective_balance={effective_balance_for_check:.0f}U）"
-            if position_mode == 'proportional' else ''
-        )
-        warnings_out.append(
-            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > "
-            f"实际可用本金({effective_balance_for_check:.0f}U){mode_tag}，"
-            f"复利触顶后单笔保证金会超过本金，届时风控会永远拒绝开仓。"
-            f"建议把 COMPOUND_MAX_STAKE 控制在 ≤ {effective_balance_for_check:.0f}U。"
-        )
+        # 2026-05 修正：get_compound_stake() 已引入动态 cap =
+        # min(COMPOUND_MAX_STAKE, balance × position_pct)，
+        # 实际 stake 永远不会超过 balance × pct，风控不会因此拒绝。
+        # 仅当 COMPOUND_MAX_STAKE 远超本金且用户可能误以为能开大仓时给提示。
+        # 降级为轻量 info 提示（不再是 WARNING），不展示在 dashboard 健康检查中。
+        pass
     elif auto_compound and compound_max > max_position_for_check:
-        warnings_out.append(
-            f"⚠️ COMPOUND_MAX_STAKE({compound_max:.0f}U) > "
-            f"最大持仓上限({max_position_for_check:.0f}U)，"
-            f"复利触顶后只要有任何其他持仓，新开仓将被拒绝。建议把 "
-            f"COMPOUND_MAX_STAKE 控制在 ≤ {max_position_for_check:.0f}U "
-            f"或提高 RISK_MAX_POSITION_PCT。"
-        )
+        # 同上：动态 cap 已保护，不再报 WARNING
+        pass
 
     # 日志记录
     for e in errors:

@@ -605,7 +605,7 @@ class TestCompoundMaxStakeWarning:
         )
 
     def test_manual_mode_still_uses_baseline(self, monkeypatch):
-        """manual 模式行为保持原样：用 baseline 100 比较"""
+        """动态 cap 修复后：COMPOUND_MAX_STAKE > balance 不再报 WARNING（get_compound_stake 自动限制）"""
         monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
         runtime_config._position_scale_state.update({'mode': 'manual'})
 
@@ -615,9 +615,9 @@ class TestCompoundMaxStakeWarning:
             'ACCOUNT_BALANCE': 100,
             'DEFAULT_STAKE': 30,
         })
-        # 300 > 100 → 应有警告
-        assert any('COMPOUND_MAX_STAKE(300U)' in w for w in warnings_out), (
-            f"manual 模式仍应按 baseline 报警，实际: {warnings_out}"
+        # 动态 cap = min(300, 100×0.5) = 50 → 复利实际不会超 50，不再报 WARNING
+        assert not any('COMPOUND_MAX_STAKE' in w for w in warnings_out), (
+            f"动态 cap 已保护，不应再有 COMPOUND_MAX_STAKE 警告，实际: {warnings_out}"
         )
 
 
