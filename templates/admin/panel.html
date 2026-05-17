@@ -276,7 +276,7 @@ select { cursor: pointer; }
       <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）</div>
       <div class="form-row">
         <label>POSITION_MODE</label>
-        <select id="cfg-POSITION_MODE">
+        <select id="cfg-POSITION_MODE" onchange="togglePositionMode(this)">
           <option value="manual">manual — 手动（用户填什么就是什么）</option>
           <option value="proportional">proportional — 按余额比例自动缩放</option>
         </select>
@@ -921,6 +921,43 @@ function toggleLiveMode(key, el) {
       loadState();
     } catch (e) { el.checked = !el.checked; alertBox('切换失败: ' + e.message, 'error'); }
   }; doToggle();
+}
+
+// 仓位模式切换：立即保存 + 弹 confirm + 失败回滚（与 toggleLiveMode 同模式）
+function togglePositionMode(el) {
+  const newMode = el.value;
+  const oldMode = (lastConfigState.config_active_snapshot || {}).POSITION_MODE || 'manual';
+  if (newMode === oldMode) return;
+
+  const warning = newMode === 'proportional'
+    ? '⚠️ 切到 proportional（按余额比例自动缩放）？\n\n' +
+      'DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE\n' +
+      '会由系统按 "实际余额 ÷ 100" 自动计算。\n\n' +
+      '实盘模式下会从交易所拉取真实余额（60s 缓存）；\n' +
+      '影子模式用 ACCOUNT_BALANCE 手填值。\n\n' +
+      'COMPOUND_MAX_STAKE 不缩放（保持 300U 绝对上限）。'
+    : '⚠️ 切回 manual（手动模式）？\n\n' +
+      '4 个金额字段会恢复成你在"仓位与风控" tab 手填的值。';
+
+  if (!confirm(warning)) {
+    el.value = oldMode;
+    return;
+  }
+
+  const doToggle = async () => {
+    try {
+      const r = await api('POST', 'api/config', { changes: { POSITION_MODE: newMode } });
+      if (r.needTotp) { openTotpModal(doToggle); return; }
+      const label = newMode === 'proportional' ? 'PROPORTIONAL' : 'MANUAL';
+      alertBox(`已切到 ${label} 模式（30s 内全局生效）`,
+               newMode === 'proportional' ? 'warning' : 'ok');
+      loadState();
+    } catch (e) {
+      el.value = oldMode;
+      alertBox('切换失败: ' + e.message, 'error');
+    }
+  };
+  doToggle();
 }
 
 // 保存"仓位与风控"tab 上的所有字段：合并成一次 /api/config POST，避免重复 TG。
