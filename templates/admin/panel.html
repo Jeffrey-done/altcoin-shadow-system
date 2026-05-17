@@ -270,60 +270,6 @@ select { cursor: pointer; }
         </select>
       </div>
     </div>
-
-    <!-- 仓位模式（v5.1）：全局字段 -->
-    <div class="card">
-      <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）</div>
-      <div class="form-row">
-        <label>POSITION_MODE</label>
-        <select id="cfg-POSITION_MODE" onchange="togglePositionMode(this)">
-          <option value="manual">manual — 手动（用户填什么就是什么）</option>
-          <option value="proportional">proportional — 按余额比例自动缩放</option>
-        </select>
-      </div>
-      <div style="font-size:0.72rem;color:var(--text-muted);margin:8px 0 14px;">
-        <b>manual</b>：账号字段 DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP /
-        COMPOUND_INCREASE 用下方"仓位与风控" tab 你手填的值。<br>
-        <b>proportional</b>：以 BASELINE_BALANCE=100U 为基准，按
-        <code>实际余额 ÷ 100</code> 自动缩放上述 4 个金额字段（杠杆/止盈止损%/RSI 阈值不变）。
-        实盘时余额从交易所拉取（60s 缓存），影子模式用账户配置里的 ACCOUNT_BALANCE 手填值。
-        <span style="color:var(--yellow);"><b>COMPOUND_MAX_STAKE 不参与缩放</b>，绝对值封顶（默认 300U）。</span>
-      </div>
-      <div id="position-scale-state" class="compound-box" style="border-color:var(--accent);">
-        <div class="compound-title">
-          <i data-lucide="activity" style="width:14px;height:14px;"></i>
-          当前生效状态（每 30s 刷新）
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">模式</label>
-          <span id="pscale-mode" style="font-weight:700;">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">实际余额 / 来源</label>
-          <span id="pscale-balance" style="font-weight:700;">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">缩放系数 (scale)</label>
-          <span id="pscale-scale" style="font-weight:700;color:var(--green);">1.00x</span>
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">DEFAULT_STAKE</label>
-          <span id="pscale-stake" style="font-weight:700;">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">RISK_MAX_DAILY_LOSS</label>
-          <span id="pscale-loss" style="font-weight:700;">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:6px;">
-          <label style="color:var(--text-primary);">COMPOUND_STEP / INCREASE</label>
-          <span id="pscale-compound" style="font-weight:700;">--</span>
-        </div>
-        <div class="form-row" style="margin-bottom:0;">
-          <label style="color:var(--text-primary);">COMPOUND_MAX_STAKE（不缩放）</label>
-          <span id="pscale-maxstake" style="font-weight:700;color:var(--yellow);">--</span>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- TAB: Credentials -->
@@ -370,6 +316,64 @@ select { cursor: pointer; }
         <select id="cfg-target-account" onchange="onTargetAccountChange()" class="btn btn-ghost btn-sm" style="padding:8px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.78rem;min-width:200px;">
           <option value="">（加载中...）</option>
         </select>
+      </div>
+    </div>
+
+    <!-- 仓位模式（v5.1）：全局字段，影响所有账号 -->
+    <div class="card" style="border:1px solid rgba(99,102,241,0.4);">
+      <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）
+        <span class="badge" style="background:rgba(99,102,241,0.15);color:var(--accent);margin-left:8px;font-size:0.65rem;">全局 · 影响所有账号</span>
+      </div>
+      <div class="form-row">
+        <label>POSITION_MODE</label>
+        <select id="cfg-POSITION_MODE" onchange="togglePositionMode(this)">
+          <option value="manual">manual — 手动（用户填什么就是什么）</option>
+          <option value="proportional">proportional — 按余额比例自动缩放</option>
+        </select>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-muted);margin:8px 0 14px;">
+        <b>manual</b>：下方"仓位与杠杆 / 风控参数 / 复利"卡片里
+        DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE
+        用你手填的值（每账号独立）。<br>
+        <b>proportional</b>：以 BASELINE_BALANCE=100U 为基准，按
+        <code>实际余额 ÷ 100</code> 自动缩放上述 4 个金额字段（杠杆/止盈止损%/RSI 阈值不变）。
+        实盘时余额从交易所拉取（60s 缓存），影子模式用 ACCOUNT_BALANCE 手填值。
+        <span style="color:var(--yellow);"><b>COMPOUND_MAX_STAKE 不参与缩放</b>，绝对值封顶（默认 300U）。</span><br>
+        <span style="color:var(--accent);">⓵ 切换 confirm 后立即保存，30 秒内 scheduler / realtime_monitor / dashboard 三个进程同步生效。</span>
+      </div>
+      <div id="position-scale-state" class="compound-box" style="border-color:var(--accent);">
+        <div class="compound-title">
+          <i data-lucide="activity" style="width:14px;height:14px;"></i>
+          当前生效状态（每 30s 刷新）
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">模式</label>
+          <span id="pscale-mode" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">实际余额 / 来源</label>
+          <span id="pscale-balance" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">缩放系数 (scale)</label>
+          <span id="pscale-scale" style="font-weight:700;color:var(--green);">1.00x</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">DEFAULT_STAKE</label>
+          <span id="pscale-stake" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">RISK_MAX_DAILY_LOSS</label>
+          <span id="pscale-loss" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">COMPOUND_STEP / INCREASE</label>
+          <span id="pscale-compound" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:0;">
+          <label style="color:var(--text-primary);">COMPOUND_MAX_STAKE（不缩放）</label>
+          <span id="pscale-maxstake" style="font-weight:700;color:var(--yellow);">--</span>
+        </div>
       </div>
     </div>
 
