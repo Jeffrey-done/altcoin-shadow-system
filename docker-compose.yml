@@ -23,6 +23,16 @@ x-common-app: &common-app
     - ./altcoin_trades_archive.json:/app/altcoin_trades_archive.json
     - ./weekly_report.json:/app/weekly_report.json
     - ./backtest_cache:/app/backtest_cache
+    # admin 面板 / runtime 状态（必须挂出来！否则 docker compose build 后丢失）
+    # 首次部署前请在宿主机执行：
+    #   touch ./runtime_config.json && echo '{}' > ./runtime_config.json && chmod 600 ./runtime_config.json
+    #   touch ./admin_secrets.json  && chmod 600 ./admin_secrets.json
+    #   touch ./admin_audit.log     && chmod 600 ./admin_audit.log
+    #   touch ./.admin_ratelimit.json && echo '{}' > ./.admin_ratelimit.json && chmod 600 ./.admin_ratelimit.json
+    - ./runtime_config.json:/app/runtime_config.json
+    - ./admin_secrets.json:/app/admin_secrets.json
+    - ./admin_audit.log:/app/admin_audit.log
+    - ./.admin_ratelimit.json:/app/.admin_ratelimit.json
     # 环境变量
     - ./.env:/app/.env:ro
   restart: unless-stopped

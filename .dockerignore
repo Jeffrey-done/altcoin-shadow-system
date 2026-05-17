@@ -20,3 +20,11 @@ backtest_results.json
 batch_backtest_results.json
 README.md
 SYSTEM_DOCUMENTATION.md
+
+# admin / runtime 状态文件 — 应通过 docker-compose volume mount 持久化到宿主机，
+# 而不是被打进镜像，否则每次 rebuild 都会用旧版镜像里的快照覆盖你 admin 面板改过的配置
+runtime_config.json
+admin_secrets.json
+admin_audit.log
+.admin_ratelimit.json
+.admin_setup_token
