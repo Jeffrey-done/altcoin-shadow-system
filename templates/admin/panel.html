@@ -673,10 +673,10 @@ async function loadState() {
 function renderPositionScaleState(ps) {
   const mode = ps.mode || 'manual';
   const scale = (ps.scale != null) ? Number(ps.scale).toFixed(2) : '1.00';
-  const bal = (ps.effective_balance != null) ? Number(ps.effective_balance).toFixed(2) : '--';
   const src = ps.balance_source || 'config';
   const sf = ps.scaled_fields || {};
   const baseline = ps.baseline_balance || 100;
+  const cfg = lastConfigState.config_active_snapshot || {};
 
   const srcLabel = {
     'config':      '配置(影子/手填)',
@@ -693,26 +693,55 @@ function renderPositionScaleState(ps) {
     if (color) el.style.color = color;
   };
 
-  setText('pscale-mode', mode === 'proportional' ? 'PROPORTIONAL（按比例）' : 'MANUAL（手动）',
+  // ── 模式标签 ──
+  setText('pscale-mode',
+          mode === 'proportional' ? 'PROPORTIONAL（按比例）' : 'MANUAL（手动）',
           mode === 'proportional' ? 'var(--accent)' : 'var(--text-primary)');
-  setText('pscale-balance', `${bal}U（${srcLabel}, baseline=${baseline}U）`);
-  setText('pscale-scale', `${scale}x`);
 
-  // 缩放后的字段值
-  const stake = sf.DEFAULT_STAKE != null ? sf.DEFAULT_STAKE : '--';
-  const loss = sf.RISK_MAX_DAILY_LOSS != null ? sf.RISK_MAX_DAILY_LOSS : '--';
-  const step = sf.COMPOUND_STEP != null ? sf.COMPOUND_STEP : '--';
-  const inc = sf.COMPOUND_INCREASE != null ? sf.COMPOUND_INCREASE : '--';
-  setText('pscale-stake', `${stake}U`);
-  setText('pscale-loss', `${loss}U`);
-  setText('pscale-compound', `${step}U / ${inc}U`);
+  // ── 余额显示 ──
+  // proportional: 显示 effective_balance（实盘从交易所拉的真实余额）
+  // manual:       显示 ACCOUNT_BALANCE（手填值），用灰色字体表示"未启用比例计算"
+  let balDisplay, balColor;
+  if (mode === 'proportional') {
+    const bal = (ps.effective_balance != null) ? Number(ps.effective_balance).toFixed(2) : '--';
+    balDisplay = `${bal}U（${srcLabel}, baseline=${baseline}U）`;
+    balColor = 'var(--text-primary)';
+  } else {
+    const acctBal = cfg.ACCOUNT_BALANCE != null ? cfg.ACCOUNT_BALANCE : '--';
+    balDisplay = `${acctBal}U（ACCOUNT_BALANCE，未启用比例缩放）`;
+    balColor = 'var(--text-muted)';
+  }
+  setText('pscale-balance', balDisplay, balColor);
 
-  // COMPOUND_MAX_STAKE 不在 scaled_fields 里（不参与缩放），从 config 读
-  const cfg = lastConfigState.config_active_snapshot || {};
+  // ── scale 显示 ──
+  // proportional: 显示真实 scale 值（绿色高亮）
+  // manual:       显示 N/A（灰色），强调"未启用"
+  if (mode === 'proportional') {
+    setText('pscale-scale', `${scale}x`, 'var(--green)');
+  } else {
+    setText('pscale-scale', 'N/A（manual 模式不缩放）', 'var(--text-muted)');
+  }
+
+  // ── 4 个金额字段 ──
+  // proportional: 用后端返回的 scaled_fields（PRISTINE × scale 计算结果）
+  // manual:       用 config 模块的当前值（即用户在"仓位与风控" tab 改过的值或 PRISTINE 默认）
+  const fieldVal = (key) => {
+    if (mode === 'proportional' && sf[key] != null) return sf[key];
+    return cfg[key] != null ? cfg[key] : '--';
+  };
+  const stake = fieldVal('DEFAULT_STAKE');
+  const loss = fieldVal('RISK_MAX_DAILY_LOSS');
+  const step = fieldVal('COMPOUND_STEP');
+  const inc = fieldVal('COMPOUND_INCREASE');
+  const fieldColor = mode === 'proportional' ? 'var(--text-primary)' : 'var(--text-secondary)';
+  setText('pscale-stake', `${stake}U`, fieldColor);
+  setText('pscale-loss', `${loss}U`, fieldColor);
+  setText('pscale-compound', `${step}U / ${inc}U`, fieldColor);
+
   const maxStake = cfg.COMPOUND_MAX_STAKE != null ? cfg.COMPOUND_MAX_STAKE : '--';
-  setText('pscale-maxstake', `${maxStake}U（绝对值上限）`);
+  setText('pscale-maxstake', `${maxStake}U（绝对值上限）`, 'var(--yellow)');
 
-  // 在 proportional 模式下，把仓位 tab 上 4 个被自动缩放的字段标记只读
+  // ── 在 proportional 模式下锁定仓位 tab 上 4 个被自动缩放的字段 ──
   const scaledFieldIds = ['cfg-DEFAULT_STAKE', 'cfg-RISK_MAX_DAILY_LOSS',
                           'cfg-COMPOUND_STEP', 'cfg-COMPOUND_INCREASE'];
   scaledFieldIds.forEach(id => {
@@ -720,7 +749,7 @@ function renderPositionScaleState(ps) {
     if (!el) return;
     if (mode === 'proportional') {
       el.readOnly = true;
-      el.disabled = false; // disabled 会让 saveConfig 跳过；用 readOnly 让值仍能提交但不可编辑
+      el.disabled = false;
       el.style.background = 'var(--bg-elevated)';
       el.style.opacity = '0.5';
       el.title = `比例模式下由系统自动计算 = PRISTINE × scale (${scale}x)。要手动调请切换到 manual 模式。`;
