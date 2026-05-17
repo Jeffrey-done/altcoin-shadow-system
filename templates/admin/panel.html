@@ -301,28 +301,11 @@ select { cursor: pointer; }
 
   <!-- TAB: Position & Risk -->
   <div class="tab-content" id="tab-position">
-    <!-- 多账号配置选择器：所有 ACCOUNT_FIELDS 现在按账号独立保存 -->
-    <div class="card" style="background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(99,102,241,0.02));border:1px solid rgba(99,102,241,0.3);">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-        <div>
-          <div style="font-weight:600;font-size:0.92rem;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
-            <i data-lucide="users" style="width:16px;height:16px;color:var(--accent);"></i>
-            正在编辑账号配置
-          </div>
-          <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">
-            下面所有仓位/止盈止损/风控/复利参数都是<b style="color:var(--accent);">独立保存</b>到所选账号；切换账号会自动加载该账号已保存的值。
-          </div>
-        </div>
-        <select id="cfg-target-account" onchange="onTargetAccountChange()" class="btn btn-ghost btn-sm" style="padding:8px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.78rem;min-width:200px;">
-          <option value="">（加载中...）</option>
-        </select>
-      </div>
-    </div>
 
-    <!-- 仓位模式（v5.1）：全局字段，影响所有账号 -->
+    <!-- 仓位模式（v5.1）：每账号独立 -->
     <div class="card" style="border:1px solid rgba(99,102,241,0.4);">
       <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）
-        <span class="badge" style="background:rgba(99,102,241,0.15);color:var(--accent);margin-left:8px;font-size:0.65rem;">全局 · 影响所有账号</span>
+        <span class="badge" style="background:rgba(99,102,241,0.15);color:var(--accent);margin-left:8px;font-size:0.65rem;">当前账号独立</span>
       </div>
       <div class="form-row">
         <label>POSITION_MODE</label>
@@ -422,10 +405,10 @@ select { cursor: pointer; }
 
     <div style="margin:24px 0;">
       <button class="btn btn-success" onclick="saveConfig()" style="padding:14px 36px;font-size:0.88rem;">
-        <i data-lucide="check" style="width:16px;height:16px;"></i> 保存到所选账号
+        <i data-lucide="check" style="width:16px;height:16px;"></i> 保存到当前账号
       </button>
       <span style="margin-left:14px;font-size:0.72rem;color:var(--text-muted);">
-        全局字段（实盘开关/路由）会落到 <code>_global</code>；账号字段会落到上方下拉所选账号。
+        全局字段（实盘开关/路由）落到 <code>_global</code>；其余字段落到顶部所选的当前账号。
       </span>
     </div>
   </div>
@@ -584,7 +567,7 @@ let lastConfigState = {
   config_defaults: {},        // config.py 原始默认值，账号字段在没有 override 时的 fallback
   compound_per_account: {},   // { acc_id: {current_stake, dynamic_balance} }
 };
-// 仓位/止盈止损/风控/复利 tab 选择的"目标账号"（可能 != 后台活跃账号）
+// 仓位/止盈止损/风控/复利 tab 直接跟随顶部活跃账号
 let cfgTargetAccountId = '';
 
 async function api(method, path, body) {
@@ -766,21 +749,9 @@ function renderPositionScaleState(ps) {
   });
 }
 
-// 渲染"配置目标账号"下拉
+// 跟随顶部账号选择器
 function rebuildCfgTargetAccountDropdown() {
-  const sel = document.getElementById('cfg-target-account');
-  if (!sel) return;
-  const prev = cfgTargetAccountId || currentActiveId || '';
-  sel.innerHTML = '';
-  currentAccounts.forEach(acc => {
-    const opt = document.createElement('option');
-    opt.value = acc.id;
-    const tag = acc.id === currentActiveId ? '（当前活跃）' : '';
-    opt.textContent = `${acc.name} ${tag}`.trim();
-    if (acc.id === prev) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  cfgTargetAccountId = sel.value || currentActiveId || '';
+  cfgTargetAccountId = currentActiveId || '';
 }
 
 // populate 仓位/止盈止损/风控/复利 表单为指定账号的值
@@ -827,13 +798,7 @@ function populateAccountFieldsForm() {
   });
 }
 
-// 切换"配置目标账号"下拉时
-function onTargetAccountChange() {
-  const sel = document.getElementById('cfg-target-account');
-  cfgTargetAccountId = sel.value;
-  populateAccountFieldsForm();
-  refreshCompoundDisplay();
-}
+// 切换账号时自动刷新（顶部 account-switcher 触发 switchAccount → loadState → 这里）
 
 // 刷新复利状态显示（按 cfgTargetAccountId）
 function refreshCompoundDisplay() {
@@ -950,10 +915,10 @@ function togglePositionMode(el) {
 
   const doToggle = async () => {
     try {
-      const r = await api('POST', 'api/config', { changes: { POSITION_MODE: newMode } });
+      const r = await api('POST', 'api/config', { account_id: currentActiveId, changes: { POSITION_MODE: newMode } });
       if (r.needTotp) { openTotpModal(doToggle); return; }
       const label = newMode === 'proportional' ? 'PROPORTIONAL' : 'MANUAL';
-      alertBox(`已切到 ${label} 模式（30s 内全局生效）`,
+      alertBox(`已切到 ${label} 模式（当前账号，30s 内生效）`,
                newMode === 'proportional' ? 'warning' : 'ok');
       loadState();
     } catch (e) {

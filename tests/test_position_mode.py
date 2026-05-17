@@ -79,9 +79,9 @@ class TestRegistration:
     def test_position_mode_is_in_allowed(self):
         assert 'POSITION_MODE' in runtime_config.ALLOWED
 
-    def test_position_mode_is_global_field(self):
-        assert 'POSITION_MODE' in runtime_config.GLOBAL_FIELDS
-        assert 'POSITION_MODE' not in runtime_config.ACCOUNT_FIELDS
+    def test_position_mode_is_account_field(self):
+        assert 'POSITION_MODE' in runtime_config.ACCOUNT_FIELDS
+        assert 'POSITION_MODE' not in runtime_config.GLOBAL_FIELDS
 
     def test_position_mode_validator_rejects_unknown(self):
         ok, _err = runtime_config.validate_change('POSITION_MODE', 'crazy')

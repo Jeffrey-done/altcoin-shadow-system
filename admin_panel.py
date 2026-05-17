@@ -704,9 +704,12 @@ def create_blueprint(url_secret: str) -> Blueprint:
             from runtime_config import _PROPORTIONAL_FIELDS as _PF
             import config as _cfg_check
             # 决定"保存后将生效的 POSITION_MODE"：如果本次 changes 里改了它就用新值
+            # POSITION_MODE 现在是账号级字段，fallback 读目标账号的覆盖值
+            _target_acc_cfg = runtime_config.load_account_overrides(target_account_id) if target_account_id else {}
             future_position_mode = cleaned.get(
                 'POSITION_MODE',
-                getattr(_cfg_check, 'POSITION_MODE', 'manual'),
+                _target_acc_cfg.get('POSITION_MODE',
+                                    getattr(_cfg_check, 'POSITION_MODE', 'manual')),
             )
             if future_position_mode == 'proportional':
                 blocked = [k for k in cleaned.keys() if k in _PF]

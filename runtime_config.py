@@ -118,7 +118,7 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
 
 # ── 全局字段 vs 账户字段 ──
 GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE',
-                 'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL', 'POSITION_MODE'}
+                 'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL'}
 ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
 
 
