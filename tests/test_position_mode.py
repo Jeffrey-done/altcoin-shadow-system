@@ -385,3 +385,83 @@ class TestBalanceCache:
         runtime_config.apply_position_scale()
 
         assert call_count['n'] == 2
+
+
+# ══════════════════════════════════════════════════════════════════
+#  _account_param 在 proportional 模式下应忽略 per-account override
+#  （否则 admin 给账号 X 填的 DEFAULT_STAKE=48 会让 proportional 失效）
+# ══════════════════════════════════════════════════════════════════
+
+class TestAccountParamShortCircuit:
+    """
+    回归用户报告的 bug:
+        admin 给某账号填了 DEFAULT_STAKE=48 (manual 模式时的值)
+        切到 proportional 后，apply_position_scale 把 config.DEFAULT_STAKE
+        缩到 86，但 dashboard 显示仍是 48 因为 _account_param 优先读
+        per-account override。
+        修复：proportional 模式下，4 个被缩放字段强制走 config 模块。
+    """
+
+    def test_manual_mode_uses_account_override(self, tmp_path, monkeypatch):
+        """manual 模式下行为不变 — 优先 per-account override"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        # 写一个账号 override
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_test', raising=False)
+        runtime_config.save_account_overrides('acc_test', {
+            'ACCOUNT_BALANCE': 1000,
+            'DEFAULT_STAKE': 48,
+        })
+
+        monkeypatch.setattr(config, 'POSITION_MODE', 'manual')
+
+        from common import _account_param
+        assert _account_param('acc_test', 'DEFAULT_STAKE', fallback=999) == 48
+
+    def test_proportional_mode_ignores_account_override(self, tmp_path, monkeypatch):
+        """proportional 模式下：4 个被缩放字段忽略 per-account override"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_test', raising=False)
+        runtime_config.save_account_overrides('acc_test', {
+            'ACCOUNT_BALANCE': 1000,
+            'DEFAULT_STAKE': 48,  # 用户在 admin 改过的值
+        })
+
+        # 切到 proportional 并模拟 apply_position_scale 把 config.DEFAULT_STAKE 缩到 86
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        monkeypatch.setattr(config, 'DEFAULT_STAKE', 86)
+
+        from common import _account_param
+        # proportional 模式下：忽略 acc_test 的 48，返回 config.DEFAULT_STAKE = 86
+        result = _account_param('acc_test', 'DEFAULT_STAKE', fallback=999)
+        assert result == 86, f"proportional 模式应返回 config.DEFAULT_STAKE=86，实际 {result}"
+
+    def test_proportional_mode_does_not_affect_other_fields(self, tmp_path, monkeypatch):
+        """proportional 模式下：非缩放字段（如 LEVERAGE）仍走 per-account override"""
+        rt_path = str(tmp_path / "runtime_config.json")
+        monkeypatch.setattr(runtime_config, 'RUNTIME_CONFIG_FILE', rt_path)
+        monkeypatch.setattr(runtime_config, '_RUNTIME_LOCK', rt_path + '.lock')
+
+        import admin_secrets
+        monkeypatch.setattr(admin_secrets, 'get_active_account_id',
+                            lambda: 'acc_test', raising=False)
+        runtime_config.save_account_overrides('acc_test', {
+            'ACCOUNT_BALANCE': 1000,
+            'LEVERAGE': 5,  # 用户给该账号设的杠杆
+        })
+
+        monkeypatch.setattr(config, 'POSITION_MODE', 'proportional')
+        monkeypatch.setattr(config, 'LEVERAGE', 10)  # 全局值
+
+        from common import _account_param
+        # LEVERAGE 不在 _PROPORTIONAL_FIELDS 里 → 仍优先 per-account 的 5
+        assert _account_param('acc_test', 'LEVERAGE', fallback=999) == 5

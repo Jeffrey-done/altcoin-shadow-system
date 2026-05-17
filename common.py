@@ -492,6 +492,24 @@ def _account_param(account_id: str, key: str, fallback=None):
       - account_id=None：保留单账号语义（用 config 模块当前生效值），既兼容
         老代码也方便测试 monkey-patch config。
     """
+    # ── proportional 模式 short-circuit（v5.1）─────────────────────────
+    # POSITION_MODE='proportional' 时，被全局缩放的 4 个字段
+    # （DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE）
+    # 必须忽略 per-account override，统一从 config 模块读（已被 apply_position_scale
+    # 缩放好的全局值）。否则 admin 给某账号填过 DEFAULT_STAKE=48 后，proportional
+    # 缩放对该账号无效，用户报告的"对不上数据"就是这种情况。
+    # manual 模式下走原有逻辑，per-account 优先（向后兼容）。
+    try:
+        import config as _cfg_pos
+        if getattr(_cfg_pos, 'POSITION_MODE', 'manual') == 'proportional':
+            from runtime_config import _PROPORTIONAL_FIELDS as _PF
+            if key in _PF:
+                v = getattr(_cfg_pos, key, None)
+                if v is not None:
+                    return v
+    except Exception:
+        pass
+
     # 视空字符串 / None / "_default" 哨兵都为"无具体账号"
     if account_id and account_id != '_default':
         # 1. 该账号的显式覆盖
