@@ -532,8 +532,9 @@ def main_loop():
             run_task("止盈检查", lambda: tracker_run(check_only=True))
             _mark_done('tracker_check', now)
 
-        # ── 每 15 分钟候选确认（加快入场响应，最差延迟从59分钟降到14分钟）──
-        if _due_for_minutes('check_candidates', now, 15):
+        # ── 候选确认（可配置分钟级轮询）──
+        check_interval = max(1, int(getattr(config, 'CHECK_CANDIDATES_INTERVAL_MINUTES', 15)))
+        if _due_for_minutes('check_candidates', now, check_interval):
             # M10: 候选确认可能触发多所并行开仓，长耗时任务用子进程
             run_task(
                 "候选确认", None,

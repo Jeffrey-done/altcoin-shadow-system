@@ -219,6 +219,7 @@ CHECK_CANDIDATES_PER_CANDIDATE_SEC = 30  # 单个候选硬超时（秒）；超�
 CHECK_CANDIDATES_PARALLELISM = 4      # 候选评估的并发线程数（Binance 限速 ~10 RPS，4 比较安全）
 CHECK_CANDIDATES_OPEN_EXEC_TIMEOUT_SEC = 45  # 开仓执行阶段总超时（秒）；避免单路由卡死拖垮整轮
 CHECK_CANDIDATES_HARD_TIMEOUT_SEC = 120   # 候选确认函数级硬超时（秒），兜底防止任何阶段卡死
+CHECK_CANDIDATES_INTERVAL_MINUTES = 5  # 候选确认轮询间隔（分钟）；准实时建议 5，稳态可回调到 15
 
 # ══════════════════════════════════════════════════════════════════
 #  回测滑点 & 手续费
