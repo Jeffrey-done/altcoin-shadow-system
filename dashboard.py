@@ -744,10 +744,14 @@ def api_accounts_overview():
     accounts_data = []
     for acc in all_accounts:
         acc_id = acc['id']
-        # 按账户取桶；影子账户额外接收所有无标记的旧交易
+        # 按账户取桶；影子账户额外接收所有无标记的旧交易。
+        # 非影子账户不展示 shadow 模拟仓（RN 只看实盘）。
         acc_trades = list(buckets.get(acc_id, []))
-        if acc_id == SHADOW_ACCOUNT_ID and legacy_unmarked:
-            acc_trades.extend(legacy_unmarked)
+        if acc_id == SHADOW_ACCOUNT_ID:
+            if legacy_unmarked:
+                acc_trades.extend(legacy_unmarked)
+        else:
+            acc_trades = [t for t in acc_trades if t.get('exchange', 'shadow') != 'shadow']
 
         open_trades = [t for t in acc_trades if t.get('status') == 'open']
         closed_trades = [t for t in acc_trades if t.get('status') == 'closed']

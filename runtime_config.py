@@ -834,12 +834,14 @@ def compute_per_account_scaled() -> dict:
             mode = pristine_position_mode
 
         # 决定 effective_balance
-        if live_balance is not None:
-            # 实盘：所有账号共享
+        # 注意：系统影子账户必须始终使用自己的配置余额，不跟随实盘余额缩放。
+        is_shadow_account = (acc_id == 'acc_shadow_system')
+        if live_balance is not None and not is_shadow_account:
+            # 实盘账号：共享交易所余额
             effective_balance = float(live_balance)
             balance_source = live_source or 'unavailable'
         else:
-            # 影子：用账号自己的 ACCOUNT_BALANCE override
+            # 影子账号 / 全影子模式：用账号自己的 ACCOUNT_BALANCE override
             bal = overrides.get('ACCOUNT_BALANCE')
             if bal is None:
                 bal = pristine_balance
@@ -847,7 +849,7 @@ def compute_per_account_scaled() -> dict:
                 effective_balance = float(bal) if bal is not None else baseline
             except (TypeError, ValueError):
                 effective_balance = baseline
-            balance_source = 'config'
+            balance_source = 'config' if not is_shadow_account else 'config-shadow'
 
         st = {
             'mode': mode,

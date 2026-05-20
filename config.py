@@ -175,7 +175,7 @@ OKX_FUNDING_HOT = 0.02        # OKX 多头过热阈值（%/8h，比币安略低�
 OKX_OI_CHANGE_MIN = 0.20      # OKX OI 变化阈值（20%，比币安低因为OKX体量小）
 
 # 交叉验证加分（两所数据一致时，信号评分额外加分）
-OKX_CROSS_VALIDATE_ENABLED = True    # 是否启用交叉验证
+OKX_CROSS_VALIDATE_ENABLED = False    # hotfix: 暂时关闭 OKX 交叉验证，避免候选确认阻塞
 OKX_CROSS_VALIDATE_BONUS = 8         # 交叉验证通过时额外加分（满分100中）
 
 # OKX 实盘交易（目前仅做空策略，默认关闭）
@@ -217,6 +217,8 @@ CANDIDATE_EXPIRE_DAYS = 1     # 向后兼容（不再使用，改用 HOURS）
 CHECK_CANDIDATES_BUDGET_SEC = 480     # 整轮 evaluate 预算（秒）；到点优雅退出
 CHECK_CANDIDATES_PER_CANDIDATE_SEC = 30  # 单个候选硬超时（秒）；超过跳下一个
 CHECK_CANDIDATES_PARALLELISM = 4      # 候选评估的并发线程数（Binance 限速 ~10 RPS，4 比较安全）
+CHECK_CANDIDATES_OPEN_EXEC_TIMEOUT_SEC = 45  # 开仓执行阶段总超时（秒）；避免单路由卡死拖垮整轮
+CHECK_CANDIDATES_HARD_TIMEOUT_SEC = 120   # 候选确认函数级硬超时（秒），兜底防止任何阶段卡死
 
 # ══════════════════════════════════════════════════════════════════
 #  回测滑点 & 手续费

@@ -445,7 +445,7 @@ def scan_daily():
         time.sleep(0.1)
 
     # 合并已有候选池（持锁 RMW 防止与 check_candidates 并发覆盖）
-    with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing_list, save_candidates):
+    with LockedJsonFile(CANDIDATES_FILE, default=[], lock_timeout_sec=5, lock_name='CANDIDATES_FILE') as (existing_list, save_candidates):
         existing = {c['symbol']: Candidate.from_dict(c) for c in existing_list}
 
         for sym, cand in candidates.items():
@@ -540,19 +540,9 @@ def _resolve_exchange_routes(symbol: str, stake: float) -> list:
             half = max(1.0, round(stake / 2, 2))
             live_routes = [('binance', half), ('okx', half)]
         elif mode == 'auto':
-            # 按品种覆盖决定：
-            #   - OKX 有合约时优先用 OKX（它体量小、费率更极端，易被做空触发）
-            #   - OKX 没合约时回退到 binance
-            #   - 两家都没有时用 PRIMARY_EXCHANGE_FALLBACK
-            try:
-                has_okx = okx_has_swap(symbol)
-            except Exception:
-                has_okx = False
-            if has_okx:
-                live_routes = [('okx', stake)]
-            else:
-                fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
-                live_routes = [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
+            # H13: auto 模式不再同步探测 OKX 合约，避免单次路由把整轮候选确认拖死。
+            fallback = getattr(config, 'PRIMARY_EXCHANGE_FALLBACK', 'binance').lower()
+            live_routes = [(fallback if fallback in ('binance', 'okx') else 'binance', stake)]
         else:
             live_routes = [('binance', stake)]
 
@@ -660,6 +650,7 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
 
     cross_validate_bonus = 0
     okx_cv_info = ""
+    logger.info(f"  [DBG] cross-validate gate {c.symbol}")
     if config.OKX_CROSS_VALIDATE_ENABLED and okx_has_swap(c.symbol):
         funding_cv = cross_validate_funding(c.symbol, c.funding_rate)
         oi_cv = cross_validate_oi(c.symbol, c.oi_change / 100)
@@ -934,7 +925,7 @@ def check_candidates():
 
 def _save_candidates_back(candidates):
     """把 candidates 列表写回 CANDIDATES_FILE，保留 scan_daily 期间新加入的"""
-    with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing_raw, save_candidates):
+    with LockedJsonFile(CANDIDATES_FILE, default=[], lock_timeout_sec=5, lock_name='CANDIDATES_FILE') as (existing_raw, save_candidates):
         by_symbol = {c.get('symbol'): c for c in existing_raw if c.get('symbol')}
         for c in candidates:
             by_symbol[c.symbol] = c.to_dict()
@@ -999,6 +990,8 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
 
     any_allowed = False
     first_reason = ""
+    acc_actual_stake_map = {}  # 避免在 TRADES_FILE 锁内再次读取 trades（会自锁阻塞）
+    acc_allowed_map = {}
     for _acc in _trading_accts:
         _acc_id = _acc.get('id') or None
         _is_shadow_acc = _acc.get('is_shadow', False)
@@ -1012,6 +1005,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             _acc_base_stake if score_result["grade"] == "A"
             else round(_acc_base_stake * 0.5)
         )
+        acc_actual_stake_map[_acc_id or ''] = _acc_actual_stake
 
         # 该账号的路由分配（PRIMARY_EXCHANGE='both' 时拆分到两所）
         _acc_routes_preview = _resolve_exchange_routes(c.symbol, _acc_actual_stake)
@@ -1027,16 +1021,19 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         )
 
         _ok, _rsn = can_open_trade(_acc_check_stake, account_id=_acc_id)
+        acc_allowed_map[_acc_id or ''] = (_ok, _rsn)
         if _ok:
             any_allowed = True
             break
         if not first_reason:
             first_reason = _rsn
+    logger.info(f"  [DBG] precheck pass {c.symbol}: at least one account allowed")
     if not any_allowed:
         logger.warning(f"  🚫 所有账户都拒绝 {c.symbol}: {first_reason}")
         return False
 
     # ── 触发开仓 ──
+    logger.info(f"  [DBG] fetching price {c.symbol}")
     try:
         price = exchange.fetch_ticker(c.symbol)['last']
     except Exception as e:
@@ -1053,12 +1050,14 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             return False
 
     # ── 实盘路由 ──
+    logger.info(f"  [DBG] resolving routes {c.symbol}")
     routes = _resolve_exchange_routes(c.symbol, actual_stake)
     if not routes:
         logger.warning(f"  ⚠️ 无可用交易所路由 {c.symbol}，跳过")
         return False
 
     # ── 多账户同步开仓 v5.0 ──
+    logger.info(f"  [DBG] loading accounts {c.symbol}")
     from admin_secrets import get_all_trading_accounts, SHADOW_ACCOUNT_ID, list_accounts
     trading_accounts = get_all_trading_accounts()
 
@@ -1089,13 +1088,15 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         all_accounts = [{'id': '', 'name': '默认', 'exchanges': {}, 'force_shadow_route': True}]
 
     # ── 锁内第一阶段：去重检查 + 每账户风控检查 ──
-    with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw_check, save_check):
+    logger.info(f"  [DBG] acquire trades lock (check) {c.symbol}")
+    with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=5, lock_name='TRADES_FILE') as (trades_raw_check, save_check):
         already_open_per_account = {
             (t.get('symbol'), t.get('account_id') or '')
             for t in trades_raw_check
             if t.get('status') == 'open' or t.get('close_retry_pending')
         }
 
+        logger.info(f"  [DBG] inside trades lock, start build tasks {c.symbol}")
         execution_tasks = []
         for account in all_accounts:
             acc_id = account['id']
@@ -1120,16 +1121,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                     )
                     continue
 
-            # P2-1 修复（2026-05）：用该账号自己的 compound_stake 算路由，
-            # 而不是用 active 账号的 actual_stake（外层闭包变量）。
-            try:
-                _acc_base = get_compound_stake(acc_id) if acc_id else base_stake
-            except Exception:
-                _acc_base = base_stake
-            _acc_actual = (
-                _acc_base if score_result["grade"] == "A"
-                else round(_acc_base * 0.5)
-            )
+            # H15: 这里已在锁外预计算过每账号 actual stake，
+            # 不要在 TRADES_FILE 锁内再调用 get_compound_stake（它会读 TRADES_FILE，可能自锁阻塞）。
+            _acc_actual = acc_actual_stake_map.get(acc_id or '', actual_stake)
 
             if account.get('force_shadow_route'):
                 acc_routes = [('shadow', _acc_actual)]
@@ -1141,10 +1135,11 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                     )
                     continue
 
+            logger.info(f"  [DBG] account loop {acc_name if 'acc_name' in locals() else account.get('name','?')} ({acc_id}) routes={acc_routes}")
             acc_stake_total = sum(s for _ex, s in acc_routes)
-            acc_allowed, acc_risk_reason = can_open_trade(
-                acc_stake_total, account_id=acc_id if acc_id else None
-            )
+            # H15: 不在 TRADES_FILE 锁内再次跑 can_open_trade（该函数会读 trades，可能自锁阻塞）。
+            acc_allowed, acc_risk_reason = acc_allowed_map.get(acc_id or '', (True, ''))
+            logger.info(f"  [DBG] prechecked can_open_trade acc={acc_id} allowed={acc_allowed} reason={acc_risk_reason}")
             if not acc_allowed:
                 logger.info(
                     f"  ⏩ 跳过账户 {account['name']}({acc_id}): {acc_risk_reason}"
@@ -1154,6 +1149,8 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             for route_exchange, route_stake in acc_routes:
                 execution_tasks.append((acc_id, account['name'], route_exchange, route_stake))
 
+    logger.info(f"  [DBG] execution_tasks={len(execution_tasks)} for {c.symbol}")
+    logger.info(f"  [DBG] left trades lock, execution_tasks={len(execution_tasks)}")
     if not execution_tasks:
         c.triggered = False
         return False
@@ -1204,15 +1201,42 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         )
         return (acc_id, acc_name, r_exchange, r_stake, coid, result)
 
-    with ThreadPoolExecutor(max_workers=max(len(prepared_tasks), 4)) as executor:
-        futures = [executor.submit(_execute_one, task) for task in prepared_tasks]
-        results = [f.result() for f in as_completed(futures)]
+    logger.info(f"  [DBG] entering execute phase {c.symbol}")
+    # H12: 给开仓执行阶段增加硬超时，防止某个交易所请求卡死把整轮拖到 scheduler 600s 被强杀
+    # 关键点：不能用 `with ThreadPoolExecutor(...)`，否则 __exit__ 会 wait=True 等待挂死线程。
+    exec_timeout = int(getattr(config, 'CHECK_CANDIDATES_OPEN_EXEC_TIMEOUT_SEC', 45))
+    executor = ThreadPoolExecutor(max_workers=max(len(prepared_tasks), 4))
+    futures = [executor.submit(_execute_one, task) for task in prepared_tasks]
+    results = []
+    timed_out = False
+    try:
+        for f in as_completed(futures, timeout=exec_timeout):
+            try:
+                results.append(f.result(timeout=1))
+            except Exception as e:
+                logger.error(f"  ❌ 开仓任务执行异常: {e}")
+    except TimeoutError:
+        timed_out = True
+        logger.error(
+            f"  ⏰ 开仓执行阶段超时（>{exec_timeout}s），强制结束剩余路由任务"
+        )
+    finally:
+        if timed_out:
+            for f in futures:
+                if not f.done():
+                    f.cancel()
+            # Python 3.9+：不等待正在执行的线程，直接返回，避免拖到 600s
+            executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor.shutdown(wait=True)
+
+    # 如果有任务超时，后续按已完成结果处理；没有任何成功结果则本轮跳过并等待下一轮
 
     # ── 锁内第三阶段：把成功的下单结果写入 TRADES_FILE ──
     opened_trades = []
     routes_by_key: dict = {}
 
-    with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+    with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=5, lock_name='TRADES_FILE') as (trades_raw, save):
         opened_any = False
         for acc_id, acc_name, route_exchange, route_stake, coid, live_result in results:
             key = (c.symbol, acc_id or '')
@@ -1334,7 +1358,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
 
             if rb_result.get('success'):
                 try:
-                    with LockedJsonFile(TRADES_FILE, default=[]) as (trs, savetr):
+                    with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=5, lock_name='TRADES_FILE') as (trs, savetr):
                         for t in trs:
                             if t.get('id') == trade_id:
                                 t['status'] = 'closed'

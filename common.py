@@ -292,15 +292,36 @@ class LockedJsonFile:
             save(data)  # 调用 save 写回文件（仍在锁保护下）
     """
 
-    def __init__(self, filepath: str, default: Any = None):
+    def __init__(self, filepath: str, default: Any = None,
+                 lock_timeout_sec: float | None = None,
+                 lock_name: str | None = None):
         self.filepath = filepath
         self.default = default if default is not None else []
         self.lockfile = filepath + '.lock'
         self.lock_fd = None
+        self.lock_timeout_sec = lock_timeout_sec
+        self.lock_name = lock_name or filepath
 
     def __enter__(self):
+        import time as _time
         self.lock_fd = open(self.lockfile, 'a')
-        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+
+        # 可选：带超时的非阻塞加锁，避免某处长期持锁把调用方无限阻塞。
+        if self.lock_timeout_sec is None:
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+        else:
+            lock_nb = getattr(fcntl, 'LOCK_NB', 0)
+            deadline = _time.monotonic() + float(self.lock_timeout_sec)
+            while True:
+                try:
+                    fcntl.flock(self.lock_fd, fcntl.LOCK_EX | lock_nb)
+                    break
+                except (BlockingIOError, OSError):
+                    if _time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"LockedJsonFile acquire timeout: {self.lock_name} (> {self.lock_timeout_sec}s)"
+                        )
+                    _time.sleep(0.05)
 
         # 持锁读取
         if os.path.exists(self.filepath):
@@ -434,12 +455,18 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
     filtered = []
     for t in trades:
         t_account = t.get('account_id', '')
-        if t_account == account_id:
-            # 精确匹配
+        t_exchange = t.get('exchange', 'shadow')
+
+        if account_id == SHADOW_ID:
+            # 影子账户：保留 shadow + 无标记旧交易
+            if t_account == SHADOW_ID or t_account == '':
+                filtered.append(t)
+            continue
+
+        # 非影子账户：只看该账号且仅实盘交易（不显示 shadow 模拟仓）
+        if t_account == account_id and t_exchange != 'shadow':
             filtered.append(t)
-        elif t_account == '' and account_id == SHADOW_ID:
-            # 无标记的旧交易归属影子账户
-            filtered.append(t)
+
     return filtered
 
 

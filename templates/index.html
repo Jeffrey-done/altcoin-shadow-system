@@ -173,7 +173,8 @@ const socket = io();
 let lastDashboardData = null;
 let currentMode = 'all';
 // 前端视图当前选中的账户（仅影响前端展示，不改后台活跃账户）
-let selectedAccountId = localStorage.getItem('dashboard-selected-account') || null;
+const _urlAccountId = new URLSearchParams(window.location.search).get('account_id');
+let selectedAccountId = _urlAccountId || localStorage.getItem('dashboard-selected-account') || null;
 let accountsCache = [];  // 缓存账户列表，用于渲染高亮
 let pnlRefreshTimer = null;
 
@@ -256,8 +257,9 @@ function updateDashboard(data) {
     // 风控
     const risk = data.risk || {};
     const cfg = data.config || {};
+    const accountIdLabel = data.account_id ? `当前账户: ${data.account_id}` : '当前账户: --';
     const dailyLoss = risk.daily_loss || 0;
-    const dailyMax = cfg.max_daily_loss || 30;
+    const dailyMax = Number(cfg.max_daily_loss || 30);
     const dailyPct = Math.min(dailyLoss / dailyMax * 100, 100);
     const trades_opened = risk.daily_trades_opened || 0;
     const maxTrades = cfg.max_daily_trades || 2;
@@ -269,6 +271,7 @@ function updateDashboard(data) {
     const barColor = dailyPct > 80 ? 'var(--red)' : dailyPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('risk-content').innerHTML = `
         <div style="margin-bottom:14px;">${statusBadge}</div>
+        <div style="margin-bottom:8px;font-size:0.72rem;color:var(--text-muted);">${accountIdLabel}</div>
         <div style="margin-bottom:10px;font-size:0.8rem;">日亏损: ${dailyLoss.toFixed(1)} / ${dailyMax}U
             <div class="risk-bar"><div class="risk-bar-fill" style="width:${dailyPct}%;background:${barColor}"></div></div></div>
         <div style="margin-bottom:8px;font-size:0.8rem;">今日开仓: ${trades_opened} / ${maxTrades} 笔</div>
@@ -311,9 +314,11 @@ function updateDashboard(data) {
 // SocketIO 推送：只处理与当前选中账户匹配的数据；
 // 如果选择了其他账户，就忽略推送，只用 REST 拉取（避免闪回）
 socket.on('update', function(data) {
-    if (selectedAccountId && data.account_id && data.account_id !== selectedAccountId) {
-        // 推送的是后台活跃账户，前端选的是另一个账户 → 忽略
-        return;
+    if (selectedAccountId) {
+        // 用户已显式选择账户时，只接收该账户推送；account_id 缺失也忽略，避免被活跃账户数据覆盖。
+        if (!data.account_id || data.account_id !== selectedAccountId) {
+            return;
+        }
     }
     updateDashboard(data);
     PnlChart.update(data.pnl_chart);
@@ -362,14 +367,12 @@ function shortAccountLabel(id) {
 }
 
 function selectAccount(accountId) {
-    // 再次点同一张卡片 → 取消选择，回到后台活跃账户
-    if (selectedAccountId === accountId) {
-        selectedAccountId = null;
-        localStorage.removeItem('dashboard-selected-account');
-    } else {
-        selectedAccountId = accountId;
-        localStorage.setItem('dashboard-selected-account', accountId);
-    }
+    // 始终显式切换到该账户，不再通过二次点击回退到活跃账户（避免视图跳回 RN 造成误判）。
+    selectedAccountId = accountId;
+    localStorage.setItem('dashboard-selected-account', accountId);
+    const _u = new URL(window.location.href);
+    _u.searchParams.set('account_id', accountId);
+    window.history.replaceState({}, '', _u.toString());
     // 更新卡片高亮
     document.querySelectorAll('.account-card').forEach(card => {
         card.classList.toggle('selected', card.dataset.accountId === selectedAccountId);

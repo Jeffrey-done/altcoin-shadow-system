@@ -537,6 +537,7 @@ def main_loop():
             # M10: 候选确认可能触发多所并行开仓，长耗时任务用子进程
             run_task(
                 "候选确认", None,
+                timeout=getattr(config, 'CHECK_CANDIDATES_HARD_TIMEOUT_SEC', 120),
                 use_process=True,
                 process_module='altcoin_scanner', process_func='check_candidates',
             )
