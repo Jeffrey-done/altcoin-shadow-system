@@ -622,7 +622,9 @@ def run(check_only: bool = False):
     if not trades_raw:
         logger.info("无交易记录")
         return
-    if not any(t.get('status') == 'open' for t in trades_raw):
+    has_open = any(t.get('status') == 'open' for t in trades_raw)
+    has_retry = any(t.get('close_retry_pending') for t in trades_raw)
+    if not has_open and not has_retry:
         logger.info("无持仓中的空单")
         return
 

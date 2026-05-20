@@ -1281,8 +1281,12 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                 client_order_id=coid,
                 ref_price_at_order=price,
                 slippage_pct=slippage_pct,
+                account_id=acc_id,
+                tp1_multiplier=float(account_param(acc_id, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER)),
+                tp2_multiplier=float(account_param(acc_id, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER)),
+                hard_stop_loss_pct=float(account_param(acc_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
+                max_hold_days=int(config.MAX_HOLD_DAYS),
             )
-            trade.account_id = acc_id
             opened_trades.append((trade, entry_price, route_exchange, route_stake, coid))
             trades_raw.append(trade.to_dict())
             opened_any = True

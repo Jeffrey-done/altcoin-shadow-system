@@ -148,7 +148,12 @@ class Trade:
                      live_order_id: Optional[str] = None,
                      client_order_id: Optional[str] = None,
                      ref_price_at_order: Optional[float] = None,
-                     slippage_pct: float = 0.0) -> Trade:
+                     slippage_pct: float = 0.0,
+                     account_id: Optional[str] = None,
+                     tp1_multiplier: Optional[float] = None,
+                     tp2_multiplier: Optional[float] = None,
+                     hard_stop_loss_pct: Optional[float] = None,
+                     max_hold_days: Optional[int] = None) -> Trade:
         """工厂方法：创建做空交易（带杠杆 + 硬止损）
 
         参数:
@@ -160,7 +165,16 @@ class Trade:
         import secrets as _secrets
         from common import get_current_account_id
         notional = stake * leverage
-        hard_stop = round(price * (1 + config.HARD_STOP_LOSS_PCT / 100), 6)
+        if tp1_multiplier is None:
+            tp1_multiplier = config.TP1_MULTIPLIER
+        if tp2_multiplier is None:
+            tp2_multiplier = config.TP2_MULTIPLIER
+        if hard_stop_loss_pct is None:
+            hard_stop_loss_pct = config.HARD_STOP_LOSS_PCT
+        if max_hold_days is None:
+            max_hold_days = config.MAX_HOLD_DAYS
+
+        hard_stop = round(price * (1 + hard_stop_loss_pct / 100), 6)
         # ID 加交易所后缀 + 毫秒时间戳 + 3字节随机 token，
         # 确保多账户并行开仓时同币同秒不会冲突
         ex_tag = exchange[:2].upper() if exchange != 'shadow' else 'SH'
@@ -178,14 +192,14 @@ class Trade:
             shares=round(notional / price, 4) if price > 0 else 0,
             reason=reason,
             strategy='short_overbought',
-            take_profit_1=round(price * config.TP1_MULTIPLIER, 6),
-            take_profit_2=round(price * config.TP2_MULTIPLIER, 6),
+            take_profit_1=round(price * tp1_multiplier, 6),
+            take_profit_2=round(price * tp2_multiplier, 6),
             stake_remaining=stake,
             hard_stop_price=hard_stop,
-            max_hold_days=config.MAX_HOLD_DAYS,
+            max_hold_days=max_hold_days,
             exchange=exchange,
             live_order_id=live_order_id,
-            account_id=get_current_account_id(),
+            account_id=account_id if account_id is not None else get_current_account_id(),
             client_order_id=client_order_id or '',
             ref_price_at_order=ref_price_at_order if ref_price_at_order else price,
             slippage_pct=round(slippage_pct, 4),
