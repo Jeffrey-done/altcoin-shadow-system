@@ -277,15 +277,23 @@ def validate_cross_field_consistency(overrides: dict, account_id: str = None) ->
 
     if position_mode == 'proportional':
         try:
-            ps_state = get_position_scale_state()
-            eff_bal = ps_state.get('effective_balance')
-            scaled = ps_state.get('scaled_fields') or {}
-            if eff_bal is not None and eff_bal > 0:
-                balance = float(eff_bal)
-            if 'DEFAULT_STAKE' in scaled and scaled['DEFAULT_STAKE'] is not None:
-                stake = float(scaled['DEFAULT_STAKE'])
-            else:
-                # apply_position_scale 还没跑过：手动算
+            explicit_balance = 'ACCOUNT_BALANCE' in overrides
+            explicit_stake = 'DEFAULT_STAKE' in overrides
+            used_scaled_stake = False
+
+            if not explicit_balance or not explicit_stake:
+                ps_state = get_position_scale_state()
+                eff_bal = ps_state.get('effective_balance')
+                scaled = ps_state.get('scaled_fields') or {}
+                if not explicit_balance and eff_bal is not None and eff_bal > 0:
+                    balance = float(eff_bal)
+                if not explicit_stake and 'DEFAULT_STAKE' in scaled and scaled['DEFAULT_STAKE'] is not None:
+                    stake = float(scaled['DEFAULT_STAKE'])
+                    used_scaled_stake = True
+
+            if not explicit_stake and not used_scaled_stake:
+                # apply_position_scale 还没跑过：手动算。显式传 DEFAULT_STAKE 时不覆盖，
+                # 否则 admin 保存明显非法值会被当前 scale state 掩盖。
                 pristine_stake = get_pristine_default('DEFAULT_STAKE') or stake
                 pristine_baseline = float(getattr(_config, 'BASELINE_BALANCE', 100) or 100)
                 if pristine_baseline > 0 and balance > 0:
@@ -1015,6 +1023,11 @@ def apply_position_scale() -> dict:
     }
 
     if mode != 'proportional':
+        previous_mode = _position_scale_state.get('mode')
+        if previous_mode != 'proportional':
+            _position_scale_state.update(state)
+            return dict(state)
+
         # manual: 必须把 4 个字段恢复成"admin override 或 PRISTINE 默认"，
         # 否则从 proportional 切回 manual 时 config 模块残留缩放后的脏值
         # （proportional 时 apply_position_scale 写入的 86/143/72 等不会被
@@ -1033,7 +1046,10 @@ def apply_position_scale() -> dict:
         except Exception:
             acc_overrides = {}
 
+        previous_scaled = _position_scale_state.get('scaled_fields') or {}
         for key in _PROPORTIONAL_FIELDS:
+            if getattr(_config, key, None) != previous_scaled.get(key):
+                continue
             override_val = acc_overrides.get(key)
             if override_val is not None:
                 setattr(_config, key, override_val)
@@ -1177,7 +1193,14 @@ def apply_overrides(force: bool = False) -> dict:
             _active = _gaa()
         except Exception:
             _active = ''
-        if _active and _active in _per_account_state:
+        # 只有 active 账号确实存在 runtime override 时，才用 per-account state 覆盖
+        # 老的全局 position scale state。否则测试/单账户场景中 admin_secrets 的
+        # 真实账号列表会把刚按 config 计算出的 state 覆盖成 pristine manual。
+        try:
+            _all_overrides = load_all_account_overrides() or {}
+        except Exception:
+            _all_overrides = {}
+        if _active and _active in _per_account_state and _active in _all_overrides:
             _position_scale_state.update(_per_account_state[_active])
     except Exception as e:
         logger.warning(f"compute_per_account_scaled 异常（非致命）: {e}")

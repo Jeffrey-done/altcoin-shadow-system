@@ -447,6 +447,7 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
     - 如果 account_id 为空或 None，返回所有交易（单账户兼容模式）
     - 否则只返回匹配该 account_id 的交易
     - 无 account_id 的历史交易归属影子账户（acc_shadow_system）
+    - 有 account_id 但缺少 exchange 的旧交易按该账户的实盘历史处理，避免漏掉冷却/风控记录
     """
     if not account_id:
         return trades
@@ -455,7 +456,7 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
     filtered = []
     for t in trades:
         t_account = t.get('account_id', '')
-        t_exchange = t.get('exchange', 'shadow')
+        t_exchange = t.get('exchange')
 
         if account_id == SHADOW_ID:
             # 影子账户：保留 shadow + 无标记旧交易
@@ -463,7 +464,8 @@ def filter_trades_by_account(trades: list, account_id: str = None) -> list:
                 filtered.append(t)
             continue
 
-        # 非影子账户：只看该账号且仅实盘交易（不显示 shadow 模拟仓）
+        # 非影子账户：只看该账号且仅实盘交易（不显示明确标记的 shadow 模拟仓）。
+        # 旧记录可能只有 account_id、没有 exchange；这种记录仍属于该账号，不能当作 shadow 排除。
         if t_account == account_id and t_exchange != 'shadow':
             filtered.append(t)
 
