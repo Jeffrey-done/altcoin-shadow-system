@@ -7,10 +7,12 @@ Checks:
 2) Local open live trades vs exchange positions
 3) Local protection fields vs exchange algo orders
 4) Prints PASS/WARN/FAIL summary with actionable notes
+5) Detects local<->exchange drift on protect_* fields
 """
 
 import json
 import subprocess
+import argparse
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -105,27 +107,38 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
         else:
             rs.append(CheckResult('PASS', f'position:{sym}', f'local≈exchange ({shares} vs {pos_amt})'))
 
-        # algo consistency
+        # algo consistency + drift audit
         algos = algo_by_symbol.get(fapi, [])
         stop_id = str(t.get('protect_stop_algo_id') or '')
         tp_id = str(t.get('protect_tp_algo_id') or '')
         stage = t.get('protect_stage') or ''
 
         if not algos:
-            rs.append(CheckResult('WARN', f'algo:{sym}', 'no open algo orders on exchange'))
+            if stop_id or tp_id or stage:
+                rs.append(CheckResult('WARN', f'algo:{sym}', 'exchange algo empty but local protect_* still set (drift)'))
+            else:
+                rs.append(CheckResult('WARN', f'algo:{sym}', 'no open algo orders on exchange'))
             continue
 
         algo_ids = {str(a.get('algoId')) for a in algos}
+        drift = False
         if stop_id and stop_id not in algo_ids:
+            drift = True
             rs.append(CheckResult('WARN', f'algo:{sym}', f'local stop id {stop_id} not in exchange open algos'))
         if tp_id and tp_id not in algo_ids:
+            drift = True
             rs.append(CheckResult('WARN', f'algo:{sym}', f'local tp id {tp_id} not in exchange open algos'))
 
         kinds = {a.get('orderType') for a in algos}
         if stage == 'stage1' and not ({'STOP_MARKET', 'TAKE_PROFIT_MARKET'} <= kinds):
+            drift = True
             rs.append(CheckResult('WARN', f'algo:{sym}', f'stage1 expected STOP+TP, got {sorted(kinds)}'))
-        else:
-            rs.append(CheckResult('PASS', f'algo:{sym}', f'stage={stage or "(none)"}, open_algo={len(algos)}'))
+        elif stage == 'stage2' and not ({'STOP_MARKET', 'TAKE_PROFIT_MARKET'} <= kinds):
+            drift = True
+            rs.append(CheckResult('WARN', f'algo:{sym}', f'stage2 expected STOP+TP2, got {sorted(kinds)}'))
+
+        if not drift:
+            rs.append(CheckResult('PASS', f'algo:{sym}', f'stage={stage or "(none)"}, open_algo={len(algos)}, ids_consistent'))
 
     return rs
 
@@ -147,7 +160,10 @@ def summarize(results: List[CheckResult]) -> int:
 
 
 def main() -> int:
-    account_id = 'acc_1698bb553ce0'
+    parser = argparse.ArgumentParser(description="Runtime health audit")
+    parser.add_argument("--account", default="acc_1698bb553ce0", help="account id for live checks")
+    args = parser.parse_args()
+    account_id = args.account
     results: List[CheckResult] = []
     results.append(check_services())
     results.extend(check_live_positions_and_algos(account_id))

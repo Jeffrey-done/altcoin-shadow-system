@@ -305,9 +305,14 @@ function updateDashboard(data) {
         const modeTag = (t.exchange || 'shadow') === 'shadow'
             ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.6rem;">影子</span>'
             : '<span class="badge badge-ok" style="font-size:0.6rem;">实盘</span>';
+        const oid = t.close_order_id || '';
+        const tp1oid = t.tp1_close_order_id || '';
+        const orderInfo = (tp1oid || oid)
+            ? `<div style="margin-top:4px;font-size:0.62rem;color:var(--text-muted);">${tp1oid ? `TP1#${String(tp1oid).slice(-6)}` : ''}${tp1oid && oid ? ' | ' : ''}${oid ? `CLS#${String(oid).slice(-6)}` : ''}</div>`
+            : '';
         return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction === 'SHORT' ? '做空' : '做多'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
             <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
-            <td>${t.close_reason || '--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
+            <td>${t.close_reason || '--'}${orderInfo}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
     }).join('');
 }
 

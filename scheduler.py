@@ -544,6 +544,57 @@ def main_loop():
             )
             _mark_done('check_candidates', now)
 
+        # ── 每 5 分钟同步一次交易所/本地状态（防止条件单状态滞后）──
+        if _due_for_minutes('exchange_reconcile', now, 5):
+            def _exchange_reconcile():
+                try:
+                    from common import load_json, LockedJsonFile, TRADES_FILE
+                    from live_executor import get_live_exchange, get_binance_open_algo_orders
+                    from models import Trade
+
+                    trades = load_json(TRADES_FILE, [])
+                    live = [t for t in trades if t.get('status') == 'open' and t.get('exchange') == 'binance']
+                    if not live:
+                        return
+                    ex = get_live_exchange(None)
+                    if not ex:
+                        return
+                    ex.load_markets()
+                    algo_all = ex.fapiPrivateGetOpenAlgoOrders({})
+                    algo_ids = {str(a.get('algoId')) for a in algo_all}
+                    pos_map = {}
+                    try:
+                        poss = ex.fetch_positions()
+                        for p in poss:
+                            sym = p.get('symbol') or ''
+                            if sym:
+                                pos_map[sym] = float(p.get('contracts') or 0)
+                    except Exception:
+                        poss = []
+                    with LockedJsonFile(TRADES_FILE, default=[]) as (raw, save):
+                        changed = False
+                        for t in raw:
+                            if t.get('status') != 'open' or t.get('exchange') != 'binance':
+                                continue
+                            sym = t.get('symbol')
+                            if not sym:
+                                continue
+                            fapi = sym.replace('/USDT', 'USDT').replace('/', '')
+                            contracts = pos_map.get(fapi, None)
+                            # 若本地仍标记 stage1 但 TP1 algo 已不在，且持仓降为 0，清理 stage/订单标记
+                            if (t.get('protect_stage') == 'stage1' and t.get('protect_tp_algo_id') and str(t.get('protect_tp_algo_id')) not in algo_ids and (contracts is not None and contracts <= 0)):
+                                t['protect_stage'] = 'stage1'  # 保留最后已知阶段；只是清理挂单引用
+                                t['protect_tp_algo_id'] = None
+                                t['protect_stop_algo_id'] = None
+                                changed = True
+                            # 若 stage2 且已无条件单且无持仓，保留交易记录由后续 close 流程回收
+                        if changed:
+                            save(raw)
+                except Exception as e:
+                    logger.warning(f"交易所同步对账异常（非致命）: {e}")
+            run_task("交易所对账", _exchange_reconcile)
+            _mark_done('exchange_reconcile', now)
+
         # ── 每 6 小时 :45 健康检查 ──
         if _due_for_interval('health_check', now, 6, 45):
             from health_check import run_health_check

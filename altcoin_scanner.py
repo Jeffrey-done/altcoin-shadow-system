@@ -753,6 +753,31 @@ def check_candidates():
         return
 
     candidates = [Candidate.from_dict(c) for c in candidates_list]
+    # pending_open 守护：重试次数上限 + 过期淘汰（避免无限重试）
+    _pending_max_retries = int(getattr(config, 'PENDING_OPEN_MAX_RETRIES', 3))
+    _pending_expire_hours = int(getattr(config, 'PENDING_OPEN_EXPIRE_HOURS', 6))
+    _now = utcnow()
+    _cleaned = 0
+    for _c in candidates:
+        if not getattr(_c, 'pending_open', False):
+            continue
+        _exp = False
+        if (_c.pending_open_retries or 0) >= _pending_max_retries:
+            _exp = True
+        elif _c.pending_opened_at:
+            try:
+                _age_h = (_now - parse_iso(_c.pending_opened_at)).total_seconds() / 3600
+                if _age_h >= _pending_expire_hours:
+                    _exp = True
+            except Exception:
+                pass
+        if _exp:
+            _c.pending_open = False
+            _c.pending_opened_at = None
+            _c.pending_open_retries = 0
+            _cleaned += 1
+    if _cleaned:
+        logger.info(f"pending_open 清理 {_cleaned} 个候选（重试/超时）")
     # 预算溢出保护：优先处理上轮已触发但未执行开仓的候选
     candidates.sort(key=lambda x: (0 if getattr(x, 'pending_open', False) else 1, x.added_at))
     # H10: 走 exchange_manager 单例，强制带 timeout
@@ -924,6 +949,7 @@ def check_candidates():
             for c2, p2 in triggered_payloads[i:]:
                 c2.pending_open = True
                 c2.pending_opened_at = utcnow_iso()
+                c2.pending_open_retries = int(getattr(c2, 'pending_open_retries', 0) or 0) + 1
                 # 保存触发语义，下一轮优先执行
                 if p2.get('trigger_abandon'):
                     c2.trigger_type = 'abandon'
@@ -936,6 +962,7 @@ def check_candidates():
         # 不论开仓成功与否，本轮已尝试执行，清理 pending 标记
         c.pending_open = False
         c.pending_opened_at = None
+        c.pending_open_retries = 0
         if ok:
             triggered_any = True
 

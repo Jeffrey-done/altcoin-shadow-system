@@ -62,6 +62,7 @@ class Candidate:
     trigger_reason: Optional[str] = None
     pending_open: bool = False
     pending_opened_at: Optional[str] = None
+    pending_open_retries: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
