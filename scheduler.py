@@ -549,51 +549,78 @@ def main_loop():
             def _exchange_reconcile():
                 try:
                     from common import load_json, LockedJsonFile, TRADES_FILE
-                    from live_executor import get_live_exchange, get_binance_open_algo_orders
-                    from models import Trade
+                    from live_executor import get_live_exchange
 
                     trades = load_json(TRADES_FILE, [])
                     live = [t for t in trades if t.get('status') == 'open' and t.get('exchange') == 'binance']
                     if not live:
                         return
-                    ex = get_live_exchange(None)
-                    if not ex:
-                        return
-                    ex.load_markets()
-                    algo_all = ex.fapiPrivateGetOpenAlgoOrders({})
-                    algo_ids = {str(a.get('algoId')) for a in algo_all}
-                    pos_map = {}
-                    try:
-                        poss = ex.fetch_positions()
-                        for p in poss:
-                            sym = p.get('symbol') or ''
-                            if sym:
-                                pos_map[sym] = float(p.get('contracts') or 0)
-                    except Exception:
-                        poss = []
+
+                    # 多账号：按 account_id 分组逐个拉交易所状态
+                    by_acc = {}
+                    for t in live:
+                        aid = t.get('account_id') or ''
+                        by_acc.setdefault(aid, []).append(t)
+
+                    exchange_state = {}  # account_id -> {'algo_ids': set, 'pos_map': dict}
+                    for aid in by_acc.keys():
+                        ex = get_live_exchange(aid or None)
+                        if not ex:
+                            continue
+                        try:
+                            ex.load_markets()
+                            algo_all = ex.fapiPrivateGetOpenAlgoOrders({})
+                            algo_ids = {str(a.get('algoId')) for a in algo_all}
+                        except Exception:
+                            algo_ids = set()
+                        pos_map = {}
+                        try:
+                            poss = ex.fetch_positions()
+                            for p in poss:
+                                sym = p.get('symbol') or ''
+                                if sym:
+                                    pos_map[sym] = float(p.get('contracts') or 0)
+                        except Exception:
+                            pass
+                        exchange_state[aid] = {'algo_ids': algo_ids, 'pos_map': pos_map}
+
                     with LockedJsonFile(TRADES_FILE, default=[]) as (raw, save):
                         changed = False
                         for t in raw:
                             if t.get('status') != 'open' or t.get('exchange') != 'binance':
                                 continue
+                            aid = t.get('account_id') or ''
+                            st = exchange_state.get(aid)
+                            if not st:
+                                continue
                             sym = t.get('symbol')
                             if not sym:
                                 continue
                             fapi = sym.replace('/USDT', 'USDT').replace('/', '')
-                            contracts = pos_map.get(fapi, None)
+                            contracts = st['pos_map'].get(fapi, None)
+                            algo_ids = st['algo_ids']
                             # 若本地仍标记 stage1 但 TP1 algo 已不在，且持仓降为 0，清理 stage/订单标记
                             if (t.get('protect_stage') == 'stage1' and t.get('protect_tp_algo_id') and str(t.get('protect_tp_algo_id')) not in algo_ids and (contracts is not None and contracts <= 0)):
-                                t['protect_stage'] = 'stage1'  # 保留最后已知阶段；只是清理挂单引用
                                 t['protect_tp_algo_id'] = None
                                 t['protect_stop_algo_id'] = None
                                 changed = True
-                            # 若 stage2 且已无条件单且无持仓，保留交易记录由后续 close 流程回收
                         if changed:
                             save(raw)
                 except Exception as e:
                     logger.warning(f"交易所同步对账异常（非致命）: {e}")
             run_task("交易所对账", _exchange_reconcile)
             _mark_done('exchange_reconcile', now)
+
+        # ── 每 15 分钟全账号审计（仅 WARN/FAIL 推送）──
+        if _due_for_minutes('health_audit_all', now, 15):
+            def _run_health_audit_all():
+                import subprocess
+                try:
+                    subprocess.run(['python3', 'health_audit.py', '--all', '--tg'], check=False)
+                except Exception as e:
+                    logger.warning(f"health_audit --all 执行失败: {e}")
+            run_task("健康审计(全账号)", _run_health_audit_all)
+            _mark_done('health_audit_all', now)
 
         # ── 每 6 小时 :45 健康检查 ──
         if _due_for_interval('health_check', now, 6, 45):

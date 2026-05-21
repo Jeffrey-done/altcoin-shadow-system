@@ -18,6 +18,7 @@ from typing import Dict, List
 
 from common import TRADES_FILE, load_json
 from live_executor import get_live_exchange
+from common import send_tg
 
 STACK_NAMES = [
     'altcoin-shadow-system-dashboard-1',
@@ -143,7 +144,7 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
     return rs
 
 
-def summarize(results: List[CheckResult]) -> int:
+def summarize(results: List[CheckResult], send_tg_alert: bool = False) -> int:
     rank = {'PASS': 0, 'WARN': 1, 'FAIL': 2}
     code = 0
     for r in results:
@@ -156,18 +157,43 @@ def summarize(results: List[CheckResult]) -> int:
         print('OVERALL: WARN')
     else:
         print('OVERALL: FAIL')
+
+    if send_tg_alert and code > 0:
+        try:
+            lines = [f"[{r.level}] {r.name}: {r.detail}" for r in results if r.level != 'PASS']
+            if not lines:
+                lines = [f"audit finished with level={code}"]
+            send_tg("🩺 <b>多账号健康审计告警</b>\n\n" + "\n".join(lines[:20]))
+        except Exception:
+            pass
     return code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Runtime health audit")
     parser.add_argument("--account", default="acc_1698bb553ce0", help="account id for live checks")
+    parser.add_argument("--all", action="store_true", help="check all trading accounts")
+    parser.add_argument("--tg", action="store_true", help="send TG when overall WARN/FAIL")
     args = parser.parse_args()
     account_id = args.account
     results: List[CheckResult] = []
     results.append(check_services())
-    results.extend(check_live_positions_and_algos(account_id))
-    return summarize(results)
+
+    if args.all:
+        try:
+            from admin_secrets import get_all_trading_accounts
+            accts = get_all_trading_accounts() or []
+            ids = [a.get('id') for a in accts if a.get('id')]
+            if not ids:
+                results.append(CheckResult('WARN', 'accounts', 'no trading accounts found'))
+            for aid in ids:
+                results.extend(check_live_positions_and_algos(aid))
+        except Exception as e:
+            results.append(CheckResult('FAIL', 'accounts', f'failed to load accounts: {e}'))
+    else:
+        results.extend(check_live_positions_and_algos(account_id))
+
+    return summarize(results, send_tg_alert=args.tg)
 
 
 if __name__ == '__main__':
