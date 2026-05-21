@@ -60,6 +60,8 @@ class Candidate:
     triggered: bool = False
     trigger_type: Optional[str] = None   # 'abandon' | '4h_rsi'
     trigger_reason: Optional[str] = None
+    pending_open: bool = False
+    pending_opened_at: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -116,8 +118,8 @@ class Trade:
     # 实盘路由（v4.2）
     exchange: str = 'shadow'          # 'binance' | 'okx' | 'shadow'（纸上交易）
     live_order_id: Optional[str] = None   # 开仓的交易所订单 ID（纸上交易为 None）
-    close_order_id: Optional[str] = None  # 平仓的交易所订单 ID
-
+    close_order_id: Optional[str] = None  # 最终平仓的交易所订单 ID
+    tp1_close_order_id: Optional[str] = None  # TP1 半仓平仓订单 ID
     # 多账户隔离（v4.3）
     account_id: str = ''              # 所属账户 ID（空=旧数据/单账户兼容）
 
@@ -139,6 +141,9 @@ class Trade:
     tp1_slippage_pct: float = 0.0     # TP1 平仓滑点 %：abs(fill - ref) / ref * 100
     exit_ref_price: float = 0.0       # 最终平仓（TP2 / 硬止损 / 移动止损 / 时间止损）触发时 ticker 参考价
     exit_slippage_pct: float = 0.0    # 最终平仓滑点 %：abs(fill - ref) / ref * 100
+    protect_stop_algo_id: Optional[str] = None
+    protect_tp_algo_id: Optional[str] = None
+    protect_stage: str = ''
 
     @classmethod
     def create_short(cls, symbol: str, price: float, reason: str = '',

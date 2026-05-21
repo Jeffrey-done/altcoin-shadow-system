@@ -471,8 +471,9 @@ def _extract_events() -> list:
             reason = t.get('close_reason', '')
             level = 'success' if pnl > 0 else 'warning'
 
-            # Stop-loss events are critical
-            if 'stop' in reason.lower() or 'hard' in reason.lower():
+            # 基于 close_type 做稳定分类（避免依赖文案匹配）
+            ct = str(t.get('close_type') or '').lower()
+            if ct in ('hard_stop', 'trail_stop', 'time_stop', 'breakeven_stop'):
                 level = 'critical'
 
             events.append({

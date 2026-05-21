@@ -127,14 +127,24 @@ const PositionTable = {
             // Update previous price
             this.previousPrices[t.symbol] = cur;
 
+            const protectStage = t.protect_stage ? `<span class="badge badge-info">${t.protect_stage}</span>` : '';
+            const stopPx = (t.protect_stage === 'stage2' && t.trail_stop_price) ? Number(t.trail_stop_price) : Number(t.hard_stop_price || 0);
+            const tpPx = (t.protect_stage === 'stage2') ? Number(t.take_profit_2 || 0) : Number(t.take_profit_1 || 0);
+            const protectStop = t.protect_stop_algo_id
+                ? `<span class="badge" style="background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.25);">SL#${String(t.protect_stop_algo_id).slice(-4)} @ ${stopPx > 0 ? stopPx.toFixed(5) : '--'}</span>`
+                : '';
+            const protectTp = t.protect_tp_algo_id
+                ? `<span class="badge" style="background:rgba(16,185,129,.15);color:var(--success);border:1px solid rgba(16,185,129,.25);">TP#${String(t.protect_tp_algo_id).slice(-4)} @ ${tpPx > 0 ? tpPx.toFixed(5) : '--'}</span>`
+                : '';
             const extra = direction === 'SHORT'
                 ? (t.tp1_triggered ? '<span class="badge badge-ok">TP1✓</span>' : '')
                 : (t.strategy || '');
 
             const stopIndicator = `<span class="stop-distance">${stopLabel} ${distToStop.toFixed(1)}%</span>`;
+            const protectLine = (protectStage || protectStop || protectTp) ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${protectStage}${protectStop}${protectTp}</div>` : '';
 
             return `<tr class="${dangerClass}" data-symbol="${t.symbol}" data-pnl-pct="${pnlPct.toFixed(2)}" data-pnl-u="${pnlU.toFixed(2)}" data-hold="${holdHours}">
-                <td><b>${t.symbol}</b>${stopIndicator}</td>
+                <td><b>${t.symbol}</b>${stopIndicator}${protectLine}</td>
                 <td>${entry.toFixed(6)}</td>
                 <td class="${priceClass}">${cur.toFixed(6)}${priceArrow}</td>
                 <td>${App.fmtPct(pnlPct)}</td>

@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""
+Runtime health audit for live trading consistency.
+
+Checks:
+1) Docker services up
+2) Local open live trades vs exchange positions
+3) Local protection fields vs exchange algo orders
+4) Prints PASS/WARN/FAIL summary with actionable notes
+"""
+
+import json
+import subprocess
+from dataclasses import dataclass
+from typing import Dict, List
+
+from common import TRADES_FILE, load_json
+from live_executor import get_live_exchange
+
+STACK_NAMES = [
+    'altcoin-shadow-system-dashboard-1',
+    'altcoin-shadow-system-scheduler-1',
+    'altcoin-shadow-system-realtime-monitor-1',
+]
+
+
+@dataclass
+class CheckResult:
+    level: str  # PASS/WARN/FAIL
+    name: str
+    detail: str
+
+
+def _run(cmd: str) -> str:
+    p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return (p.stdout or '') + (p.stderr or '')
+
+
+def check_services() -> CheckResult:
+    out = _run("docker ps --format '{{.Names}}\t{{.Status}}'")
+    missing = []
+    bad = []
+    lines = [x.strip() for x in out.splitlines() if x.strip()]
+    m = {}
+    for ln in lines:
+        parts = ln.split('\t')
+        if len(parts) >= 2:
+            m[parts[0]] = parts[1]
+    for n in STACK_NAMES:
+        if n not in m:
+            missing.append(n)
+        elif not m[n].lower().startswith('up'):
+            bad.append(f"{n}: {m[n]}")
+    if missing or bad:
+        return CheckResult('FAIL', 'services', f"missing={missing} bad={bad}")
+    return CheckResult('PASS', 'services', 'all core services are up')
+
+
+def _to_fapi_symbol(ccxt_symbol: str) -> str:
+    return ccxt_symbol.replace('/USDT', 'USDT').replace('/', '')
+
+
+def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
+    rs: List[CheckResult] = []
+    trades = load_json(TRADES_FILE, [])
+    live_open = [
+        t for t in trades
+        if t.get('status') == 'open' and t.get('exchange') == 'binance' and t.get('account_id') == account_id
+    ]
+    if not live_open:
+        rs.append(CheckResult('WARN', 'live_open_trades', f'no open binance trades for {account_id}'))
+        return rs
+
+    ex = get_live_exchange(account_id)
+    if not ex:
+        rs.append(CheckResult('FAIL', 'exchange', 'failed to create exchange client'))
+        return rs
+
+    ex.load_markets()
+    algo_all = ex.fapiPrivateGetOpenAlgoOrders({})
+    algo_by_symbol: Dict[str, List[dict]] = {}
+    for a in algo_all:
+        algo_by_symbol.setdefault(a.get('symbol', ''), []).append(a)
+
+    for t in live_open:
+        sym = t['symbol']
+        fapi = _to_fapi_symbol(sym)
+        # position
+        pos_amt = 0.0
+        try:
+            poss = ex.fetch_positions([f"{sym}:USDT"]) if not sym.endswith(':USDT') else ex.fetch_positions([sym])
+            for p in poss:
+                if str(p.get('side', '')).lower() == 'short':
+                    pos_amt = float(p.get('contracts') or 0)
+                    break
+        except Exception as e:
+            rs.append(CheckResult('FAIL', f'position:{sym}', f'fetch_positions error: {e}'))
+            continue
+
+        shares = float(t.get('shares') or 0)
+        if pos_amt <= 0:
+            rs.append(CheckResult('FAIL', f'position:{sym}', f'local open but exchange short contracts=0 (local shares={shares})'))
+        elif abs(pos_amt - shares) / max(1.0, shares) > 0.35:
+            rs.append(CheckResult('WARN', f'position:{sym}', f'position mismatch local={shares} exchange={pos_amt}'))
+        else:
+            rs.append(CheckResult('PASS', f'position:{sym}', f'local≈exchange ({shares} vs {pos_amt})'))
+
+        # algo consistency
+        algos = algo_by_symbol.get(fapi, [])
+        stop_id = str(t.get('protect_stop_algo_id') or '')
+        tp_id = str(t.get('protect_tp_algo_id') or '')
+        stage = t.get('protect_stage') or ''
+
+        if not algos:
+            rs.append(CheckResult('WARN', f'algo:{sym}', 'no open algo orders on exchange'))
+            continue
+
+        algo_ids = {str(a.get('algoId')) for a in algos}
+        if stop_id and stop_id not in algo_ids:
+            rs.append(CheckResult('WARN', f'algo:{sym}', f'local stop id {stop_id} not in exchange open algos'))
+        if tp_id and tp_id not in algo_ids:
+            rs.append(CheckResult('WARN', f'algo:{sym}', f'local tp id {tp_id} not in exchange open algos'))
+
+        kinds = {a.get('orderType') for a in algos}
+        if stage == 'stage1' and not ({'STOP_MARKET', 'TAKE_PROFIT_MARKET'} <= kinds):
+            rs.append(CheckResult('WARN', f'algo:{sym}', f'stage1 expected STOP+TP, got {sorted(kinds)}'))
+        else:
+            rs.append(CheckResult('PASS', f'algo:{sym}', f'stage={stage or "(none)"}, open_algo={len(algos)}'))
+
+    return rs
+
+
+def summarize(results: List[CheckResult]) -> int:
+    rank = {'PASS': 0, 'WARN': 1, 'FAIL': 2}
+    code = 0
+    for r in results:
+        print(f"[{r.level}] {r.name}: {r.detail}")
+        code = max(code, rank.get(r.level, 2))
+    print('---')
+    if code == 0:
+        print('OVERALL: PASS')
+    elif code == 1:
+        print('OVERALL: WARN')
+    else:
+        print('OVERALL: FAIL')
+    return code
+
+
+def main() -> int:
+    account_id = 'acc_1698bb553ce0'
+    results: List[CheckResult] = []
+    results.append(check_services())
+    results.extend(check_live_positions_and_algos(account_id))
+    return summarize(results)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

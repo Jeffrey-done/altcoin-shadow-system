@@ -469,11 +469,11 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
                     f"{_t['close_order_id']}，另一进程已处理）"
                 )
                 return
-            # tp1_partial: 如果 tp1_closed_shares > 0，说明 TP1 半仓已成功发送
-            if action == 'tp1_partial' and (_t.get('tp1_closed_shares') or 0) > 0:
+            # tp1_partial: 仅当已有 TP1 真实订单 ID 时才视为已处理
+            if action == 'tp1_partial' and _t.get('tp1_close_order_id'):
                 logger.info(
-                    f"⏩ 跳过重复 TP1 平仓 {trade.symbol}（tp1_closed_shares="
-                    f"{_t['tp1_closed_shares']}，另一进程已处理）"
+                    f"⏩ 跳过重复 TP1 平仓 {trade.symbol}（已有 tp1_close_order_id="
+                    f"{_t['tp1_close_order_id']}，另一进程已处理）"
                 )
                 return
             break
@@ -481,7 +481,7 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
         # 去重检查失败不应阻塞平仓主流程（交易所端幂等键仍是最后防线）
         logger.debug(f"平仓去重检查异常（非致命）: {_dedup_err}")
 
-    from live_executor import execute_close, make_client_order_id
+    from live_executor import execute_close, make_client_order_id, cancel_binance_open_orders, place_binance_stage2_after_tp1, get_binance_position_amount
 
     # 幂等键：同一笔交易的同一次动作（tp1 vs close）用稳定 ID
     # 这样即便 tracker 和 realtime_monitor 同时触发，交易所只会接受一次
@@ -492,11 +492,35 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     # 使用开仓时记录的 account_id，确保平仓用正确账户的凭证
     acc_id = trade.account_id if trade.account_id else None
 
-    # 最多重试 3 次（指数退避：0.5s → 1s → 2s），覆盖网络抖动和限速
-    import time as _time
-    max_retries = 3
-    result = None
-    last_error = None
+    # 交易所托管保护单 guard：先看实时持仓，避免重复平仓
+    if trade.exchange == 'binance':
+        live_pos_before = get_binance_position_amount(trade.symbol, trade.direction, account_id=acc_id)
+        if action == 'tp1_partial':
+            # 若交易所已先成交部分/全部，说明 TP1 可能已由条件单完成；
+            # 不再重复发单，但仍继续后续清理/回写阶段。
+            if live_pos_before <= 0:
+                logger.info(f"⏩ TP1 guard: {trade.symbol} 持仓已为0，跳过发单，继续清理挂单")
+                close_amount = 0.0
+            else:
+                close_amount = min(close_amount, live_pos_before)
+        elif action == 'full_close':
+            if live_pos_before <= 0:
+                logger.info(f"⏩ full_close guard: {trade.symbol} 持仓已为0，跳过发单，继续清理挂单")
+                close_amount = 0.0
+            else:
+                close_amount = min(close_amount, live_pos_before)
+
+    # 若 guard 判定交易所已先成交导致可平数量为 0：不再发单，走后续清理分支
+    if close_amount <= 0:
+        result = {"success": True, "order_id": "ALREADY_CLOSED", "price": 0, "amount": 0, "error": ""}
+        last_error = None
+        max_retries = 0
+    else:
+        # 最多重试 3 次（指数退避：0.5s → 1s → 2s），覆盖网络抖动和限速
+        import time as _time
+        max_retries = 3
+        result = None
+        last_error = None
 
     for attempt in range(max_retries):
         try:
@@ -563,7 +587,10 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
             with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
                 for t in trades_raw:
                     if t.get('id') == trade.id:
-                        t['close_order_id'] = result.get('order_id', '')
+                        if action == 'tp1_partial':
+                            t['tp1_close_order_id'] = result.get('order_id', '')
+                        else:
+                            t['close_order_id'] = result.get('order_id', '')
                         fill_price = float(result.get('price') or 0)
                         if action == 'tp1_partial':
                             # H7: TP1 实际成交数量回填（交易所滑点 → 可能和预期略有差异）
@@ -602,6 +629,55 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
         f"✅ [{trade.exchange}] 实盘平仓成功: {trade.symbol} | "
         f"动作={action} | 数量={close_amount:.4f} | 订单={result.get('order_id')}"
     )
+
+    # TP1 成功后，切换为阶段二保护单：取消旧单 -> 挂保本/移动止损 + TP2
+    if action == 'tp1_partial' and trade.exchange == 'binance':
+        try:
+            _cancel = cancel_binance_open_orders(trade.symbol, account_id=acc_id)
+            if not _cancel.get('success'):
+                logger.warning(f"TP1后撤旧保护单失败 {trade.symbol}: {_cancel.get('error')}")
+
+            # 剩余仓位数量：优先取交易所回填 filled
+            remain_amount = max(0.0, float(trade.shares or 0) - float(result.get('amount') or close_amount or 0))
+            if remain_amount <= 0:
+                logger.info(f"TP1 后剩余仓位为 0，跳过阶段二挂单 {trade.symbol}")
+                return
+
+            # 做空：保本/移动止损价取 trail_stop_price（已在 evaluate 后置为保本或更优）
+            stop_price = float(trade.trail_stop_price or trade.entry_price or 0)
+            tp2_price = float(trade.take_profit_2 or 0)
+            _p2 = place_binance_stage2_after_tp1(
+                symbol=trade.symbol,
+                remain_amount=remain_amount,
+                stop_price=stop_price,
+                tp2_price=tp2_price,
+                account_id=acc_id,
+                stop_client_order_id=make_client_order_id('st2', trade.symbol, 'binance'),
+                tp2_client_order_id=make_client_order_id('tp2', trade.symbol, 'binance'),
+            )
+            if not _p2.get('success'):
+                send_tg(f"[BINANCE] TP1 stage2 protection failed | symbol={tg_escape(trade.symbol)} | error={tg_escape(_p2.get('error','unknown'))}")
+            else:
+                try:
+                    with LockedJsonFile(TRADES_FILE, default=[]) as (_trs, _save):
+                        for _t in _trs:
+                            if _t.get('id') == trade.id:
+                                _t['protect_stop_algo_id'] = _p2.get('stop_order_id')
+                                _t['protect_tp_algo_id'] = _p2.get('tp_order_id')
+                                _t['protect_stage'] = 'stage2'
+                                _save(_trs)
+                                break
+                except Exception as _we:
+                    logger.debug(f"stage2 algo id backfill failed {trade.symbol}: {_we}")
+        except Exception as _p2e:
+            logger.error(f"TP1 后阶段二挂单异常 {trade.symbol}: {_p2e}")
+
+    # 全平成功后清理残留条件单
+    if action == 'full_close' and trade.exchange == 'binance':
+        try:
+            cancel_binance_open_orders(trade.symbol, account_id=acc_id)
+        except Exception as _ce:
+            logger.debug(f"full_close 后清理残单异常 {trade.symbol}: {_ce}")
 
 
 # ══════════════════════════════════════════════════════════════════

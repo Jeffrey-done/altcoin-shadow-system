@@ -306,6 +306,9 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
     _max_position_pct = float(account_param(account_id, 'RISK_MAX_POSITION_PCT',
                                             config.RISK_MAX_POSITION_PCT))
 
+    # 先在 RISK 锁外读取 TRADES 快照，避免 RISK->TRADES 交叉锁顺序
+    actual_stake_snapshot = _calc_actual_open_stake(account_id)
+
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
         dirty = False
@@ -341,11 +344,10 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
             logger.warning(f"🚫 {reason}")
             return False, reason
 
-        # 4. 检查最大持仓占比（锁内同步持仓总额）
-        actual_stake = _calc_actual_open_stake(account_id)
-        if abs(state.total_open_stake - actual_stake) > 0.01:
-            logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake:.0f}U")
-            state.total_open_stake = actual_stake
+        # 4. 检查最大持仓占比（用锁外快照同步持仓总额，避免交叉锁）
+        if abs(state.total_open_stake - actual_stake_snapshot) > 0.01:
+            logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake_snapshot:.0f}U")
+            state.total_open_stake = actual_stake_snapshot
             dirty = True
 
         # M2: 持仓占比风控基准改为"已实现余额"，不含浮动 TP1 锁定利润，

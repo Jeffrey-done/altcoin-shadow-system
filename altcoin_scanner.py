@@ -336,6 +336,11 @@ def detect_volume_divergence(exchange, symbol: str) -> dict:
 
 def scan_daily():
     """扫描全市场，找日线 RSI > DAILY_RSI_MIN 的候选币"""
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc(force=True)
+    except Exception as _e:
+        logger.debug(f"scan_daily apply_overrides 失败（非致命）: {_e}")
     logger.info("=== 开始日线扫描 ===")
     # H10: 走 exchange_manager 单例，强制带 timeout，避免 fetch_tickers 卡死
     from exchange_manager import get_binance
@@ -718,6 +723,12 @@ def check_candidates():
       - 早退优化：4h RSI 仍超买（>= H4_RSI_ENTER）直接跳，省 3 次 API
       - 命中触发后才进入串行的开仓阶段（保留原有锁/路由/journal 逻辑）
     """
+    try:
+        from runtime_config import apply_overrides as _apply_rc
+        _apply_rc(force=True)
+    except Exception as _e:
+        logger.debug(f"check_candidates apply_overrides 失败（非致命）: {_e}")
+
     import time as _time
     from concurrent.futures import (
         ThreadPoolExecutor, as_completed,
@@ -742,6 +753,8 @@ def check_candidates():
         return
 
     candidates = [Candidate.from_dict(c) for c in candidates_list]
+    # 预算溢出保护：优先处理上轮已触发但未执行开仓的候选
+    candidates.sort(key=lambda x: (0 if getattr(x, 'pending_open', False) else 1, x.added_at))
     # H10: 走 exchange_manager 单例，强制带 timeout
     from exchange_manager import get_binance
     exchange = get_binance()
@@ -901,14 +914,28 @@ def check_candidates():
     #  H11 阶段二：串行开仓（保留原有锁 + 路由 + journal 逻辑）
     # ══════════════════════════════════════════════════════════════════
 
-    for c, payload in triggered_payloads:
+    for i, (c, payload) in enumerate(triggered_payloads):
         # 阶段二的剩余预算：原预算 - 已用 - 给收尾留的 60s
         if (_time.monotonic() - _round_t0) > (_budget + 60):
+            remain = len(triggered_payloads) - i
             logger.warning(
-                f"⏰ 开仓阶段已超 {_budget + 60}s，剩余 {len(triggered_payloads)} 笔开仓推迟到下一轮"
+                f"⏰ 开仓阶段已超 {_budget + 60}s，剩余 {remain} 笔开仓推迟到下一轮"
             )
+            for c2, p2 in triggered_payloads[i:]:
+                c2.pending_open = True
+                c2.pending_opened_at = utcnow_iso()
+                # 保存触发语义，下一轮优先执行
+                if p2.get('trigger_abandon'):
+                    c2.trigger_type = 'abandon'
+                    c2.trigger_reason = f"弃盘点: {p2.get('abandon', {}).get('reason', '')}".strip()
+                else:
+                    c2.trigger_type = '4h_rsi'
+                    c2.trigger_reason = f"4h RSI从{p2.get('rsi_4h_peak', 0):.0f}回落至{p2.get('rsi_4h', 0)}"
             break
         ok = _open_position_for_candidate(c, payload, btc_pct, exchange)
+        # 不论开仓成功与否，本轮已尝试执行，清理 pending 标记
+        c.pending_open = False
+        c.pending_opened_at = None
         if ok:
             triggered_any = True
 
@@ -1156,7 +1183,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         return False
 
     # ── 锁外第二阶段：并行执行下单 ──
-    from live_executor import execute_open, make_client_order_id
+    from live_executor import execute_open, make_client_order_id, place_binance_short_protection_split
     from common import (
         journal_add_pending, journal_mark_confirmed, journal_mark_failed,
     )
@@ -1397,6 +1424,41 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     if not opened_trades:
         c.triggered = False
         return False
+
+    # 交易所托管保护单：开仓后立即挂 STOP(全仓) + TP1(半仓)
+    for trade, _entry_price, route_exchange, _route_stake, _coid in opened_trades:
+        if route_exchange != 'binance':
+            continue
+        try:
+            tp1_ratio = float(account_param(trade.account_id, 'TP1_CLOSE_RATIO', config.TP1_CLOSE_RATIO))
+            tp1_amount = trade.shares * tp1_ratio
+            stop_amount = trade.shares
+            prot = place_binance_short_protection_split(
+                symbol=trade.symbol,
+                stop_amount=stop_amount,
+                tp_amount=tp1_amount,
+                hard_stop_price=trade.hard_stop_price or 0.0,
+                tp_trigger_price=trade.take_profit_1,
+                account_id=trade.account_id or None,
+                stop_client_order_id=make_client_order_id('st1', trade.symbol, 'binance'),
+                tp_client_order_id=make_client_order_id('tp1', trade.symbol, 'binance'),
+            )
+            if not prot.get('success'):
+                send_tg(f"[BINANCE] protection order placement failed | symbol={tg_escape(trade.symbol)} | error={tg_escape(prot.get('error','unknown'))}")
+            else:
+                try:
+                    with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=5, lock_name='TRADES_FILE') as (_trs, _save):
+                        for _t in _trs:
+                            if _t.get('id') == trade.id:
+                                _t['protect_stop_algo_id'] = prot.get('stop_order_id')
+                                _t['protect_tp_algo_id'] = prot.get('tp_order_id')
+                                _t['protect_stage'] = 'stage1'
+                                _save(_trs)
+                                break
+                except Exception as _we:
+                    logger.debug(f"stage1 algo id backfill failed {trade.symbol}: {_we}")
+        except Exception as _pe:
+            logger.error(f"保护单挂单异常 {trade.symbol}: {_pe}")
 
     # ══ 交易写盘成功后，才改风控状态 + 发推送 ══
     c.triggered = True

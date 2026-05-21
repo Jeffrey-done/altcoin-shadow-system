@@ -122,6 +122,101 @@ def _amount_to_precision(exchange, symbol: str, amount: float) -> float:
             return amount
 
 
+
+
+def _round_price(exchange, symbol: str, price: float) -> float:
+    """Round a trigger/order price to exchange precision."""
+    try:
+        precise = float(exchange.price_to_precision(symbol, price))
+        return precise if precise > 0 else 0.0
+    except Exception as e:
+        logger.debug(f"price_to_precision 失败 ({symbol}, {price}): {e}")
+        return round(price, 6)
+
+
+def place_binance_short_protection(symbol: str, amount: float,
+                                   hard_stop_price: float,
+                                   tp1_price: float,
+                                   account_id: Optional[str] = None,
+                                   stop_client_order_id: Optional[str] = None,
+                                   tp1_client_order_id: Optional[str] = None) -> dict:
+    """Place Binance protective exit orders for a live short position."""
+    if not config.LIVE_MODE:
+        return {"success": True, "stop_order_id": "SHADOW", "tp1_order_id": "SHADOW", "error": ""}
+
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return {"success": False, "stop_order_id": "", "tp1_order_id": "", "error": "交易所连接失败"}
+
+    try:
+        amount = _amount_to_precision(exchange, symbol, amount)
+        if amount <= 0:
+            return {"success": False, "stop_order_id": "", "tp1_order_id": "", "error": "保护单数量裁剪后为 0"}
+
+        stop_price = _round_price(exchange, symbol, hard_stop_price)
+        tp1_trigger_price = _round_price(exchange, symbol, tp1_price)
+        if stop_price <= 0 or tp1_trigger_price <= 0:
+            return {"success": False, "stop_order_id": "", "tp1_order_id": "", "error": "保护单价格无效"}
+
+        stop_params = {
+            'positionSide': 'SHORT',
+                        'stopPrice': stop_price,
+            'workingType': 'MARK_PRICE',
+        }
+        tp1_params = {
+            'positionSide': 'SHORT',
+                        'stopPrice': tp1_trigger_price,
+            'workingType': 'MARK_PRICE',
+        }
+        if stop_client_order_id:
+            stop_params['newClientOrderId'] = stop_client_order_id
+        if tp1_client_order_id:
+            tp1_params['newClientOrderId'] = tp1_client_order_id
+
+        stop_order = exchange.create_order(symbol=symbol, type='STOP_MARKET', side='buy', amount=amount, params=stop_params)
+        tp1_order = exchange.create_order(symbol=symbol, type='TAKE_PROFIT_MARKET', side='buy', amount=amount, params=tp1_params)
+
+        logger.info(f"✅ Binance 保护单已挂: {symbol} | STOP={stop_price:.6f} | TP1={tp1_trigger_price:.6f} | amount={amount:.4f}")
+        return {
+            "success": True,
+            "stop_order_id": stop_order.get('id', ''),
+            "tp1_order_id": tp1_order.get('id', ''),
+            "error": "",
+        }
+    except Exception as e:
+        logger.error(f"❌ Binance 保护单挂单失败 ({symbol}): {e}")
+        return {"success": False, "stop_order_id": "", "tp1_order_id": "", "error": str(e)}
+
+
+def cancel_binance_open_orders(symbol: str, account_id: Optional[str] = None) -> dict:
+    """Cancel all open Binance orders for the symbol (normal + algo)."""
+    if not config.LIVE_MODE:
+        return {"success": True, "cancelled": 0, "error": ""}
+
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return {"success": False, "cancelled": 0, "error": "交易所连接失败"}
+
+    cancelled = 0
+    try:
+        orders = exchange.fetch_open_orders(symbol)
+        for order in orders:
+            try:
+                exchange.cancel_order(order.get('id'), symbol)
+                cancelled += 1
+            except Exception as e:
+                logger.warning(f"撤单失败 {symbol} {order.get('id')}: {e}")
+    except Exception as e:
+        logger.debug(f"普通挂单撤单路径失败（非致命）: {e}")
+
+    algo = cancel_binance_open_algo_orders(symbol, account_id=account_id)
+    cancelled += int(algo.get('cancelled') or 0)
+    if not algo.get('success'):
+        return {"success": False, "cancelled": cancelled, "error": algo.get('error', '')}
+
+    return {"success": True, "cancelled": cancelled, "error": ""}
+
+
 def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAGE,
                        client_order_id: Optional[str] = None,
                        account_id: Optional[str] = None) -> dict:
@@ -261,6 +356,36 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
         logger.error(f"❌ Binance 开多失败 ({symbol}): {e}")
         return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
 
+
+
+
+def get_binance_position_amount(symbol: str, direction: str = 'SHORT',
+                                account_id: Optional[str] = None) -> float:
+    """Return current Binance position contracts for given side.
+
+    SHORT returns absolute contracts of SHORT leg, LONG likewise.
+    """
+    if not config.LIVE_MODE:
+        return 0.0
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return 0.0
+    try:
+        market = exchange.market(symbol)
+        ex_symbol = market.get('symbol') or market.get('id') or symbol
+        positions = exchange.fetch_positions([ex_symbol])
+        want = (direction or 'SHORT').upper()
+        for p in positions:
+            side = str(p.get('side') or '').lower()
+            contracts = float(p.get('contracts') or 0)
+            if want == 'SHORT' and side == 'short':
+                return max(0.0, contracts)
+            if want == 'LONG' and side == 'long':
+                return max(0.0, contracts)
+        return 0.0
+    except Exception as e:
+        logger.warning(f"读取 Binance 持仓失败 ({symbol}): {e}")
+        return 0.0
 
 def execute_close_position(symbol: str, direction: str, amount: float,
                            client_order_id: Optional[str] = None,
@@ -685,3 +810,87 @@ def make_client_order_id(prefix: str, symbol: str, exchange_name: str = 'binance
     # Binance：保留连字符便于肉眼阅读
     coid = f"{prefix}-{base}-{ts_ms}"
     return coid[:36]
+
+
+def place_binance_short_protection_split(symbol: str, stop_amount: float, tp_amount: float,
+                                         hard_stop_price: float, tp_trigger_price: float,
+                                         account_id: Optional[str] = None,
+                                         stop_client_order_id: Optional[str] = None,
+                                         tp_client_order_id: Optional[str] = None) -> dict:
+    if not config.LIVE_MODE:
+        return {"success": True, "stop_order_id": "SHADOW", "tp_order_id": "SHADOW", "error": ""}
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": "交易所连接失败"}
+    try:
+        stop_amount = _amount_to_precision(exchange, symbol, stop_amount)
+        tp_amount = _amount_to_precision(exchange, symbol, tp_amount)
+        if stop_amount <= 0 or tp_amount <= 0:
+            return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": "保护单数量裁剪后为 0"}
+        stop_price = _round_price(exchange, symbol, hard_stop_price)
+        tp_price = _round_price(exchange, symbol, tp_trigger_price)
+        stop_params={'positionSide':'SHORT','stopPrice':stop_price,'workingType':'MARK_PRICE'}
+        tp_params={'positionSide':'SHORT','stopPrice':tp_price,'workingType':'MARK_PRICE'}
+        if stop_client_order_id: stop_params['newClientOrderId']=stop_client_order_id
+        if tp_client_order_id: tp_params['newClientOrderId']=tp_client_order_id
+        stop_order=exchange.create_order(symbol=symbol,type='STOP_MARKET',side='buy',amount=stop_amount,params=stop_params)
+        tp_order=exchange.create_order(symbol=symbol,type='TAKE_PROFIT_MARKET',side='buy',amount=tp_amount,params=tp_params)
+        logger.info(f"✅ Binance 分离保护单: {symbol} STOP({stop_amount:.4f}@{stop_price}) TP({tp_amount:.4f}@{tp_price})")
+        return {"success": True, "stop_order_id": stop_order.get('id',''), "tp_order_id": tp_order.get('id',''), "error": ""}
+    except Exception as e:
+        logger.error(f"❌ Binance 分离保护单失败 ({symbol}): {e}")
+        return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": str(e)}
+
+
+def place_binance_stage2_after_tp1(symbol: str, remain_amount: float, stop_price: float, tp2_price: float,
+                                   account_id: Optional[str] = None,
+                                   stop_client_order_id: Optional[str] = None,
+                                   tp2_client_order_id: Optional[str] = None) -> dict:
+    return place_binance_short_protection_split(symbol, remain_amount, remain_amount, stop_price, tp2_price,
+                                                account_id=account_id, stop_client_order_id=stop_client_order_id,
+                                                tp_client_order_id=tp2_client_order_id)
+
+
+def get_binance_open_algo_orders(symbol: str, account_id: Optional[str] = None) -> list:
+    """Return open Binance conditional(algo) orders for symbol."""
+    if not config.LIVE_MODE:
+        return []
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return []
+    try:
+        exchange.load_markets()
+        market = exchange.market(symbol)
+        sid = market.get('id') or symbol.replace('/','').replace(':USDT','').replace('USDT:USDT','USDT')
+        return exchange.fapiPrivateGetOpenAlgoOrders({'symbol': sid})
+    except Exception as e:
+        logger.error(f"获取 Binance algo 挂单失败 ({symbol}): {e}")
+        return []
+
+
+def cancel_binance_open_algo_orders(symbol: str, account_id: Optional[str] = None) -> dict:
+    """Cancel all open Binance conditional(algo) orders for symbol."""
+    if not config.LIVE_MODE:
+        return {"success": True, "cancelled": 0, "error": ""}
+    exchange = get_live_exchange(account_id)
+    if not exchange:
+        return {"success": False, "cancelled": 0, "error": "交易所连接失败"}
+    try:
+        exchange.load_markets()
+        market = exchange.market(symbol)
+        sid = market.get('id') or symbol.replace('/','').replace(':USDT','').replace('USDT:USDT','USDT')
+        orders = exchange.fapiPrivateGetOpenAlgoOrders({'symbol': sid})
+        cancelled = 0
+        for o in orders:
+            algo_id = o.get('algoId')
+            if not algo_id:
+                continue
+            try:
+                exchange.fapiPrivateDeleteAlgoOrder({'algoId': algo_id, 'symbol': sid})
+                cancelled += 1
+            except Exception as e:
+                logger.warning(f"撤 Binance algo 单失败 {symbol} {algo_id}: {e}")
+        return {"success": True, "cancelled": cancelled, "error": ""}
+    except Exception as e:
+        logger.error(f"撤 Binance algo 挂单失败 ({symbol}): {e}")
+        return {"success": False, "cancelled": 0, "error": str(e)}
