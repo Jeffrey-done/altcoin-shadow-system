@@ -40,8 +40,10 @@ services:
   # 实时仪表盘
   dashboard:
     <<: *common-app
+    environment:
+      - ALLOW_INSECURE_DASHBOARD=1
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     command: python3 dashboard.py
 
   # 定时任务调度器
