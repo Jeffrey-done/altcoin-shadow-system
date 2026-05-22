@@ -227,6 +227,26 @@ def _calc_today_trades_opened(account_id: Optional[str] = None) -> int:
     return sum(1 for t in trades if t.get('opened_at', '').startswith(today))
 
 
+def _calc_consecutive_losses(account_id: Optional[str] = None) -> int:
+    """从最近已平仓交易反推当前连续亏损次数（按账户过滤后）。"""
+    trades = load_json(TRADES_FILE, [])
+    acc_id = _resolve_account_id(account_id)
+    if acc_id != '_default':
+        trades = filter_trades_by_account(trades, acc_id)
+
+    closed = [t for t in trades if t.get('status') == 'closed']
+    closed.sort(key=lambda x: x.get('closed_at', ''))
+
+    cnt = 0
+    for t in reversed(closed):
+        realized = float(t.get('tp1_locked_pnl', 0) or 0) + float(t.get('pnl', 0) or 0)
+        if realized < 0:
+            cnt += 1
+        elif realized > 0:
+            break
+    return cnt
+
+
 def reconcile_risk_state(account_id: Optional[str] = None, notify: bool = False) -> dict:
     """
     对账：从 trades 文件反算指定账户真实的 daily_loss / daily_trades_opened /
@@ -235,6 +255,7 @@ def reconcile_risk_state(account_id: Optional[str] = None, notify: bool = False)
     expected_loss = _calc_today_realized_loss(account_id)
     expected_trades = _calc_today_trades_opened(account_id)
     expected_stake = _calc_actual_open_stake(account_id)
+    expected_consecutive = _calc_consecutive_losses(account_id)
 
     diff = {}
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
@@ -252,6 +273,9 @@ def reconcile_risk_state(account_id: Optional[str] = None, notify: bool = False)
             diff['total_open_stake'] = (state.total_open_stake, expected_stake)
             state.total_open_stake = expected_stake
 
+        if state.consecutive_losses != expected_consecutive:
+            diff['consecutive_losses'] = (state.consecutive_losses, expected_consecutive)
+            state.consecutive_losses = expected_consecutive
         if diff:
             data = _save_state_in_lock(data, state, account_id)
             save(data)
