@@ -481,6 +481,9 @@ DASHBOARD_SECRET_KEY=<另一个 32 字节随机串>
 - ❌ 不要用短密码（强制要求 ≥12 字符）
 - ❌ 不要在公网上跑 HTTP（必须 nginx/caddy 强制 HTTPS，否则登录密码会明文传输）
 - ❌ 不要把 dashboard 绑到 0.0.0.0 公网直接暴露；应该只绑 localhost，反向代理过来
+- 建议 Docker Compose 端口映射使用 127.0.0.1:8080:8080（不要用 8080:8080）
+- 可选环境变量: DASHBOARD_BIND=127.0.0.1
+- 如需无 token 外网暴露，必须显式设置 ALLOW_INSECURE_DASHBOARD=1（强烈不推荐）
 
 ### 反向代理 access log 脱敏（NF-2 必读 runbook）
 
@@ -578,6 +581,7 @@ tail -n 5 /var/log/nginx/access.log | grep -E "Kx3mQ8|admin-redacted"
 
 1. **立刻轮换 secret**：生成新的 `ADMIN_URL_SECRET`、`DASHBOARD_SECRET_KEY`，重启 dashboard
 2. **清理已写入的日志**：本机 `truncate -s 0`，远端日志系统（ELK/Loki/CloudWatch）走管理后台删除
+
 3. **检查日志备份**：S3 / 备份磁带里的副本一并清理或加密归档
 4. **审计 admin_audit.log**：确认没有未授权的访问记录
 
@@ -603,8 +607,22 @@ python3 backtest.py PEPE/USDT --days 90
 # 批量回测
 python3 backtest.py --batch
 
+
 # 手动扫描
 python3 altcoin_scanner.py scan    # 全市场扫描
 python3 altcoin_scanner.py check   # 候选确认
 python3 altcoin_scanner.py both    # 扫描+确认
 ```
+
+## 执行错误码（live_executor）
+
+实盘执行失败返回会包含 `error` 与 `error_code`（仅失败时提供），用于上层策略做重试/熔断决策：
+
+- `EXCHANGE_UNAVAILABLE`: 交易所连接不可用（凭证缺失/实例创建失败）
+- `INVALID_QUANTITY`: 下单或平仓数量裁剪后为 0
+- `NETWORK_TIMEOUT`: 网络超时
+- `RATE_LIMITED`: 触发交易所限速
+- `AUTH_FAILED`: 鉴权失败（API key/签名/权限）
+- `EXCHANGE_FILTER_REJECTED`: 交易所过滤器拒绝（minNotional/lot_size/precision）
+- `INSUFFICIENT_MARGIN`: 保证金/余额不足
+- `EXCHANGE_ERROR`: 其它未归类交易所错误

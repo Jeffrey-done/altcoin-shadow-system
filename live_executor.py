@@ -35,6 +35,29 @@ from exchange_manager import get_okx
 
 logger = setup_logger("live_executor")
 
+def _classify_exec_error(exc: Exception) -> str:
+    msg = str(exc).lower()
+    if 'insufficient' in msg or 'margin' in msg or 'balance' in msg:
+        return 'INSUFFICIENT_MARGIN'
+    if 'invalid' in msg and ('precision' in msg or 'quantity' in msg or 'amount' in msg):
+        return 'INVALID_QUANTITY'
+    if 'minnotional' in msg or 'lot_size' in msg or 'precision' in msg or 'tick size' in msg:
+        return 'EXCHANGE_FILTER_REJECTED'
+    if 'timeout' in msg or 'timed out' in msg:
+        return 'NETWORK_TIMEOUT'
+    if 'rate limit' in msg or 'too many requests' in msg:
+        return 'RATE_LIMITED'
+    if 'auth' in msg or 'api-key' in msg or 'signature' in msg or 'permission' in msg:
+        return 'AUTH_FAILED'
+    return 'EXCHANGE_ERROR'
+
+
+def _fail_result(msg: str, code: str, **kwargs) -> dict:
+    d = {'success': False, 'error': msg, 'error_code': code}
+    d.update(kwargs)
+    return d
+
+
 
 # ══════════════════════════════════════════════════════════════════
 #  Binance 实盘
@@ -240,7 +263,7 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
 
     exchange = get_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
+        return _fail_result("交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         # 设置杠杆（失败时仅告警，由交易所返回错误中断流程）
@@ -258,8 +281,7 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
         # 裁剪到交易所数量精度（stepSize），避免 -4005 LOT_SIZE 报错
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
+            return _fail_result(f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         params = {'positionSide': 'SHORT'}
         if client_order_id:
@@ -292,7 +314,7 @@ def execute_open_short(symbol: str, stake: float, leverage: int = config.LEVERAG
 
     except Exception as e:
         logger.error(f"❌ Binance 开空失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE,
@@ -306,7 +328,7 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
 
     exchange = get_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
+        return _fail_result("交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         try:
@@ -322,8 +344,7 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
         # 裁剪到交易所数量精度
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
+            return _fail_result(f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         params = {'positionSide': 'LONG'}
         if client_order_id:
@@ -354,7 +375,7 @@ def execute_open_long(symbol: str, stake: float, leverage: int = config.LEVERAGE
 
     except Exception as e:
         logger.error(f"❌ Binance 开多失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 
@@ -405,7 +426,7 @@ def execute_close_position(symbol: str, direction: str, amount: float,
 
     exchange = get_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "交易所连接失败"}
+        return _fail_result("交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         if direction == 'SHORT':
@@ -422,8 +443,7 @@ def execute_close_position(symbol: str, direction: str, amount: float,
         # 裁剪到交易所数量精度
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": "平仓数量裁剪后为 0（精度不足）"}
+            return _fail_result("平仓数量裁剪后为 0（精度不足）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         order = exchange.create_order(
             symbol=symbol, type='market', side=side,
@@ -448,7 +468,7 @@ def execute_close_position(symbol: str, direction: str, amount: float,
 
     except Exception as e:
         logger.error(f"❌ Binance 平仓失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 def check_live_balance(account_id: Optional[str] = None) -> dict:
@@ -534,7 +554,7 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
 
     exchange = get_okx_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
+        return _fail_result("OKX 交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         # H6: 与 Binance 对齐，set_leverage 失败仅告警不中断
@@ -552,8 +572,7 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
         # 裁剪到交易所数量精度（OKX 也有 lotSize）
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
+            return _fail_result(f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         params = {'tdMode': 'cross', 'posSide': 'short'}
         if client_order_id:
@@ -585,7 +604,7 @@ def execute_okx_open_short(symbol: str, stake: float, leverage: int = config.OKX
 
     except Exception as e:
         logger.error(f"❌ OKX 开空失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_DEFAULT_LEVERAGE,
@@ -597,7 +616,7 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
 
     exchange = get_okx_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
+        return _fail_result("OKX 交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         # H6: set_leverage 失败仅告警不中断
@@ -614,8 +633,7 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
         # 裁剪到交易所数量精度
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）"}
+            return _fail_result(f"数量裁剪后为 0（名义仓位 {notional}U 可能低于 minNotional）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         params = {'tdMode': 'cross', 'posSide': 'long'}
         if client_order_id:
@@ -646,7 +664,7 @@ def execute_okx_open_long(symbol: str, stake: float, leverage: int = config.OKX_
 
     except Exception as e:
         logger.error(f"❌ OKX 开多失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 def execute_okx_close_position(symbol: str, direction: str, amount: float,
@@ -658,7 +676,7 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float,
 
     exchange = get_okx_live_exchange(account_id)
     if not exchange:
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": "OKX 交易所连接失败"}
+        return _fail_result("OKX 交易所连接失败", "EXCHANGE_UNAVAILABLE", order_id="", price=0, amount=0)
 
     try:
         if direction == 'SHORT':
@@ -675,8 +693,7 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float,
         # 裁剪到交易所数量精度
         amount = _amount_to_precision(exchange, symbol, amount)
         if amount <= 0:
-            return {"success": False, "order_id": "", "price": 0, "amount": 0,
-                    "error": "平仓数量裁剪后为 0（精度不足）"}
+            return _fail_result("平仓数量裁剪后为 0（精度不足）", "INVALID_QUANTITY", order_id="", price=0, amount=0)
 
         order = exchange.create_order(
             symbol=symbol, type='market', side=side,
@@ -701,7 +718,7 @@ def execute_okx_close_position(symbol: str, direction: str, amount: float,
 
     except Exception as e:
         logger.error(f"❌ OKX 平仓失败 ({symbol}): {e}")
-        return {"success": False, "order_id": "", "price": 0, "amount": 0, "error": str(e)}
+        return _fail_result(str(e), _classify_exec_error(e), order_id="", price=0, amount=0)
 
 
 def check_okx_balance(account_id: Optional[str] = None) -> dict:

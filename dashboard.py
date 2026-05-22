@@ -1086,6 +1086,14 @@ if __name__ == '__main__':
         print("   API认证: 已启用（X-Dashboard-Token，常量时间比较）")
     else:
         print("   API认证: ⚠️  未设置 DASHBOARD_TOKEN（开放访问，仅限局域网）")
+    _allow_insecure = os.environ.get('ALLOW_INSECURE_DASHBOARD', '0') == '1'
+    _bind_host = os.environ.get('DASHBOARD_BIND', '0.0.0.0')
+    _is_loopback_only = _bind_host in ('127.0.0.1', 'localhost')
+    if not _token and not _allow_insecure and not _is_loopback_only:
+        print('❌ 安全检查失败: 未设置 DASHBOARD_TOKEN 且绑定非本机地址。')
+        print('   请设置 DASHBOARD_TOKEN，或改 DASHBOARD_BIND=127.0.0.1，')
+        print('   或临时设置 ALLOW_INSECURE_DASHBOARD=1（不推荐）。')
+        raise SystemExit(2)
     print("   实时推送间隔: 10秒")
     print("   按 Ctrl+C 停止")
 
@@ -1094,4 +1102,4 @@ if __name__ == '__main__':
     # 是 unsafe 的（会偶尔与 hub 写出竞争）。
     socketio.start_background_task(background_push)
 
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    socketio.run(app, host=_bind_host, port=port, debug=False)

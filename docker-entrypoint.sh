@@ -71,4 +71,17 @@ done
 # 缓存目录（这个本来就该是目录，不需要 fix）
 mkdir -p /app/backtest_cache
 
+# 启动前语法校验（防止定时任务因语法错误静默失效）
+if [ "${SKIP_PY_COMPILE_CHECK:-0}" != "1" ]; then
+    echo "[entrypoint] 运行 python3 -m compileall 语法校验..."
+    python3 -m compileall -q /app
+
+# 敏感文件权限加固（仅在文件存在时执行）
+for sf in /app/.env /app/admin_secrets.json /app/runtime_config.json /app/admin_audit.log /app/.admin_ratelimit.json; do
+    if [ -f "$sf" ]; then
+        chmod 600 "$sf" 2>/dev/null || true
+    fi
+done
+fi
+
 exec "$@"

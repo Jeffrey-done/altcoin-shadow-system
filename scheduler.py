@@ -58,6 +58,12 @@ logger = setup_logger("scheduler")
 _MP_CTX = multiprocessing.get_context('spawn')
 
 
+def _classify_task_failure(err_text: str) -> str:
+    t = (err_text or '').lower()
+    retry_tokens = ('timeout', 'timed out', 'tempor', 'rate limit', 'too many requests', 'connection reset', 'network', 'dns', 'unavailable')
+    return 'retryable' if any(k in t for k in retry_tokens) else 'non_retryable'
+
+
 def _process_target(module: str, func_name: str, args: tuple, kwargs: dict):
     """
     子进程入口：在新进程里 import 模块并执行函数。
@@ -204,6 +210,7 @@ def run_task(name: str, func, timeout: int = None,
             logger.error(f"[{name}] 子进程异常退出 exitcode={p.exitcode}")
             _metric_status = 'error'
             _metric_error = f"exitcode={p.exitcode}"
+            logger.error(f"[{name}] failure_class={_classify_task_failure(_metric_error)}")
         else:
             logger.info(f"[{name}] 完成")
 
@@ -249,10 +256,12 @@ def run_task(name: str, func, timeout: int = None,
         send_tg(f"⚠️ <b>任务超时</b>\n\n任务: {name}\n超时: {timeout}s\n已尝试终止线程")
         _metric_status = 'timeout'
         _metric_error = f"超过 {timeout}s（线程模式无法强杀）"
+        logger.error(f"[{name}] failure_class={_classify_task_failure(_metric_error)}")
     elif exception[0]:
         logger.error(f"[{name}] 异常: {exception[0]}\n{traceback.format_exc()}")
         _metric_status = 'error'
         _metric_error = f"{exception[0].__class__.__name__}: {exception[0]}"
+        logger.error(f"[{name}] failure_class={_classify_task_failure(_metric_error)}")
     else:
         logger.info(f"[{name}] 完成")
 
@@ -314,6 +323,8 @@ def _try_kill_thread(thread: threading.Thread) -> bool:
 # ══════════════════════════════════════════════════════════════════
 
 _last_run: dict = {}  # task_name -> datetime (UTC)
+_health_audit_fail_streak: int = 0
+_health_audit_last_alert_ts: float = 0.0
 
 
 def _due_for_hourly(name: str, now: datetime, minute_offset: int) -> bool:
@@ -376,6 +387,7 @@ def _mark_done(name: str, now: datetime):
 
 
 def main_loop():
+    global _health_audit_fail_streak, _health_audit_last_alert_ts
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
     logger.info("=== 调度器启动 v4.2 ===")
     logger.info("  频率: scan_daily=1h | check_candidates=15min | tracker=10min")
@@ -615,13 +627,34 @@ def main_loop():
         if _due_for_minutes('health_audit_all', now, 15):
             def _run_health_audit_all():
                 import subprocess
-                try:
-                    subprocess.run(['python3', 'health_audit.py', '--all', '--tg'], check=False)
-                except Exception as e:
-                    logger.warning(f"health_audit --all 执行失败: {e}")
-            run_task("健康审计(全账号)", _run_health_audit_all)
-            _mark_done('health_audit_all', now)
+                res = subprocess.run(['python3', 'health_audit.py', '--all', '--tg'], check=False)
+                if res.returncode != 0:
+                    raise RuntimeError(f'health_audit exited with code {res.returncode}')
 
+            run_task("健康审计(全账号)", _run_health_audit_all)
+
+            try:
+                import task_metrics as _tm
+                _evs = _tm.read_recent(limit=1, name="健康审计(全账号)")
+                if _evs:
+                    _st = (_evs[0].get('status') or '').lower()
+                    if _st in ('error', 'timeout', 'killed'):
+                        _health_audit_fail_streak += 1
+                    elif _st == 'ok':
+                        _health_audit_fail_streak = 0
+                if _health_audit_fail_streak >= 3 and (time.time() - _health_audit_last_alert_ts) >= 1800:
+                    from common import send_tg
+                    send_tg(
+                        f"🚨 <b>健康审计连续失败告警</b>\n\n"
+                        f"任务: 健康审计(全账号)\n"
+                        f"连续失败次数: {_health_audit_fail_streak}\n"
+                        f"请尽快检查 scheduler / health_audit 日志"
+                    )
+                    _health_audit_last_alert_ts = time.time()
+            except Exception as _e:
+                logger.debug(f"health_audit 连续失败计数更新异常: {_e}")
+
+            _mark_done('health_audit_all', now)
         # ── 每 6 小时 :45 健康检查 ──
         if _due_for_interval('health_check', now, 6, 45):
             from health_check import run_health_check
