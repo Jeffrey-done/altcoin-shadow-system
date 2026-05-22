@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
-from common import setup_logger
+from common import setup_logger, log_execution_event
 
 logger = setup_logger("scheduler")
 
@@ -325,6 +325,7 @@ def _try_kill_thread(thread: threading.Thread) -> bool:
 _last_run: dict = {}  # task_name -> datetime (UTC)
 _health_audit_fail_streak: int = 0
 _health_audit_last_alert_ts: float = 0.0
+_position_reconcile_last_alert_ts: float = 0.0
 
 
 def _due_for_hourly(name: str, now: datetime, minute_offset: int) -> bool:
@@ -387,7 +388,7 @@ def _mark_done(name: str, now: datetime):
 
 
 def main_loop():
-    global _health_audit_fail_streak, _health_audit_last_alert_ts
+    global _health_audit_fail_streak, _health_audit_last_alert_ts, _position_reconcile_last_alert_ts
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
     logger.info("=== 调度器启动 v4.2 ===")
     logger.info("  频率: scan_daily=1h | check_candidates=15min | tracker=10min")
@@ -555,6 +556,86 @@ def main_loop():
                 process_module='altcoin_scanner', process_func='check_candidates',
             )
             _mark_done('check_candidates', now)
+
+
+        # ── 每 10 分钟持仓对账（Binance/OKX 真实持仓 vs 本地 open trades）──
+        if _due_for_minutes('position_reconcile', now, 10):
+            def _position_reconcile():
+                try:
+                    from common import load_json, TRADES_FILE
+                    from live_executor import get_binance_position_amount
+                    from exchange_manager import get_okx
+                    trades = load_json(TRADES_FILE, [])
+                    open_trades = [t for t in trades if t.get('status') == 'open' and t.get('exchange') in ('binance', 'okx')]
+                    if not open_trades:
+                        return
+
+                    diffs = 0
+                    # Binance: 按 symbol+account 聚合本地数量，再和交易所对比
+                    by_key = {}
+                    for t in open_trades:
+                        ex = t.get('exchange')
+                        if ex not in ('binance', 'okx'):
+                            continue
+                        key = (ex, t.get('symbol'), t.get('direction', 'SHORT'), t.get('account_id') or '')
+                        by_key[key] = by_key.get(key, 0.0) + float(t.get('amount') or 0)
+
+                    for (ex, symbol, direction, account_id), local_amount in by_key.items():
+                        if local_amount <= 0:
+                            continue
+                        remote_amount = 0.0
+                        if ex == 'binance':
+                            remote_amount = float(get_binance_position_amount(symbol, direction, account_id=account_id or None))
+                        else:
+                            # OKX 暂用 fetch_positions 轻量读取
+                            okx = get_okx(authenticated=True)
+                            if okx:
+                                try:
+                                    m = okx.market(symbol)
+                                    ex_symbol = m.get('symbol') or m.get('id') or symbol
+                                    poss = okx.fetch_positions([ex_symbol])
+                                    want = (direction or 'SHORT').upper()
+                                    for pos in poss:
+                                        side = str(pos.get('side') or '').lower()
+                                        contracts = float(pos.get('contracts') or 0)
+                                        if want == 'SHORT' and side == 'short':
+                                            remote_amount = max(remote_amount, contracts)
+                                        if want == 'LONG' and side == 'long':
+                                            remote_amount = max(remote_amount, contracts)
+                                except Exception:
+                                    pass
+
+                        # 2% + 绝对 1 合约容忍，避免精度噪声
+                        tol = max(1.0, local_amount * 0.02)
+                        if abs(local_amount - remote_amount) > tol:
+                            diffs += 1
+                            log_execution_event(
+                                'position_reconcile_diff',
+                                exchange=ex,
+                                symbol=symbol,
+                                direction=direction,
+                                account_id=account_id,
+                                local_amount=round(local_amount, 8),
+                                remote_amount=round(remote_amount, 8),
+                                tolerance=round(tol, 8),
+                            )
+                    if diffs > 0:
+                        logger.warning(f"持仓对账发现 {diffs} 处差异")
+                        now_ts = time.time()
+                        if (now_ts - _position_reconcile_last_alert_ts) >= 600:
+                            from common import send_tg
+                            send_tg(
+                                f"⚠️ <b>持仓对账差异告警</b>\n\n"
+                                f"发现差异: {diffs} 处\n"
+                                f"任务: 持仓对账(10分钟轮询)\n"
+                                f"请检查 execution_events.jsonl 的 position_reconcile_diff 事件"
+                            )
+                            _position_reconcile_last_alert_ts = now_ts
+                except Exception as e:
+                    logger.warning(f"持仓对账异常（非致命）: {e}")
+
+            run_task("持仓对账", _position_reconcile)
+            _mark_done('position_reconcile', now)
 
         # ── 每 5 分钟同步一次交易所/本地状态（防止条件单状态滞后）──
         if _due_for_minutes('exchange_reconcile', now, 5):

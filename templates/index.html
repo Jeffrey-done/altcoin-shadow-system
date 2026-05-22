@@ -57,6 +57,18 @@
     </div>
 </div>
 
+<!-- 执行与对账指标 -->
+<div class="card" style="margin-bottom:16px;border:1px solid rgba(34,197,94,.35);">
+    <div class="section-title"><i data-lucide="activity"></i> 执行与对账</div>
+    <div class="grid grid-4" id="exec-metrics">
+        <div><span class="card-sub">开仓成功率</span><div style="font-weight:600;" id="exec-open-rate">--</div></div>
+        <div><span class="card-sub">平仓成功率</span><div style="font-weight:600;" id="exec-close-rate">--</div></div>
+        <div><span class="card-sub">开仓失败数</span><div style="font-weight:600;" id="exec-open-failed">--</div></div>
+        <div><span class="card-sub">对账差异事件</span><div style="font-weight:600;" id="exec-reconcile-diff">--</div></div>
+    </div>
+    <div id="exec-recent-errors" style="margin-top:8px;font-size:0.72rem;color:var(--text-muted);"></div>
+</div>
+
 <!-- 仓位使用 -->
 <div class="card" style="margin-bottom:16px;">
     <div class="section-title"><i data-lucide="pie-chart"></i> 仓位占用</div>
@@ -68,12 +80,14 @@
 <div class="card" style="margin-bottom:16px;">
     <div class="section-title"><i data-lucide="filter"></i> 交易模式</div>
     <div class="filter-tabs" id="mode-filter">
-        <button class="filter-tab active" data-mode="all">全部</button>
+        <button class="filter-tab" data-mode="all">全部</button>
         <button class="filter-tab" data-mode="shadow">影子</button>
-        <button class="filter-tab" data-mode="live">实盘</button>
+        <button class="filter-tab active" data-mode="live">实盘</button>
     </div>
     <div id="mode-summary" style="margin-top:10px;font-size:0.75rem;color:var(--text-muted);"></div>
 </div>
+
+
 
 <!-- 做空持仓 -->
 <div class="card" id="short-positions-table" data-direction="SHORT" style="margin-bottom:16px;">
@@ -171,7 +185,7 @@
 document.addEventListener('DOMContentLoaded', function () {
 const socket = io();
 let lastDashboardData = null;
-let currentMode = 'all';
+let currentMode = 'live';
 // 前端视图当前选中的账户（仅影响前端展示，不改后台活跃账户）
 const _urlAccountId = new URLSearchParams(window.location.search).get('account_id');
 let selectedAccountId = _urlAccountId || localStorage.getItem('dashboard-selected-account') || null;
@@ -204,6 +218,60 @@ function updateModeSummary(data) {
     if (currentMode === 'all') el.innerHTML = `显示全部 | 影子: ${shadowCount} 笔 | 实盘: ${liveCount} 笔`;
     else if (currentMode === 'shadow') el.innerHTML = `仅影子交易（${shadowCount} 笔）`;
     else el.innerHTML = `仅实盘交易（${liveCount} 笔）`;
+}
+
+
+async function fetchExecutionMetrics() {
+    try {
+        const qs = selectedAccountId ? ('?account_id=' + encodeURIComponent(selectedAccountId)) : '';
+        const windowQs = (qs ? qs + '&' : '?') + 'minutes=60';
+        const resp = await fetch('/api/metrics/execution' + windowQs);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderExecutionMetrics(data);
+    } catch (e) {
+        console.warn('[执行指标] 获取失败:', e);
+    }
+}
+
+function renderExecutionMetrics(data) {
+    const o = data.open_orders || {};
+    const c = data.close_orders || {};
+    const r = data.reconcile || {};
+    const openRate = Number(o.success_rate || 0);
+    const closeRate = Number(c.success_rate || 0);
+
+    const elOpen = document.getElementById('exec-open-rate');
+    const elClose = document.getElementById('exec-close-rate');
+    const elOpenFail = document.getElementById('exec-open-failed');
+    const elDiff = document.getElementById('exec-reconcile-diff');
+    if (!elOpen || !elClose || !elOpenFail || !elDiff) return;
+
+    elOpen.textContent = openRate.toFixed(1) + '%';
+    elOpen.className = openRate >= 95 ? 'green' : (openRate >= 85 ? 'yellow' : 'red');
+
+    elClose.textContent = closeRate.toFixed(1) + '%';
+    elClose.className = closeRate >= 95 ? 'green' : (closeRate >= 85 ? 'yellow' : 'red');
+
+    elOpenFail.textContent = String(o.failed || 0);
+    elOpenFail.className = (o.failed || 0) > 0 ? 'red' : 'green';
+
+    elDiff.textContent = String(r.diff_events || 0);
+    elDiff.className = (r.diff_events || 0) > 0 ? 'yellow' : 'green';
+
+    const recent = data.recent_errors || [];
+    const errEl = document.getElementById('exec-recent-errors');
+    if (!errEl) return;
+    if (!recent.length) {
+        errEl.textContent = '最近60分钟无执行失败事件';
+        return;
+    }
+    errEl.innerHTML = '最近失败: ' + recent.slice(0, 3).map(e => {
+        const sym = e.symbol || '--';
+        const ex = e.exchange || '--';
+        const msg = (e.error || '').slice(0, 60);
+        return `[${ex}] ${sym}: ${msg}`;
+    }).join(' | ');
 }
 
 function updateDashboard(data) {
@@ -361,7 +429,9 @@ PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
 });
 // 获取多账户总览
 fetchAccountsOverview();
+fetchExecutionMetrics();
 setInterval(fetchAccountsOverview, 15000);
+setInterval(fetchExecutionMetrics, 15000);
 lucide.createIcons();
 
 // ── 账户卡片点击切换 ──
@@ -402,6 +472,7 @@ async function refreshDashboardForSelection() {
         if (!resp.ok) return;
         const data = await resp.json();
         updateDashboard(data);
+        fetchExecutionMetrics();
         PnlChart.update(data.pnl_chart);
         BinanceWS.lastData = data;
         const symbols = new Set();

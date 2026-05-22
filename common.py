@@ -6,10 +6,12 @@
 
 import html as _html
 import json
+import hashlib
 import logging
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -94,6 +96,65 @@ TG_BOT_TOKEN, TG_CHAT_ID = load_env()
 
 
 # ── 日志配置 ─────────────────────────────────────────────────────
+
+
+# ── 执行事件/幂等工具 ─────────────────────────────────────────────
+EXECUTION_EVENTS_FILE = os.path.join(SCRIPT_DIR, 'execution_events.jsonl')
+
+
+def utc_now_iso() -> str:
+    """UTC ISO 时间戳，统一事件时间格式。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def now_ms() -> int:
+    """当前 UTC 毫秒时间戳。"""
+    return int(time.time() * 1000)
+
+
+def make_idempotency_key(strategy_id: str, signal_id: str, symbol: str, bucket_ts: int) -> str:
+    """生成稳定幂等键（binance/okx 通用的原始 key）。"""
+    raw = f"{strategy_id}|{signal_id}|{symbol}|{bucket_ts}"
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:24]
+
+
+
+
+def _rotate_execution_events_if_needed() -> None:
+    """按 UTC 天滚动 execution_events.jsonl，文件名后缀为 .YYYY-MM-DD.jsonl。"""
+    try:
+        if not os.path.exists(EXECUTION_EVENTS_FILE):
+            return
+        mtime = os.path.getmtime(EXECUTION_EVENTS_FILE)
+        file_day = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime('%Y-%m-%d')
+        today_day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        if file_day == today_day:
+            return
+        archived = EXECUTION_EVENTS_FILE.replace('.jsonl', f'.{file_day}.jsonl')
+        idx = 1
+        while os.path.exists(archived):
+            archived = EXECUTION_EVENTS_FILE.replace('.jsonl', f'.{file_day}.{idx}.jsonl')
+            idx += 1
+        os.replace(EXECUTION_EVENTS_FILE, archived)
+    except Exception as e:
+        logging.warning(f"execution_events 滚动失败: {e}")
+
+def log_execution_event(event_type: str, **kwargs) -> None:
+    """追加一条结构化执行事件（JSONL），失败不抛异常。"""
+    record = {'ts': utc_now_iso(), 'event_type': event_type}
+    record.update(kwargs)
+    try:
+        line = json.dumps(record, ensure_ascii=False) + '\n'
+        lockfile = EXECUTION_EVENTS_FILE + '.lock'
+        with open(lockfile, 'a') as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            _rotate_execution_events_if_needed()
+            with open(EXECUTION_EVENTS_FILE, 'a', encoding='utf-8') as f:
+                f.write(line)
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except Exception as e:
+        logging.warning(f"log_execution_event 失败: {e}")
+
 def setup_logger(name: str) -> logging.Logger:
     """统一日志格式，支持 LOG_LEVEL 环境变量"""
     level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()

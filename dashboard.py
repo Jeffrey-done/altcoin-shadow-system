@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from common import (
     TRADES_FILE, CANDIDATES_FILE, RISK_FILE,
-    WEEKLY_REPORT_FILE,
+    WEEKLY_REPORT_FILE, EXECUTION_EVENTS_FILE,
     load_json, utcnow_iso, today_str, get_dynamic_balance, get_compound_stake,
     get_current_account_id, filter_trades_by_account, account_param,
 )
@@ -373,6 +373,116 @@ def get_dashboard_data(account_id: str = None) -> dict:
         'account_id': account_id or '',
         'timestamp': utcnow_iso(),
     }
+
+
+def _read_tail_lines(path: str, max_lines: int = 1500) -> list:
+    """Read tail lines from text file safely."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        if len(lines) <= max_lines:
+            return lines
+        return lines[-max_lines:]
+    except Exception:
+        return []
+
+
+def _build_execution_metrics(account_id: str = None, minutes: int = 0) -> dict:
+    """Build lightweight execution/reconcile metrics from execution events."""
+    lines = _read_tail_lines(EXECUTION_EVENTS_FILE, max_lines=2000)
+    cutoff_dt = None
+    if minutes and minutes > 0:
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    total_created = 0
+    total_filled = 0
+    total_failed = 0
+    close_created = 0
+    close_filled = 0
+    close_failed = 0
+    reconcile_diffs = 0
+    recent_errors = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+
+        if cutoff_dt is not None:
+            ts = ev.get('ts', '')
+            try:
+                ev_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                if ev_dt.tzinfo is None:
+                    ev_dt = ev_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if ev_dt < cutoff_dt:
+                continue
+
+        if account_id is not None:
+            ev_acc = (ev.get('account_id') or '').strip()
+            if ev_acc != (account_id or '').strip():
+                continue
+
+        et = ev.get('event_type', '')
+        if et == 'order_created':
+            total_created += 1
+        elif et == 'order_filled':
+            total_filled += 1
+        elif et == 'order_failed':
+            total_failed += 1
+            if len(recent_errors) < 5:
+                recent_errors.append({
+                    'ts': ev.get('ts', ''),
+                    'symbol': ev.get('symbol', ''),
+                    'exchange': ev.get('exchange', ''),
+                    'error': ev.get('error', ''),
+                })
+        elif et == 'close_created':
+            close_created += 1
+        elif et == 'close_filled':
+            close_filled += 1
+        elif et == 'close_failed':
+            close_failed += 1
+            if len(recent_errors) < 5:
+                recent_errors.append({
+                    'ts': ev.get('ts', ''),
+                    'symbol': ev.get('symbol', ''),
+                    'exchange': ev.get('exchange', ''),
+                    'error': ev.get('error', ''),
+                })
+        elif et == 'position_reconcile_diff':
+            reconcile_diffs += 1
+
+    open_success_rate = round((total_filled / total_created) * 100, 1) if total_created > 0 else 0.0
+    close_success_rate = round((close_filled / close_created) * 100, 1) if close_created > 0 else 0.0
+
+    return {
+        'open_orders': {
+            'created': total_created,
+            'filled': total_filled,
+            'failed': total_failed,
+            'success_rate': open_success_rate,
+        },
+        'close_orders': {
+            'created': close_created,
+            'filled': close_filled,
+            'failed': close_failed,
+            'success_rate': close_success_rate,
+        },
+        'reconcile': {
+            'diff_events': reconcile_diffs,
+        },
+        'recent_errors': recent_errors,
+        'window_minutes': int(minutes or 0),
+        'updated_at': utcnow_iso(),
+    }
+
 
 
 def _get_risk_history(pnl_history: dict) -> list:
@@ -884,6 +994,23 @@ def api_trades_filtered():
             'win_rate': win_rate,
         }
     })
+
+
+@app.route('/api/metrics/execution')
+@check_api_token
+def api_metrics_execution():
+    """Return execution/reconcile metrics derived from execution events."""
+    account_id = request.args.get('account_id', '').strip() or None
+    try:
+        minutes = int(request.args.get('minutes', '0').strip() or 0)
+    except Exception:
+        minutes = 0
+    if minutes < 0:
+        minutes = 0
+    if minutes > 7 * 24 * 60:
+        minutes = 7 * 24 * 60
+    data = _build_execution_metrics(account_id, minutes=minutes)
+    return _make_etag_response(data)
 
 
 @app.route('/api/pnl/compare')

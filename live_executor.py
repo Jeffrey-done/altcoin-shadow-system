@@ -30,7 +30,7 @@ from typing import Optional
 import ccxt
 
 import config
-from common import setup_logger
+from common import setup_logger, log_execution_event, make_idempotency_key, now_ms
 from exchange_manager import get_okx
 
 logger = setup_logger("live_executor")
@@ -51,6 +51,31 @@ def _classify_exec_error(exc: Exception) -> str:
         return 'AUTH_FAILED'
     return 'EXCHANGE_ERROR'
 
+
+
+
+def _ensure_client_order_id(client_order_id: Optional[str], prefix: str, symbol: str, exchange_name: str) -> str:
+    """若上层未传入幂等键，则自动生成稳定可追踪的 client_order_id。"""
+    if client_order_id:
+        return client_order_id
+    bucket = now_ms() // 60000
+    raw = make_idempotency_key('altcoin_shadow', prefix, symbol, bucket)
+    ts = now_ms()
+    if exchange_name == 'okx':
+        # OKX 只允许字母数字，长度 <= 32
+        return (prefix[:3] + raw + str(ts)[-4:])[:32]
+    base = symbol.replace('/USDT', '').replace('/', '').replace('-', '')
+    return f"{prefix}-{base}-{str(ts)[-6:]}-{raw[:10]}"[:36]
+
+
+def _event_base(exchange_name: str, symbol: str, direction: str, client_order_id: str, account_id: Optional[str]) -> dict:
+    return {
+        'exchange': exchange_name,
+        'symbol': symbol,
+        'direction': direction,
+        'client_order_id': client_order_id,
+        'account_id': account_id or '',
+    }
 
 def _fail_result(msg: str, code: str, **kwargs) -> dict:
     d = {'success': False, 'error': msg, 'error_code': code}
@@ -769,21 +794,43 @@ def execute_open(symbol: str, direction: str, stake: float,
     参数:
       exchange_name: 'binance' | 'okx'
       direction: 'SHORT' | 'LONG'
-      client_order_id: 幂等键；若为 None，上层应传入 symbol+timestamp 的拼接串
+      client_order_id: 幂等键；若为 None，系统自动生成
       account_id: 指定账户 ID（多账户并行模式）；None 使用活跃账户
     """
+    prefix = 'osh' if direction == 'SHORT' else 'oln'
+    effective_coid = _ensure_client_order_id(client_order_id, prefix, symbol, exchange_name)
+    base = _event_base(exchange_name, symbol, direction, effective_coid, account_id)
+    log_execution_event('order_created', stake=stake, leverage=leverage or 0, **base)
+
     if exchange_name == 'okx':
         lev = leverage or config.OKX_DEFAULT_LEVERAGE
         if direction == 'SHORT':
-            return execute_okx_open_short(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
+            result = execute_okx_open_short(symbol, stake, lev, client_order_id=effective_coid, account_id=account_id)
         else:
-            return execute_okx_open_long(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
+            result = execute_okx_open_long(symbol, stake, lev, client_order_id=effective_coid, account_id=account_id)
     else:
         lev = leverage or config.LEVERAGE
         if direction == 'SHORT':
-            return execute_open_short(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
+            result = execute_open_short(symbol, stake, lev, client_order_id=effective_coid, account_id=account_id)
         else:
-            return execute_open_long(symbol, stake, lev, client_order_id=client_order_id, account_id=account_id)
+            result = execute_open_long(symbol, stake, lev, client_order_id=effective_coid, account_id=account_id)
+
+    if result.get('success'):
+        log_execution_event(
+            'order_filled',
+            order_id=result.get('order_id', ''),
+            fill_price=result.get('price', 0),
+            fill_amount=result.get('amount', 0),
+            **base,
+        )
+    else:
+        log_execution_event(
+            'order_failed',
+            error=result.get('error', ''),
+            error_code=result.get('error_code', ''),
+            **base,
+        )
+    return result
 
 
 def execute_close(symbol: str, direction: str, amount: float,
@@ -797,15 +844,38 @@ def execute_close(symbol: str, direction: str, amount: float,
     参数:
       account_id: 指定账户 ID（多账户模式）；None 使用活跃账户
     """
+    prefix = 'csh' if direction == 'SHORT' else 'cln'
+    effective_coid = _ensure_client_order_id(client_order_id, prefix, symbol, exchange_name)
+    base = _event_base(exchange_name, symbol, direction, effective_coid, account_id)
+    log_execution_event('close_created', amount=amount, **base)
+
     if exchange_name == 'shadow':
-        return {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
-    if exchange_name == 'okx':
-        return execute_okx_close_position(symbol, direction, amount,
-                                          client_order_id=client_order_id,
-                                          account_id=account_id)
-    return execute_close_position(symbol, direction, amount,
-                                  client_order_id=client_order_id,
-                                  account_id=account_id)
+        result = {"success": True, "order_id": "SHADOW", "price": 0, "amount": amount, "error": ""}
+    elif exchange_name == 'okx':
+        result = execute_okx_close_position(symbol, direction, amount,
+                                            client_order_id=effective_coid,
+                                            account_id=account_id)
+    else:
+        result = execute_close_position(symbol, direction, amount,
+                                        client_order_id=effective_coid,
+                                        account_id=account_id)
+
+    if result.get('success'):
+        log_execution_event(
+            'close_filled',
+            order_id=result.get('order_id', ''),
+            fill_price=result.get('price', 0),
+            fill_amount=result.get('amount', 0),
+            **base,
+        )
+    else:
+        log_execution_event(
+            'close_failed',
+            error=result.get('error', ''),
+            error_code=result.get('error_code', ''),
+            **base,
+        )
+    return result
 
 
 def make_client_order_id(prefix: str, symbol: str, exchange_name: str = 'binance',
