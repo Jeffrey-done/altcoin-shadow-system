@@ -39,8 +39,25 @@ def _run(cmd: str) -> str:
     return (p.stdout or '') + (p.stderr or '')
 
 
-def check_services() -> CheckResult:
+def check_services(mode: str = 'auto') -> CheckResult:
+    """
+    mode:
+      - auto: 容器内无 docker cli 时跳过；有 docker 时严格检查
+      - host: 强制严格检查（无 docker 视为 FAIL）
+      - skip: 跳过服务检查
+    """
+    mode = (mode or 'auto').strip().lower()
+    if mode == 'skip':
+        return CheckResult('WARN', 'services', 'service check skipped by config')
+
     out = _run("docker ps --format '{{.Names}}\t{{.Status}}'")
+    low = out.lower()
+    no_docker = ('docker: not found' in low or 'not recognized as an internal or external command' in low)
+    if no_docker:
+        if mode == 'auto':
+            return CheckResult('WARN', 'services', 'docker cli unavailable in runtime, skip container service check')
+        return CheckResult('FAIL', 'services', 'docker cli unavailable but services-check=host required')
+
     missing = []
     bad = []
     lines = [x.strip() for x in out.splitlines() if x.strip()]
@@ -59,6 +76,22 @@ def check_services() -> CheckResult:
     return CheckResult('PASS', 'services', 'all core services are up')
 
 
+
+
+def _is_account_live_expected(account_id: str) -> bool:
+    """判断该账号当前是否处于"预期实盘"状态。"""
+    try:
+        from admin_secrets import list_accounts
+        acc = next((a for a in (list_accounts() or []) if a.get('id') == account_id), None)
+        if not acc:
+            return False
+        trading_enabled = bool(acc.get('trading_enabled', True))
+        has_binance = bool(acc.get('has_binance', False))
+        # 只针对当前审计里的 binance 交易检查
+        return trading_enabled and has_binance
+    except Exception:
+        return False
+
 def _to_fapi_symbol(ccxt_symbol: str) -> str:
     return ccxt_symbol.replace('/USDT', 'USDT').replace('/', '')
 
@@ -71,7 +104,10 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
         if t.get('status') == 'open' and t.get('exchange') == 'binance' and t.get('account_id') == account_id
     ]
     if not live_open:
-        rs.append(CheckResult('WARN', 'live_open_trades', f'no open binance trades for {account_id}'))
+        if _is_account_live_expected(account_id):
+            rs.append(CheckResult('WARN', 'live_open_trades', f'no open binance trades for {account_id}'))
+        else:
+            rs.append(CheckResult('PASS', 'live_open_trades', f'account {account_id} not in expected binance live mode'))
         return rs
 
     ex = get_live_exchange(account_id)
@@ -174,10 +210,12 @@ def main() -> int:
     parser.add_argument("--account", default="acc_1698bb553ce0", help="account id for live checks")
     parser.add_argument("--all", action="store_true", help="check all trading accounts")
     parser.add_argument("--tg", action="store_true", help="send TG when overall WARN/FAIL")
+    parser.add_argument("--services-check", default="auto", choices=["auto", "host", "skip"],
+                        help="service check mode: auto|host|skip")
     args = parser.parse_args()
     account_id = args.account
     results: List[CheckResult] = []
-    results.append(check_services())
+    results.append(check_services(args.services_check))
 
     if args.all:
         try:
