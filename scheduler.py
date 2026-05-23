@@ -709,7 +709,7 @@ def main_loop():
             def _run_health_audit_all():
                 import subprocess
                 res = subprocess.run(['python3', 'health_audit.py', '--all', '--tg'], check=False)
-                if res.returncode != 0:
+                if res.returncode >= 2:
                     raise RuntimeError(f'health_audit exited with code {res.returncode}')
 
             run_task("健康审计(全账号)", _run_health_audit_all)

@@ -268,8 +268,25 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         )
         logger.info(f"[TP1] {trade.symbol} @ {current_price}, 锁定 {locked_pnl:+.2f}U, 保本止损已激活")
 
+    # TP2 跳空穿越保护：如果价格一次穿越 TP1 和 TP2（跳空行情），
+    # 直接全平 TP1 + TP2 两档，避免只平 TP1 后剩余仓位开回错过 TP2
+    if tp1_hit and trade.take_profit_2:
+        if (trade.direction == 'SHORT' and current_price <= trade.take_profit_2) or            (trade.direction == 'LONG' and current_price >= trade.take_profit_2):
+            trade.tp1_triggered = True
+            trade.current_price = current_price
+            # 合并 TP1 和 TP2：TP1 半仓已设，修改 close_type 让后续全平剩余 50%
+            result.pending_exchange_action = 'tp2'
+            result.pending_close_amount = trade.shares  # 全平
+            result.alert_msg = (
+                f"🎯 <b>两档止盈同时触发（TP2跳空穿越）</b>\n\n"
+                f"币种：<b>{trade.symbol}</b>\n"
+                f"入场价：{trade.entry_price:.5f} → 现价：{current_price:.5f}\n"
+                f"价格一次穿越 TP1 和 TP2，全仓平仓 ✅"
+            )
+            logger.info(f"[TP2-GAP] {trade.symbol} @ {current_price}, 跳空穿越 TP1+TP2 全平")
+            return result
+
     # TP1 刚触发时不再继续检查 TP2（避免同 tick 双触发导致平仓数量错误）
-    # 下一次 evaluate 时 tp1_triggered 已为 True、remaining_shares 会正确反映 50% 仓位
     if tp1_hit:
         trade.current_price = current_price
         return result
@@ -483,8 +500,28 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
 
     from live_executor import execute_close, make_client_order_id, cancel_binance_open_orders, place_binance_stage2_after_tp1, get_binance_position_amount
 
+    # 去重保护：在锁内写入 close_in_progress，防止 tracker 和 realtime_monitor 同时发单
+    # 两个进程都看到 close_in_progress==null → 都发市价单 → 仓位过度平仓
+    from common import LockedJsonFile, TRADES_FILE
+    _dedup_signal = None
+    try:
+        with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=2) as (_td, _tsv):
+            for _tt in _td:
+                if _tt.get('id') == trade.id:
+                    _existing = _tt.get('close_in_progress')
+                    if _existing:
+                        _dedup_signal = _existing
+                        break
+                    _tt['close_in_progress'] = action
+                    _tsv(_td)
+                    break
+    except Exception:
+        pass
+    if _dedup_signal:
+        logger.info(f"⏩ 跳过重复平仓（close_in_progress={_dedup_signal}）: {trade.symbol}")
+        return
+
     # 幂等键：同一笔交易的同一次动作（tp1 vs close）用稳定 ID
-    # 这样即便 tracker 和 realtime_monitor 同时触发，交易所只会接受一次
     prefix = 'tp1' if action == 'tp1_partial' else 'cls'
     coid = make_client_order_id(prefix, f"{trade.id[:10]}{trade.symbol}",
                                  exchange_name=trade.exchange)
@@ -623,7 +660,18 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
             logger.debug(f"回填 close_order_id 失败（非致命）: {e}")
 
     import threading as _threading
-    _threading.Thread(target=_backfill_order_id, daemon=True).start()
+    _backfill_order_id()
+
+    # 清理 close_in_progress 标记
+    try:
+        with LockedJsonFile(TRADES_FILE) as (_td_c, _sv_c):
+            for _t_c in _td_c:
+                if _t_c.get('id') == trade.id:
+                    _t_c.pop('close_in_progress', None)
+                    _sv_c(_td_c)
+                    break
+    except Exception:
+        pass
 
     logger.info(
         f"✅ [{trade.exchange}] 实盘平仓成功: {trade.symbol} | "
@@ -780,6 +828,34 @@ def run(check_only: bool = False):
                 trade.trail_stop_price = entry
                 any_updated = True
                 logger.warning(f"🔧 修复保本止损: {trade.symbol} trail_stop {old_val} → {entry}")
+
+        # ── 自动补挂：实盘持仓缺保护单的补挂 ──
+        from live_executor import place_binance_short_protection_split
+        for trade in open_trades:
+            if trade.exchange == 'shadow':
+                continue
+            if trade.protect_stop_algo_id and trade.protect_tp_algo_id:
+                continue
+            logger.warning(f"🔧 检测到缺保护单: {trade.symbol} stop={trade.protect_stop_algo_id} tp={trade.protect_tp_algo_id}")
+            tp1_ratio = float(account_param(trade.account_id, 'TP1_CLOSE_RATIO', config.TP1_CLOSE_RATIO))
+            tp1_amount = trade.shares * tp1_ratio
+            from live_executor import make_client_order_id
+            prot = place_binance_short_protection_split(
+                symbol=trade.symbol,
+                stop_amount=trade.shares,
+                tp_amount=tp1_amount,
+                hard_stop_price=trade.hard_stop_price or 0.0,
+                tp_trigger_price=trade.take_profit_1,
+                account_id=trade.account_id or None,
+                stop_client_order_id=make_client_order_id('st1-repair', trade.symbol, 'binance'),
+                tp_client_order_id=make_client_order_id('tp1-repair', trade.symbol, 'binance'),
+            )
+            if prot.get('success'):
+                trade.protect_stop_algo_id = prot.get('stop_order_id')
+                trade.protect_tp_algo_id = prot.get('tp_order_id')
+                trade.protect_stage = 'stage1'
+                any_updated = True
+                logger.info(f"✅ 补挂保护单成功: {trade.symbol} stop={prot['stop_order_id']} tp={prot['tp_order_id']}")
 
         for trade in open_trades:
             current = _fetch_price_multi_source(binance, trade.symbol)

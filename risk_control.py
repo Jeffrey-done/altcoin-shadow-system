@@ -415,6 +415,72 @@ def record_trade_opened(stake: float = None, strategy: str = 'short',
     )
 
 
+def try_open_trade(stake: float = None, strategy: str = 'short',
+                   account_id: Optional[str] = None) -> tuple:
+    """
+    原子检查并记录开仓。合并 can_open_trade + record_trade_opened 为一个锁事务。
+    返回 (allowed, reason)。如果 allowed=True，说明风控检查通过且状态已更新。
+    """
+    if stake is None:
+        stake = float(account_param(account_id, 'DEFAULT_STAKE',
+                                    config.DEFAULT_STAKE))
+    _max_daily_loss = float(account_param(account_id, 'RISK_MAX_DAILY_LOSS',
+                                          config.RISK_MAX_DAILY_LOSS))
+    _max_daily_trades = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES',
+                                          config.RISK_MAX_DAILY_TRADES))
+    _max_position_pct = float(account_param(account_id, 'RISK_MAX_POSITION_PCT',
+                                            config.RISK_MAX_POSITION_PCT))
+    actual_stake_snapshot = _calc_actual_open_stake(account_id)
+    with LockedJsonFile(RISK_FILE, default={}) as (data, save):
+        state = _state_from_data(data, account_id)
+        dirty = False
+        if state.paused_until:
+            now_ts = time.time()
+            if now_ts < state.paused_until:
+                remaining = state.paused_until - now_ts
+                reason = f"账户暂停中（剩余{remaining:.0f}s）"
+                return False, reason
+            else:
+                state.paused_until = None
+                state.consecutive_losses = 0
+                dirty = True
+        if state.daily_loss >= _max_daily_loss:
+            reason = f"单日亏损已达上限（{state.daily_loss:.2f} >= {_max_daily_loss:.2f}）"
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
+            return False, reason
+        if state.daily_trades_opened >= _max_daily_trades:
+            reason = f"单日开仓次数已达上限（{state.daily_trades_opened} >= {_max_daily_trades}）"
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
+            return False, reason
+        if abs(state.total_open_stake - actual_stake_snapshot) > 0.01:
+            state.total_open_stake = actual_stake_snapshot
+            dirty = True
+        realized_bal = get_realized_balance(account_id=_resolve_account_id(account_id))
+        max_position = realized_bal * _max_position_pct
+        if state.total_open_stake + stake > max_position:
+            reason = (
+                f"持仓占比超限（当前{state.total_open_stake:.0f}U + 新增{stake:.0f}U "
+                f"> 上限{max_position:.0f}U，基于已实现余额{realized_bal:.0f}U）"
+            )
+            if dirty:
+                data = _save_state_in_lock(data, state, account_id)
+                save(data)
+            return False, reason
+        state.daily_trades_opened += 1
+        state.total_open_stake += stake
+        data = _save_state_in_lock(data, state, account_id)
+        save(data)
+    logger.info(
+        f"\U0001f4dd 记录开仓 [{_resolve_account_id(account_id)}]：今日第{state.daily_trades_opened}单，"
+        f"持仓{state.total_open_stake:.0f}U"
+    )
+    return True, "OK"
+
+
 def record_trade_closed(pnl: float, stake: float = None,
                         account_id: Optional[str] = None,
                         trade_account_id: Optional[str] = None) -> None:

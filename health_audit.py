@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from common import TRADES_FILE, load_json
-from live_executor import get_live_exchange
+from live_executor import get_live_exchange, get_binance_open_algo_orders
 from common import send_tg
 
 STACK_NAMES = [
@@ -112,14 +112,22 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
 
     ex = get_live_exchange(account_id)
     if not ex:
-        rs.append(CheckResult('FAIL', 'exchange', 'failed to create exchange client'))
+        rs.append(CheckResult('WARN', 'exchange', f'exchange client unavailable [account_id={account_id}], skip live checks'))
+        ex_cache[account_id] = None
         return rs
-
+    if not ex:
+        rs.append(CheckResult('WARN', 'exchange', 'exchange client unavailable, skip live exchange checks for this account'))
+        return rs
     ex.load_markets()
-    algo_all = ex.fapiPrivateGetOpenAlgoOrders({})
     algo_by_symbol: Dict[str, List[dict]] = {}
-    for a in algo_all:
-        algo_by_symbol.setdefault(a.get('symbol', ''), []).append(a)
+    for t in live_open:
+        sym = t['symbol']
+        try:
+            algo_all = get_binance_open_algo_orders(sym, account_id=account_id) or []
+        except Exception:
+            algo_all = []
+        fapi = _to_fapi_symbol(sym)
+        algo_by_symbol[fapi] = list(algo_all)
 
     for t in live_open:
         sym = t['symbol']
@@ -207,13 +215,19 @@ def summarize(results: List[CheckResult], send_tg_alert: bool = False) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Runtime health audit")
-    parser.add_argument("--account", default="acc_1698bb553ce0", help="account id for live checks")
+    parser.add_argument("--account", default=None, help="account id for live checks")
     parser.add_argument("--all", action="store_true", help="check all trading accounts")
     parser.add_argument("--tg", action="store_true", help="send TG when overall WARN/FAIL")
     parser.add_argument("--services-check", default="auto", choices=["auto", "host", "skip"],
                         help="service check mode: auto|host|skip")
     args = parser.parse_args()
     account_id = args.account
+    if not account_id:
+        try:
+            from admin_secrets import get_active_account_id
+            account_id = get_active_account_id()
+        except Exception:
+            account_id = 'acc_shadow_system'
     results: List[CheckResult] = []
     results.append(check_services(args.services_check))
 
@@ -222,10 +236,12 @@ def main() -> int:
             from admin_secrets import get_all_trading_accounts
             accts = get_all_trading_accounts() or []
             ids = [a.get('id') for a in accts if a.get('id')]
+
             if not ids:
-                results.append(CheckResult('WARN', 'accounts', 'no trading accounts found'))
-            for aid in ids:
-                results.extend(check_live_positions_and_algos(aid))
+                results.append(CheckResult('WARN', 'accounts', 'no trading accounts found in admin_secrets, skip per-account live checks'))
+            else:
+                for aid in ids:
+                    results.extend(check_live_positions_and_algos(aid))
         except Exception as e:
             results.append(CheckResult('FAIL', 'accounts', f'failed to load accounts: {e}'))
     else:

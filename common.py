@@ -450,9 +450,12 @@ def parse_iso(dt_str: str) -> datetime:
     dt_str = dt_str.strip()
     try:
         dt = datetime.fromisoformat(dt_str)
-    except ValueError:
+    except (ValueError, TypeError):
         # 兼容旧格式：截取前 19 位
-        dt = datetime.fromisoformat(dt_str[:19])
+        try:
+            dt = datetime.fromisoformat(str(dt_str)[:19])
+        except (ValueError, TypeError):
+            return utcnow()
 
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

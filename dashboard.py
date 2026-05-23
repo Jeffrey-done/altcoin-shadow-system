@@ -170,6 +170,19 @@ def check_api_token(f):
     return decorated
 
 
+def _require_auth():
+    expected_token = os.environ.get('DASHBOARD_TOKEN', '')
+    if not expected_token:
+        return
+    provided = request.headers.get('X-Dashboard-Token', '')
+    if not hmac.compare_digest(provided, expected_token):
+        raise Unauthorized('Invalid or missing X-Dashboard-Token')
+
+
+class Unauthorized(Exception):
+    pass
+
+
 # ══════════════════════════════════════════════════════════════════
 #  Data Reading
 # ══════════════════════════════════════════════════════════════════
@@ -762,26 +775,31 @@ def _make_etag_response(data):
 
 @app.route('/')
 def index():
+    _require_auth()
     return render_template('index.html')
 
 
 @app.route('/weekly-report')
 def weekly_report_page():
+    _require_auth()
     return render_template('weekly_report.html')
 
 
 @app.route('/batch-backtest')
 def batch_backtest_page():
+    _require_auth()
     return render_template('batch_backtest.html')
 
 
 @app.route('/backtest')
 def backtest_page():
+    _require_auth()
     return render_template('backtest.html')
 
 
 @app.route('/signal-scores')
 def signal_scores_page():
+    _require_auth()
     return render_template('signal_scores.html')
 
 
@@ -1176,6 +1194,15 @@ def api_signal_scores():
 
 @socketio.on('connect')
 def handle_connect():
+    from flask import request as _ws_req
+    token = _ws_req.args.get('token', '')
+    expected_token = os.environ.get('DASHBOARD_TOKEN', '')
+    if expected_token and not hmac.compare_digest(token, expected_token):
+        return False
+    token = request.args.get('token', '') or (request.headers.get('X-Dashboard-Token', '') if hasattr(request, 'headers') else '')
+    expected_token = os.environ.get('DASHBOARD_TOKEN', '')
+    if expected_token and not hmac.compare_digest(token, expected_token):
+        return False
     """新连接时立即推送一次数据（仅给当前 sid，不广播全员）。
 
     修复 B4：之前用 socketio.emit 不带 to=，每个新连接会广播给所有现有客户端，

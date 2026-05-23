@@ -25,6 +25,7 @@
 """
 
 import os
+import threading
 from typing import Optional
 
 import ccxt
@@ -58,9 +59,9 @@ def _ensure_client_order_id(client_order_id: Optional[str], prefix: str, symbol:
     """若上层未传入幂等键，则自动生成稳定可追踪的 client_order_id。"""
     if client_order_id:
         return client_order_id
-    bucket = now_ms() // 60000
-    raw = make_idempotency_key('altcoin_shadow', prefix, symbol, bucket)
     ts = now_ms()
+    raw = make_idempotency_key('altcoin_shadow', prefix, symbol, ts)
+    
     if exchange_name == 'okx':
         # OKX 只允许字母数字，长度 <= 32
         return (prefix[:3] + raw + str(ts)[-4:])[:32]
@@ -88,14 +89,27 @@ def _fail_result(msg: str, code: str, **kwargs) -> dict:
 #  Binance 实盘
 # ══════════════════════════════════════════════════════════════════
 
+_exchange_cache: dict = {}
+_exchange_cache_lock = threading.Lock()
+
+
 def get_live_exchange(account_id: Optional[str] = None):
-    """创建已认证的 Binance 合约交易所实例
+    """创建已认证的 Binance 合约交易所实例（缓存结果）
 
     凭证优先级：
       - 指定 account_id 时：使用该账户的独立凭证（多账户并行模式）
       - 未指定时：admin_secrets.json 活跃账户 > .env 环境变量
     （admin panel 修改后立即生效，无需重启进程）
+
+    缓存：每 (exchange_name, account_id) 组合缓存一个实例，避免重复
+    创建导致 rate limiter 和 HTTP 会话丢失。
     """
+    cache_key = ('binance', account_id or '')
+    with _exchange_cache_lock:
+        cached = _exchange_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     try:
         if account_id:
             from admin_secrets import get_account_exchange_credentials
@@ -106,7 +120,6 @@ def get_live_exchange(account_id: Optional[str] = None):
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
     except Exception as e:
-        # admin_secrets 导入/读取失败时的 fallback
         logger.debug(f"admin_secrets 不可用，fallback 到环境变量: {e}")
         api_key = os.environ.get('BINANCE_API_KEY', '')
         secret = os.environ.get('BINANCE_SECRET', '')
@@ -115,7 +128,6 @@ def get_live_exchange(account_id: Optional[str] = None):
         logger.error("BINANCE_API_KEY 或 BINANCE_SECRET 未设置！无法实盘交易")
         return None
 
-    # H10: 走 exchange_manager 工厂，强制带 timeout
     from exchange_manager import make_exchange
     exchange = make_exchange(
         'binance',
@@ -124,6 +136,8 @@ def get_live_exchange(account_id: Optional[str] = None):
         default_type='future',
     )
 
+    with _exchange_cache_lock:
+        _exchange_cache[cache_key] = exchange
     return exchange
 
 
@@ -431,7 +445,7 @@ def get_binance_position_amount(symbol: str, direction: str = 'SHORT',
         return 0.0
     except Exception as e:
         logger.warning(f"读取 Binance 持仓失败 ({symbol}): {e}")
-        return 0.0
+        return -1.0
 
 def execute_close_position(symbol: str, direction: str, amount: float,
                            client_order_id: Optional[str] = None,
@@ -909,24 +923,57 @@ def place_binance_short_protection_split(symbol: str, stop_amount: float, tp_amo
     exchange = get_live_exchange(account_id)
     if not exchange:
         return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": "交易所连接失败"}
-    try:
-        stop_amount = _amount_to_precision(exchange, symbol, stop_amount)
-        tp_amount = _amount_to_precision(exchange, symbol, tp_amount)
-        if stop_amount <= 0 or tp_amount <= 0:
-            return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": "保护单数量裁剪后为 0"}
-        stop_price = _round_price(exchange, symbol, hard_stop_price)
-        tp_price = _round_price(exchange, symbol, tp_trigger_price)
-        stop_params={'positionSide':'SHORT','stopPrice':stop_price,'workingType':'MARK_PRICE'}
-        tp_params={'positionSide':'SHORT','stopPrice':tp_price,'workingType':'MARK_PRICE'}
-        if stop_client_order_id: stop_params['newClientOrderId']=stop_client_order_id
-        if tp_client_order_id: tp_params['newClientOrderId']=tp_client_order_id
-        stop_order=exchange.create_order(symbol=symbol,type='STOP_MARKET',side='buy',amount=stop_amount,params=stop_params)
-        tp_order=exchange.create_order(symbol=symbol,type='TAKE_PROFIT_MARKET',side='buy',amount=tp_amount,params=tp_params)
-        logger.info(f"✅ Binance 分离保护单: {symbol} STOP({stop_amount:.4f}@{stop_price}) TP({tp_amount:.4f}@{tp_price})")
-        return {"success": True, "stop_order_id": stop_order.get('id',''), "tp_order_id": tp_order.get('id',''), "error": ""}
-    except Exception as e:
-        logger.error(f"❌ Binance 分离保护单失败 ({symbol}): {e}")
-        return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": str(e)}
+    import time as _time
+    stop_amount = _amount_to_precision(exchange, symbol, stop_amount)
+    tp_amount = _amount_to_precision(exchange, symbol, tp_amount)
+    if stop_amount <= 0 or tp_amount <= 0:
+        return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": "保护单数量裁剪后为 0"}
+    stop_price = _round_price(exchange, symbol, hard_stop_price)
+    tp_price = _round_price(exchange, symbol, tp_trigger_price)
+    # 两阶段下单：先下 STOP_MARKET，确认后再下 TAKE_PROFIT_MARKET
+    # 防止部分成功（STOP 成功 + TP 失败）时重试创建重复 STOP
+    stop_params={'positionSide':'SHORT','stopPrice':stop_price,'workingType':'MARK_PRICE'}
+    tp_params={'positionSide':'SHORT','stopPrice':tp_price,'workingType':'MARK_PRICE'}
+    if stop_client_order_id:
+        stop_params['newClientOrderId'] = stop_client_order_id
+    else:
+        stop_params['newClientOrderId'] = _ensure_client_order_id(None, 'st1', symbol, 'binance')
+    if tp_client_order_id:
+        tp_params['newClientOrderId'] = tp_client_order_id
+    else:
+        tp_params['newClientOrderId'] = _ensure_client_order_id(None, 'tp1', symbol, 'binance')
+    stop_order_id = None
+    max_retries = 3
+    last_error = ''
+    for attempt in range(max_retries):
+        try:
+            # 阶段1：下 STOP_MARKET
+            if stop_order_id is None:
+                stop_params['newClientOrderId'] = _ensure_client_order_id(None, 'st1', symbol, 'binance') + f'_a{attempt}'
+                stop_order = exchange.create_order(symbol=symbol, type='STOP_MARKET', side='buy', amount=stop_amount, params=stop_params)
+                stop_order_id = stop_order.get('id', '')
+            # 阶段2：下 TAKE_PROFIT_MARKET
+            tp_params['newClientOrderId'] = _ensure_client_order_id(None, 'tp1', symbol, 'binance') + f'_a{attempt}'
+            tp_order = exchange.create_order(symbol=symbol, type='TAKE_PROFIT_MARKET', side='buy', amount=tp_amount, params=tp_params)
+            tp_order_id = tp_order.get('id', '')
+            logger.info(f"✅ Binance 分离保护单: {symbol} STOP({stop_amount:.4f}@{stop_price}) TP({tp_amount:.4f}@{tp_price})")
+            return {"success": True, "stop_order_id": stop_order_id, "tp_order_id": tp_order_id, "error": ""}
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries - 1:
+                delay = 1.5 ** attempt
+                logger.warning(f"⏳ Binance 分离保护单重试({attempt+1}/{max_retries}): {symbol} {last_error}，{delay:.1f}s 后重试")
+                # 如果 STOP 已成功但 TP 失败，清理已下的 STOP（防止重试累积）
+                if stop_order_id is not None:
+                    try:
+                        exchange.cancel_order(stop_order_id, symbol)
+                        logger.info(f"🧹 清理部分成功 STOP: {stop_order_id}")
+                    except Exception:
+                        pass
+                    stop_order_id = None
+                _time.sleep(delay)
+    logger.error(f"❌ Binance 分离保护单失败（{max_retries}次重试后）({symbol}): {last_error}")
+    return {"success": False, "stop_order_id": "", "tp_order_id": "", "error": last_error}
 
 
 def place_binance_stage2_after_tp1(symbol: str, remain_amount: float, stop_price: float, tp2_price: float,
@@ -940,8 +987,6 @@ def place_binance_stage2_after_tp1(symbol: str, remain_amount: float, stop_price
 
 def get_binance_open_algo_orders(symbol: str, account_id: Optional[str] = None) -> list:
     """Return open Binance conditional(algo) orders for symbol."""
-    if not config.LIVE_MODE:
-        return []
     exchange = get_live_exchange(account_id)
     if not exchange:
         return []

@@ -36,6 +36,8 @@ _okx_instance: Optional[ccxt.okx] = None
 # H10: ccxt HTTP 超时（毫秒）。所有走 ccxt 的 fetch_*/create_order 调用
 # 都受这个限制，防止 OKX/Binance 抽风时把进程拖死到外层 600s 任务超时。
 DEFAULT_CCXT_TIMEOUT_MS = 8000
+# 下单操作用更长超时，防止高波动时延迟触发展开重试导致重复订单
+ORDER_CREATE_TIMEOUT_MS = 15000
 
 
 def make_exchange(

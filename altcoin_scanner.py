@@ -1505,8 +1505,10 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
 
     for trade, entry_price, route_exchange, route_stake, _coid in opened_trades:
         if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
-            continue
-        record_trade_opened(route_stake, account_id=trade.account_id or None)
+            # Shadow 平行模式：使用独立的命名空间记录开仓，避免占用实盘风控额度
+            record_trade_opened(route_stake, account_id='shadow_parallel')
+        else:
+            record_trade_opened(route_stake, account_id=trade.account_id or None)
 
         logger.info(
             f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "

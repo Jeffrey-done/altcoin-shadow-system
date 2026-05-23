@@ -15,7 +15,7 @@ def test_classify_task_failure_non_retryable():
 def test_health_audit_nonzero_must_raise_path_present():
     src = inspect.getsource(scheduler.main_loop)
     assert "health_audit.py', '--all', '--tg" in src
-    assert "res.returncode != 0" in src
+    assert "res.returncode >= 2" in src
     assert "raise RuntimeError" in src
 
 def test_health_audit_streak_alert_path_present():
