@@ -1130,6 +1130,46 @@ def apply_position_scale() -> dict:
     return dict(state)
 
 
+
+
+def _enforce_live_mode_prereqs() -> dict:
+    """没有交易所凭证时，强制关闭实盘开关，避免 live_executor 空转刷错。"""
+    import config as _config
+    changes = {}
+    try:
+        from admin_secrets import get_active_account_id, get_exchange_credentials
+        acc_id = get_active_account_id()
+    except Exception:
+        acc_id = ''
+
+    def _has_binance() -> bool:
+        try:
+            creds = get_exchange_credentials('binance', account_id=acc_id or None)
+            return bool(creds.get('api_key')) and bool(creds.get('secret'))
+        except Exception:
+            return False
+
+    def _has_okx() -> bool:
+        try:
+            creds = get_exchange_credentials('okx', account_id=acc_id or None)
+            return bool(creds.get('api_key')) and bool(creds.get('secret')) and bool(creds.get('passphrase'))
+        except Exception:
+            return False
+
+    bn_ok = _has_binance()
+    okx_ok = _has_okx()
+
+    if getattr(_config, 'LIVE_MODE', False) and not bn_ok:
+        changes['LIVE_MODE'] = {'old': True, 'new': False}
+        _config.LIVE_MODE = False
+    if getattr(_config, 'OKX_LIVE_MODE', False) and not okx_ok:
+        changes['OKX_LIVE_MODE'] = {'old': True, 'new': False}
+        _config.OKX_LIVE_MODE = False
+
+    if changes:
+        logger.warning(f"runtime_config: 缺少交易所凭证，已自动关闭实盘开关: {changes}")
+    return changes
+
 def apply_overrides(force: bool = False) -> dict:
     """
     读 runtime_config.json 并把白名单字段写到 config 模块属性。
@@ -1173,6 +1213,12 @@ def apply_overrides(force: bool = False) -> dict:
 
             if applied:
                 logger.info(f"runtime_config 应用: {applied}")
+
+    # 没有交易所凭证时，强制关闭实盘开关，避免 live_executor 空转刷错。
+    try:
+        _enforce_live_mode_prereqs()
+    except Exception as e:
+        logger.warning(f"_enforce_live_mode_prereqs 异常（非致命）: {e}")
 
     # 不论 overrides 有没有变，都重跑比例缩放：
     # - manual 模式 no-op 几乎零成本

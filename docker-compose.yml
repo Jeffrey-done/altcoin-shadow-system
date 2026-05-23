@@ -13,6 +13,7 @@
 
 x-common-app: &common-app
   build: .
+  env_file: .env
   volumes:
     # 运行时数据文件（持仓/风控/候选池）
     # docker-entrypoint.sh 会在容器启动时自动初始化缺失的 JSON 文件

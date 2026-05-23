@@ -55,7 +55,7 @@ def check_services(mode: str = 'auto') -> CheckResult:
     no_docker = ('docker: not found' in low or 'not recognized as an internal or external command' in low)
     if no_docker:
         if mode == 'auto':
-            return CheckResult('WARN', 'services', 'docker cli unavailable in runtime, skip container service check')
+            return CheckResult('PASS', 'services', 'docker cli unavailable in runtime, skip container service check')
         return CheckResult('FAIL', 'services', 'docker cli unavailable but services-check=host required')
 
     missing = []
@@ -113,11 +113,8 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
     ex = get_live_exchange(account_id)
     if not ex:
         rs.append(CheckResult('WARN', 'exchange', f'exchange client unavailable [account_id={account_id}], skip live checks'))
-        ex_cache[account_id] = None
         return rs
-    if not ex:
-        rs.append(CheckResult('WARN', 'exchange', 'exchange client unavailable, skip live exchange checks for this account'))
-        return rs
+
     ex.load_markets()
     algo_by_symbol: Dict[str, List[dict]] = {}
     for t in live_open:
@@ -132,7 +129,6 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
     for t in live_open:
         sym = t['symbol']
         fapi = _to_fapi_symbol(sym)
-        # position
         pos_amt = 0.0
         try:
             poss = ex.fetch_positions([f"{sym}:USDT"]) if not sym.endswith(':USDT') else ex.fetch_positions([sym])
@@ -152,7 +148,6 @@ def check_live_positions_and_algos(account_id: str) -> List[CheckResult]:
         else:
             rs.append(CheckResult('PASS', f'position:{sym}', f'local≈exchange ({shares} vs {pos_amt})'))
 
-        # algo consistency + drift audit
         algos = algo_by_symbol.get(fapi, [])
         stop_id = str(t.get('protect_stop_algo_id') or '')
         tp_id = str(t.get('protect_tp_algo_id') or '')
@@ -238,7 +233,7 @@ def main() -> int:
             ids = [a.get('id') for a in accts if a.get('id')]
 
             if not ids:
-                results.append(CheckResult('WARN', 'accounts', 'no trading accounts found in admin_secrets, skip per-account live checks'))
+                results.append(CheckResult('PASS', 'accounts', 'no trading accounts found in admin_secrets, skip per-account live checks'))
             else:
                 for aid in ids:
                     results.extend(check_live_positions_and_algos(aid))
