@@ -1,144 +1,111 @@
 <!DOCTYPE html>
 <html lang="zh-CN" data-theme="dark">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Altcoin Shadow System{% endblock %}</title>
-  
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- CSS -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}?v={{ range(1, 100000) | random }}">
-  
-  <!-- Dynamic Styles block for children -->
-  {% block styles %}{% endblock %}
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}影子交易系统{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+{% block head_extra %}{% endblock %}
 </head>
 <body>
-
-  <div class="app-container">
-    <!-- Header -->
-    <header class="header">
-      <div class="brand">
-        <i data-lucide="shield-alert" class="purple" style="width: 20px; height: 20px;"></i>
-        <span>ALTCOIN <span class="brand-accent">SHADOW</span></span>
-      </div>
-      
-      <!-- Desktop Navigation -->
-      <nav class="nav-links">
-        <a href="/" id="nav-dashboard"><i data-lucide="layout-dashboard" style="width: 14px; height: 14px;"></i>仪表盘</a>
-        <a href="/weekly-report" id="nav-weekly-report"><i data-lucide="trending-up" style="width: 14px; height: 14px;"></i>周报</a>
-        <a href="/batch-backtest" id="nav-batch-backtest"><i data-lucide="layers" style="width: 14px; height: 14px;"></i>批量回测</a>
-        <a href="/backtest" id="nav-backtest"><i data-lucide="play" style="width: 14px; height: 14px;"></i>单币回测</a>
-        <a href="/signal-scores" id="nav-signal-scores"><i data-lucide="star" style="width: 14px; height: 14px;"></i>信号评分</a>
-      </nav>
-      
-      <!-- Actions -->
-      <div class="header-actions">
-        <!-- Theme Toggle -->
-        <button id="theme-toggle" class="btn-secondary" style="padding: 6px; border-radius: 50%;" title="切换主题">
-          <i id="theme-icon" data-lucide="sun" style="width: 16px; height: 16px;"></i>
-        </button>
-        
-        <!-- Log Drawer Toggle -->
-        <button id="notification-toggle" class="btn-secondary" style="padding: 6px 12px; border-radius: 6px;" title="系统事件日志">
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <i data-lucide="bell" style="width: 16px; height: 16px;"></i>
-            <span class="badge badge-purple" id="events-count-badge">0</span>
-          </div>
-        </button>
-        
-        <!-- Live status -->
-        <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--success);" id="connection-status">
-          <span style="display:inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: var(--success);"></span>
-          <span>CONNECTED</span>
+<div class="container">
+    <!-- 顶部栏 -->
+    <div class="header-bar">
+        <div class="header-left">
+            <h1>{% block page_icon %}{% endblock %}{% block page_title %}影子交易{% endblock %}</h1>
         </div>
-      </div>
-    </header>
-
-    <!-- Main Workspace -->
-    <main class="main-content">
-      {% block content %}{% endblock %}
-    </main>
-    
-    <!-- Mobile Bottom Tab Bar -->
-    <div class="mobile-tab-bar">
-      <a href="/" class="mobile-tab-item" id="tab-dashboard">
-        <i data-lucide="layout-dashboard" style="width: 18px; height: 18px;"></i>
-        <span>大盘</span>
-      </a>
-      <a href="/weekly-report" class="mobile-tab-item" id="tab-weekly-report">
-        <i data-lucide="trending-up" style="width: 18px; height: 18px;"></i>
-        <span>周报</span>
-      </a>
-      <a href="/batch-backtest" class="mobile-tab-item" id="tab-batch-backtest">
-        <i data-lucide="layers" style="width: 18px; height: 18px;"></i>
-        <span>批回测</span>
-      </a>
-      <a href="/backtest" class="mobile-tab-item" id="tab-backtest">
-        <i data-lucide="play" style="width: 18px; height: 18px;"></i>
-        <span>单回测</span>
-      </a>
-      <a href="/signal-scores" class="mobile-tab-item" id="tab-signal-scores">
-        <i data-lucide="star" style="width: 18px; height: 18px;"></i>
-        <span>评分</span>
-      </a>
+        <div class="header-right">
+            {% block header_controls %}{% endblock %}
+            <button class="icon-btn" id="notification-toggle" title="事件通知">
+                <i data-lucide="bell"></i>
+                <span class="badge-dot" id="notification-badge" style="display:none;"></span>
+            </button>
+            <button class="icon-btn" id="theme-toggle" title="切换主题">
+                <i data-lucide="moon" id="theme-icon-dark"></i>
+                <i data-lucide="sun" id="theme-icon-light" style="display:none;"></i>
+            </button>
+        </div>
     </div>
+    <div class="subtitle">{% block subtitle %}{% endblock %}</div>
 
-    <!-- Notification / Events Drawer Sliding Panel -->
-    <aside class="notification-panel" id="notification-panel">
-      <div class="notification-header">
-        <div style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
-          <i data-lucide="terminal" class="purple" style="width: 16px; height: 16px;"></i>
-          <span>系统实时事件日志</span>
-        </div>
-        <button id="notification-close" class="btn-secondary" style="padding: 4px; border-radius: 50%;">
-          <i data-lucide="x" style="width: 16px; height: 16px;"></i>
+    <!-- 桌面导航 -->
+    <nav class="nav">
+        <a href="/"><i data-lucide="layout-dashboard"></i> 仪表盘</a>
+        <a href="/weekly-report"><i data-lucide="file-bar-chart"></i> 周报</a>
+        <a href="/batch-backtest"><i data-lucide="flask-conical"></i> 批量回测</a>
+        <a href="/backtest"><i data-lucide="line-chart"></i> 单币回测</a>
+        <a href="/signal-scores"><i data-lucide="target"></i> 信号评分</a>
+    </nav>
+
+    <!-- 页面内容 -->
+    {% block content %}{% endblock %}
+</div>
+
+<!-- 通知面板（侧滑） -->
+<div class="notification-overlay" id="notification-overlay"></div>
+<div class="notification-panel" id="notification-panel">
+    <div class="notification-panel-header">
+        <h3>事件日志</h3>
+        <button class="notification-panel-close" id="notification-close">
+            <i data-lucide="x"></i>
         </button>
-      </div>
-      <div class="notification-list" id="events-list-container">
-        <!-- Events injected by app.js -->
-        <div class="empty-state">
-          <i data-lucide="info" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
-          <span>暂无系统实时日志</span>
-        </div>
-      </div>
-    </aside>
-  </div>
+    </div>
+    <div class="notification-panel-body" id="notification-body">
+        <div class="empty-state">加载中...</div>
+    </div>
+</div>
 
-  <!-- Scripts -->
-  <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/app.js') }}?v={{ range(1, 100000) | random }}" defer></script>
-  
-  {% block scripts %}{% endblock %}
+<!-- 移动端底部导航 -->
+<nav class="mobile-tab-bar">
+    <a href="/"><i data-lucide="layout-dashboard"></i>仪表盘</a>
+    <a href="/weekly-report"><i data-lucide="file-bar-chart"></i>周报</a>
+    <a href="/batch-backtest"><i data-lucide="flask-conical"></i>回测</a>
+    <a href="/backtest"><i data-lucide="line-chart"></i>单币</a>
+    <a href="/signal-scores"><i data-lucide="target"></i>评分</a>
+</nav>
 
-  <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      // Highlight navigation
-      const path = window.location.pathname;
-      const navIds = {
-        "/": ["nav-dashboard", "tab-dashboard"],
-        "/weekly-report": ["nav-weekly-report", "tab-weekly-report"],
-        "/batch-backtest": ["nav-batch-backtest", "tab-batch-backtest"],
-        "/backtest": ["nav-backtest", "tab-backtest"],
-        "/signal-scores": ["nav-signal-scores", "tab-signal-scores"]
-      };
+<!-- Lucide Icons (defer：和后续脚本一起，等 HTML 解析完再按顺序执行，不阻塞首屏) -->
+<script defer src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
+<!-- Core Scripts -->
+<script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+// Theme Toggle —— 整段包在 DOMContentLoaded 里，等 lucide / app.js（都是 defer）执行完再跑。
+// 注意：inline <script> 上的 defer 属性会被浏览器忽略，必须用事件等待。
+document.addEventListener('DOMContentLoaded', function () {
+    var toggle = document.getElementById('theme-toggle');
+    var iconDark = document.getElementById('theme-icon-dark');
+    var iconLight = document.getElementById('theme-icon-light');
+    var saved = localStorage.getItem('dashboard-theme') || 'dark';
 
-      if (navIds[path]) {
-        navIds[path].forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.classList.add("active");
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('dashboard-theme', theme);
+        if (iconDark && iconLight) {
+            if (theme === 'dark') {
+                iconDark.style.display = '';
+                iconLight.style.display = 'none';
+            } else {
+                iconDark.style.display = 'none';
+                iconLight.style.display = '';
+            }
+        }
+        // 重新渲染 icon（lucide 会把 <i data-lucide=...> 替换成 svg；
+        // 切换主题后某些 svg 内嵌色值需要重画一次）
+        if (window.lucide && window.lucide.createIcons) {
+            window.lucide.createIcons();
+        }
+    }
+
+    applyTheme(saved);
+
+    if (toggle) {
+        toggle.addEventListener('click', function () {
+            var current = document.documentElement.getAttribute('data-theme') || 'dark';
+            applyTheme(current === 'dark' ? 'light' : 'dark');
         });
-      }
-
-      // Lucide icons initialization
-      if (typeof lucide !== "undefined") {
-        lucide.createIcons();
-      }
-    });
-  </script>
+    }
+});
+</script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

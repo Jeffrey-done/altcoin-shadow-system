@@ -1,318 +1,111 @@
 {% extends "base.html" %}
 
-{% block title %}批量回测 | Altcoin Shadow System{% endblock %}
+{% block title %}批量回测 - Shadow Trading{% endblock %}
+{% block page_title %}🔬 批量回测结果{% endblock %}
+{% block subtitle %}多币种对比 | 相关性分析 | 推荐组合{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
 
 {% block content %}
-<div class="dashboard-grid">
-  
-  <!-- Left Column: Config & Status (span 4) -->
-  <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Current Config -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="sliders" class="purple" style="width: 16px; height: 16px;"></i> 当前策略参数
-        </div>
-      </div>
-      <div class="card-body" id="config-panel">
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-            <span class="text-secondary">Daily RSI 阈值</span>
-            <span class="mono font-bold" id="cfg-daily-rsi">--</span>
-          </div>
-          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-            <span class="text-secondary">TP1 %</span>
-            <span class="mono font-bold" id="cfg-tp1">--</span>
-          </div>
-          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-            <span class="text-secondary">TP2 %</span>
-            <span class="mono font-bold" id="cfg-tp2">--</span>
-          </div>
-          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-            <span class="text-secondary">硬止损 %</span>
-            <span class="mono font-bold" id="cfg-hard-stop">--</span>
-          </div>
-          <div class="flex-between">
-            <span class="text-secondary">批回测币种</span>
-            <span class="mono font-bold" id="cfg-symbols">--</span>
-          </div>
-        </div>
-      </div>
-    </div>
+<div id="content"><div class="empty-state">加载中...</div></div>
+{% endblock %}
 
-    <!-- Batch Meta Info -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="info" class="blue" style="width: 16px; height: 16px;"></i> 回测运行信息
-        </div>
-      </div>
-      <div class="card-body" style="display: flex; flex-direction: column; gap: 10px;" id="meta-panel">
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">运行时间</span>
-          <span class="mono" id="meta-time">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">回测天数</span>
-          <span class="mono" id="meta-days">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">总交易笔数</span>
-          <span class="mono" id="meta-trades">--</span>
-        </div>
-        <div class="flex-between">
-          <span class="text-secondary">初始资金</span>
-          <span class="mono" id="meta-capital">--</span>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Right Column: Results (span 8) -->
-  <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Cumulative Chart -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="area-chart" class="purple" style="width: 16px; height: 16px;"></i> 批量回测权益曲线
-        </div>
-      </div>
-      <div class="card-body">
-        <canvas id="backtest-chart-canvas" width="600" height="240" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
-        <div id="chart-empty" class="empty-state" style="display:none;">
-          <i data-lucide="bar-chart-2" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
-          <span>暂无回测曲线数据</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Per-Symbol Results Table -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="table" class="blue" style="width: 16px; height: 16px;"></i> 多币种回测结果对比
-        </div>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div class="table-responsive">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>交易对</th>
-                <th>交易笔数</th>
-                <th>胜率</th>
-                <th>总盈亏</th>
-                <th>最大回撤</th>
-                <th>盈亏比</th>
-                <th>夏普率</th>
-              </tr>
-            </thead>
-            <tbody id="results-tbody">
-              <tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Summary Totals -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="award" class="yellow" style="width: 16px; height: 16px;"></i> 汇总统计
-        </div>
-      </div>
-      <div class="card-body">
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;" id="summary-grid">
-          <div style="text-align: center;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">综合胜率</div>
-            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-win-rate">--</div>
-          </div>
-          <div style="text-align: center;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">总盈亏</div>
-            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-total-pnl">--</div>
-          </div>
-          <div style="text-align: center;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">总笔数</div>
-            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-total-trades">--</div>
-          </div>
-          <div style="text-align: center;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">平均夏普</div>
-            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-avg-sharpe">--</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-</div>
-
+{% block scripts %}
 <script>
-document.addEventListener("DOMContentLoaded", () => {
+function loadData() {
+    fetch('/api/batch-backtest').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
+        if (!data || !data.report) {
+            content.innerHTML = `<div class="empty-state"><p>暂无批量回测数据</p>
+                <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --batch</code></p></div>`;
+            return;
+        }
 
-  fetch('/api/batch-backtest')
-    .then(res => res.json())
-    .then(data => {
-      if (!data || Object.keys(data).length === 0) {
-        document.getElementById('results-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">暂无批量回测数据，请先运行 backtest.py --batch</td></tr>';
-        return;
-      }
+        let warnHtml = '';
+        // Check for parameter changes
+        if (data.current_config && data.config_snapshot) {
+            const cur = data.current_config;
+            const snap = data.config_snapshot;
+            const mismatches = [];
+            if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI阈值: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
+            if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
+            if (snap.tp2_pct && snap.tp2_pct !== cur.tp2_pct) mismatches.push(`TP2: ${snap.tp2_pct}%→${cur.tp2_pct}%`);
+            if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
+            if (mismatches.length > 0) {
+                warnHtml = `<div class="card" style="border-color:var(--yellow);margin-bottom:12px;"><b style="color:var(--yellow);">⚠️ 参数已变更，数据可能过期</b><br>
+                    <span class="card-sub">变更项: ${mismatches.join(' | ')}<br>请重新运行: <code>python3 backtest.py --batch</code></span></div>`;
+            }
+        }
 
-      // Current config
-      const cfg = data.current_config || {};
-      document.getElementById('cfg-daily-rsi').textContent = cfg.daily_rsi_min || '--';
-      document.getElementById('cfg-tp1').textContent = cfg.tp1_pct ? cfg.tp1_pct + '%' : '--';
-      document.getElementById('cfg-tp2').textContent = cfg.tp2_pct ? cfg.tp2_pct + '%' : '--';
-      document.getElementById('cfg-hard-stop').textContent = cfg.hard_stop_pct ? cfg.hard_stop_pct + '%' : '--';
-      const syms = cfg.batch_symbols || [];
-      document.getElementById('cfg-symbols').textContent = syms.length > 0 ? syms.length + ' 个' : '--';
+        const report = data.report;
+        const summary = report.summary || {};
+        const rankings = report.rankings || [];
+        const recommended = report.recommended_portfolio || [];
+        const highCorr = report.high_correlation_pairs || {};
 
-      // Meta
-      document.getElementById('meta-time').textContent = data.run_time || data.timestamp || '--';
-      document.getElementById('meta-days').textContent = cfg.batch_days || data.days || '--';
+        let html = warnHtml + `
+        <div class="grid grid-4">
+            <div class="card"><div class="card-header">币种数量</div><div class="card-value blue">${summary.total_coins||0}</div></div>
+            <div class="card"><div class="card-header">总交易数</div><div class="card-value">${summary.total_trades||0}</div></div>
+            <div class="card"><div class="card-header">整体胜率</div><div class="card-value ${(summary.overall_win_rate||0) >= 50 ? 'green' : 'yellow'}">${summary.overall_win_rate||0}%</div></div>
+            <div class="card"><div class="card-header">总盈亏</div><div class="card-value ${App.pnlColor(summary.total_pnl)}">${App.fmtPnl(summary.total_pnl||0)}</div></div>
+        </div>`;
 
-      // Results table
-      const results = data.results || data.symbols || [];
-      const tbody = document.getElementById('results-tbody');
-      
-      if (results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">无回测结果数据</td></tr>';
-        return;
-      }
+        // Rankings table
+        html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">📋 各币种表现</div><div class="table-wrapper"><table>
+            <thead><tr><th>排名</th><th>币种</th><th>评分</th><th>交易数</th><th>胜率</th><th>盈亏比</th><th>盈亏</th><th>最大回撤</th><th>夏普率</th></tr></thead><tbody>`;
+        rankings.forEach((coin, i) => {
+            const cls = coin.total_pnl > 0 ? 'green' : 'red';
+            html += `<tr><td><b>${i+1}</b></td><td><b>${coin.symbol}</b></td><td>${coin.score.toFixed(4)}</td>
+                <td>${coin.total_trades}</td><td>${coin.win_rate}%</td><td>${coin.profit_loss_ratio.toFixed(2)}x</td>
+                <td class="${cls}"><b>${coin.total_pnl >= 0 ? '+' : ''}${coin.total_pnl.toFixed(2)}U</b></td>
+                <td>${coin.max_drawdown.toFixed(1)}%</td><td>${coin.sharpe_ratio.toFixed(2)}</td></tr>`;
+        });
+        html += `</tbody></table></div></div>`;
 
-      let totalTrades = 0, totalPnl = 0, totalWins = 0, sharpeSum = 0;
+        // Recommended portfolio
+        if (recommended.length > 0) {
+            html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">🏆 推荐组合（低相关性 Top 币种）</div>
+                <div class="grid grid-5">`;
+            recommended.forEach((coin, i) => {
+                html += `<div class="card" style="border-color:var(--green);">
+                    <div class="card-header">#${i+1} ${coin.symbol}</div>
+                    <div style="font-size:0.8rem;">评分: <b>${coin.score.toFixed(4)}</b></div>
+                    <div style="font-size:0.8rem;">胜率: ${coin.win_rate}%</div>
+                    <div style="font-size:0.8rem;">盈亏比: ${coin.profit_loss_ratio.toFixed(2)}</div>
+                    <div style="font-size:0.8rem;" class="${App.pnlColor(coin.total_pnl)}">PnL: ${coin.total_pnl >= 0?'+':''}${coin.total_pnl.toFixed(1)}U</div>
+                </div>`;
+            });
+            html += `</div></div>`;
+        }
 
-      let html = '';
-      results.forEach(r => {
-        const pnl = parseFloat(r.total_pnl || r.pnl || 0);
-        const wr = parseFloat(r.win_rate || 0);
-        const trades = parseInt(r.total_trades || r.trades || 0);
-        const maxDD = parseFloat(r.max_drawdown || 0);
-        const pf = parseFloat(r.profit_factor || 0);
-        const sharpe = parseFloat(r.sharpe || r.sharpe_ratio || 0);
+        // High correlation pairs
+        if (Object.keys(highCorr).length > 0) {
+            html += `<div class="card" style="margin-bottom:12px;"><div class="section-title">⚠️ 高相关性币对</div><div class="table-wrapper"><table>
+                <thead><tr><th>币对</th><th>相关系数</th><th>建议</th></tr></thead><tbody>`;
+            for (const [pair, val] of Object.entries(highCorr)) {
+                const [a, b] = pair.split('|');
+                html += `<tr><td>${a} ↔ ${b}</td><td><b>${val.toFixed(4)}</b></td><td class="yellow">避免同时开仓</td></tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
 
-        totalTrades += trades;
-        totalPnl += pnl;
-        totalWins += Math.round(wr / 100 * trades);
-        sharpeSum += sharpe;
+        html += `<div class="card-sub" style="margin-top:12px;text-align:center;">
+            回测天数: ${data.days||90}天 | 生成时间: ${(data.timestamp||'').slice(0,16).replace('T',' ')} UTC</div>`;
 
-        html += `<tr>
-          <td class="mono font-bold">${r.symbol || '--'}</td>
-          <td class="mono">${trades}</td>
-          <td class="mono ${wr >= 50 ? 'green' : 'red'}">${wr.toFixed(1)}%</td>
-          <td class="mono font-bold ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} U</td>
-          <td class="mono red">${maxDD.toFixed(2)}%</td>
-          <td class="mono">${pf > 0 ? pf.toFixed(2) : '--'}</td>
-          <td class="mono">${sharpe > 0 ? sharpe.toFixed(2) : '--'}</td>
-        </tr>`;
-      });
-      tbody.innerHTML = html;
-
-      // Meta trades
-      document.getElementById('meta-trades').textContent = totalTrades;
-      document.getElementById('meta-capital').textContent = (data.initial_capital || 1000) + ' U';
-
-      // Summary
-      const avgWR = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
-      const avgSharpe = results.length > 0 ? (sharpeSum / results.length) : 0;
-
-      const wrEl = document.getElementById('sum-win-rate');
-      wrEl.textContent = avgWR.toFixed(1) + '%';
-      wrEl.className = 'mono font-bold ' + (avgWR >= 50 ? 'green' : 'red');
-
-      const pnlEl = document.getElementById('sum-total-pnl');
-      pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' U';
-      pnlEl.className = 'mono font-bold ' + (totalPnl >= 0 ? 'green' : 'red');
-
-      document.getElementById('sum-total-trades').textContent = totalTrades;
-      document.getElementById('sum-avg-sharpe').textContent = avgSharpe > 0 ? avgSharpe.toFixed(2) : '--';
-
-      // Chart
-      renderChart(data);
-    })
-    .catch(err => {
-      console.error('批量回测数据加载失败:', err);
-      document.getElementById('results-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">数据加载失败</td></tr>';
+        content.innerHTML = html;
+    }).catch(e => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
     });
+}
 
-  function renderChart(data) {
-    const canvas = document.getElementById("backtest-chart-canvas");
-    if (!canvas) return;
-
-    // Try to extract equity curve data
-    const equity = data.equity_curve || data.cumulative || null;
-    const results = data.results || data.symbols || [];
-
-    if (!equity && results.length === 0) {
-      canvas.style.display = 'none';
-      document.getElementById('chart-empty').style.display = 'flex';
-      return;
-    }
-
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
-
-    const padding = 40;
-    const xRange = w - padding * 2;
-    const yRange = h - padding * 2;
-
-    let chartData = equity;
-    if (!chartData) {
-      // Generate synthetic equity from results total_pnl
-      chartData = [0];
-      results.forEach(r => {
-        chartData.push(chartData[chartData.length - 1] + parseFloat(r.total_pnl || r.pnl || 0));
-      });
-    }
-
-    if (chartData.length < 2) return;
-
-    const maxVal = Math.max(...chartData) * 1.1 || 100;
-    const minVal = Math.min(...chartData, 0) * 1.1 || -10;
-    const range = maxVal - minVal || 1;
-
-    // Grid
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding + (yRange / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding, y);
-      ctx.lineTo(w - padding, y);
-      ctx.stroke();
-    }
-
-    // Line
-    ctx.beginPath();
-    chartData.forEach((val, idx) => {
-      const x = padding + (xRange / (chartData.length - 1)) * idx;
-      const y = h - padding - ((val - minVal) / range) * yRange;
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#a855f7";
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-
-    // Fill
-    ctx.lineTo(padding + xRange, h - padding);
-    ctx.lineTo(padding, h - padding);
-    ctx.closePath();
-    const gradient = ctx.createLinearGradient(0, padding, 0, h - padding);
-    gradient.addColorStop(0, "rgba(168, 85, 247, 0.12)");
-    gradient.addColorStop(1, "rgba(168, 85, 247, 0.0)");
-    ctx.fillStyle = gradient;
-    ctx.fill();
-  }
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
 });
 </script>
 {% endblock %}

@@ -1,310 +1,296 @@
-// positions.js — 持仓表格渲染模块
-window.PositionTable = {
-  // Store sorting criteria
-  sortField: 'symbol',
-  sortAsc: true,
-  lastTrades: [],
-  config: {},
+/* ═══════════════════════════════════════════════════════════════
+   Shadow Trading System - Position Table Module
+   Sorting, danger highlight, price animations, TP progress
+   ═══════════════════════════════════════════════════════════════ */
 
-  render: function(trades, tbodyId, emptyId, direction, configData) {
-    const tbody = document.getElementById(tbodyId);
-    const emptyEl = document.getElementById(emptyId);
-    if (!tbody) return;
+const PositionTable = {
+    sortState: {}, // { tableId: { column: '', direction: 'asc'|'desc' } }
+    previousPrices: {}, // { symbol: price }
 
-    this.config = configData || {};
-    let filteredTrades = (trades || []).filter(t => (t.direction || 'SHORT') === direction);
-    
-    // Cache for WebSocket real-time updates
-    this.lastTrades = (this.lastTrades || []).filter(t => (t.direction || 'SHORT') !== direction).concat(filteredTrades);
+    // ── Render Position Table ────────────────────────────────────
+    render(trades, tbodyId, emptyId, direction, configData) {
+        const tbody = document.getElementById(tbodyId);
+        const empty = document.getElementById(emptyId);
+        if (!trades || trades.length === 0) {
+            if (tbody) tbody.innerHTML = '';
+            if (empty) empty.style.display = 'block';
+            return;
+        }
+        if (empty) empty.style.display = 'none';
 
-    if (filteredTrades.length === 0) {
-      tbody.innerHTML = '';
-      if (emptyEl) emptyEl.style.display = 'flex';
-      return;
-    }
-
-    if (emptyEl) emptyEl.style.display = 'none';
-
-    // Apply sorting
-    filteredTrades.sort((a, b) => {
-      let valA = this.getSortValue(a, this.sortField);
-      let valB = this.getSortValue(b, this.sortField);
-      
-      if (typeof valA === 'string') {
-        return this.sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      } else {
-        return this.sortAsc ? (valA - valB) : (valB - valA);
-      }
-    });
-
-    let html = '';
-    filteredTrades.forEach(trade => {
-      const rowData = this.calculateRowStats(trade);
-      const isDanger = rowData.slDistance !== null && rowData.slDistance < 1.0;
-      const dangerClass = isDanger ? 'danger-row' : '';
-
-      html += `
-        <tr id="pos-row-${trade.symbol.replace('/', '-')}" class="${dangerClass}" data-symbol="${trade.symbol}">
-          <td class="font-bold mono" style="font-size:13px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <i data-lucide="${trade.direction === 'LONG' ? 'arrow-up-right' : 'arrow-down-left'}" class="${trade.direction === 'LONG' ? 'green' : 'red'}" style="width:14px; height:14px;"></i>
-              <div>
-                <span>${trade.symbol}</span>
-                <div style="font-size:9px; font-weight:normal;" class="text-muted">Exchange: ${trade.exchange || 'binance'}</div>
-              </div>
-            </div>
-          </td>
-          <td class="mono">
-            <div style="font-size:13px; font-weight:800;" class="pnl-u-cell">${window.App.fmtPnl(rowData.pnl_u)}</div>
-            <div style="font-size:10px;" class="pnl-pct-cell">${window.App.fmtPct(rowData.pnl_pct)} (${trade.leverage}x)</div>
-          </td>
-          <td class="mono">
-            <div class="text-muted">Entry: ${parseFloat(trade.entry_price || 0).toFixed(6)}</div>
-            <div style="font-weight:700; font-size:13px;" class="price-cell shadow-sm-indicator">${parseFloat(trade.current_price || 0).toFixed(6)}</div>
-          </td>
-          <td class="mono">
-            <div>Stake: ${trade.stake_remaining} U</div>
-            <div style="font-size:10px;" class="text-muted">Total: ${trade.stake} U</div>
-          </td>
-          <td>
-            <div class="tp-progress-wrapper">
-              <div class="tp-progress-labels">
-                <span class="tp-stage-name">${rowData.tpLabel}</span>
-                <span class="tp-pct-value mono" style="font-weight:600;">${rowData.tpProgress.toFixed(0)}%</span>
-              </div>
-              <div class="progress-container" style="height: 6px; border-radius: 3px;">
-                <div class="progress-bar tp-progress-bar" style="width: ${rowData.tpProgress}%; background-color: ${rowData.tpColor};"></div>
-              </div>
-              <div style="font-size:9px; margin-top:2px;" class="text-muted mono tp-targets-lbl">Target: ${rowData.tpTarget.toFixed(6)}</div>
-            </div>
-          </td>
-          <td class="mono">
-            <div style="font-weight: 600;" class="sl-price-lbl">${rowData.slPrice ? rowData.slPrice.toFixed(6) : '--'}</div>
-            <div style="font-size:10px; font-weight: 700;" class="sl-dist-cell ${isDanger ? 'red' : 'text-secondary'}">
-              ${rowData.slDistance !== null ? `距止损: ${rowData.slDistance.toFixed(2)}%` : '--'}
-            </div>
-          </td>
-          <td>
-            <div style="display:flex; flex-direction:column; gap:2px;">
-              <span class="badge ${trade.protect_stage === 'stage2' ? 'badge-purple' : 'badge-blue'}">${trade.protect_stage || 'stage1'}</span>
-              <div style="font-size:9px; font-family:var(--font-mono); color: var(--text-muted);" class="algo-ids-lbl">
-                SL:${trade.protect_stop_algo_id ? '...' + trade.protect_stop_algo_id.slice(-4) : '--'}
-                TP:${trade.protect_tp_algo_id ? '...' + trade.protect_tp_algo_id.slice(-4) : '--'}
-              </div>
-            </div>
-          </td>
-        </tr>
-      `;
-    });
-
-    tbody.innerHTML = html;
-    if (typeof lucide !== 'undefined') {
-      lucide.createIcons();
-    }
-  },
-
-  getSortValue: function(trade, field) {
-    if (field === 'symbol') return trade.symbol;
-    if (field === 'current_price') return trade.current_price;
-    if (field === 'pnl_pct') {
-      const stats = this.calculateRowStats(trade);
-      return stats.pnl_pct;
-    }
-    return 0;
-  },
-
-  calculateRowStats: function(trade) {
-    const entry = parseFloat(trade.entry_price || 0);
-    const current = parseFloat(trade.current_price || 0);
-    const stake_remaining = parseFloat(trade.stake_remaining || 0);
-    const leverage = parseFloat(trade.leverage || 1);
-
-    // 1. PnL calculation
-    let pnl_pct = 0;
-    if (trade.direction === 'SHORT') {
-      pnl_pct = (entry - current) / entry * 100;
-    } else {
-      pnl_pct = (current - entry) / entry * 100;
-    }
-    const pnl_u = stake_remaining * leverage * pnl_pct / 100;
-
-    // 2. TP Progress bar calculation
-    const tp1_pct = parseFloat(this.config.tp1_pct || 5.0);
-    const tp2_pct = parseFloat(this.config.tp2_pct || 8.0);
-    
-    // Explicit take profits from data, otherwise compute from percentages
-    const tp1 = parseFloat(trade.take_profit_1) || (trade.direction === 'SHORT' ? entry * (1 - tp1_pct/100) : entry * (1 + tp1_pct/100));
-    const tp2 = parseFloat(trade.take_profit_2) || (trade.direction === 'SHORT' ? entry * (1 - tp2_pct/100) : entry * (1 + tp2_pct/100));
-
-    let tpProgress = 0;
-    let tpLabel = '距 TP1';
-    let tpTarget = tp1;
-    let tpColor = 'var(--blue)';
-
-    if (trade.tp1_triggered || (trade.direction === 'SHORT' ? current <= tp1 : current >= tp1)) {
-      tpLabel = '距 TP2';
-      tpTarget = tp2;
-      tpColor = 'var(--success)';
-      
-      const denominator = trade.direction === 'SHORT' ? (tp1 - tp2) : (tp2 - tp1);
-      if (denominator !== 0) {
-        tpProgress = (trade.direction === 'SHORT' ? (tp1 - current) : (current - tp1)) / denominator * 100;
-      }
-    } else {
-      const denominator = trade.direction === 'SHORT' ? (entry - tp1) : (tp1 - entry);
-      if (denominator !== 0) {
-        tpProgress = (trade.direction === 'SHORT' ? (entry - current) : (current - entry)) / denominator * 100;
-      }
-    }
-    // Clamp progress
-    tpProgress = Math.max(0, Math.min(100, tpProgress));
-
-    // 3. Stop loss distance
-    let slPrice = null;
-    if (trade.tp1_triggered || (trade.direction === 'SHORT' ? current <= tp1 : current >= tp1)) {
-      slPrice = parseFloat(trade.trail_stop_price) || entry; // default breakeven
-    } else {
-      slPrice = parseFloat(trade.hard_stop_price) || (trade.direction === 'SHORT' ? entry * 1.05 : entry * 0.95);
-    }
-
-    let slDistance = null;
-    if (slPrice > 0) {
-      if (trade.direction === 'SHORT') {
-        slDistance = ((slPrice - current) / current) * 100;
-      } else {
-        slDistance = ((current - slPrice) / current) * 100;
-      }
-    }
-
-    return {
-      pnl_pct: pnl_pct,
-      pnl_u: pnl_u,
-      tpProgress: tpProgress,
-      tpLabel: tpLabel,
-      tpTarget: tpTarget,
-      tpColor: tpColor,
-      slPrice: slPrice,
-      slDistance: slDistance
-    };
-  },
-
-  initSortHeaders: function(tableContainerId, tbodyId, rerenderFn) {
-    const container = document.getElementById(tableContainerId);
-    if (!container) return;
-    const headers = container.querySelectorAll('th.sortable');
-    
-    headers.forEach(header => {
-      // Draw icon holder
-      header.style.position = 'relative';
-      header.innerHTML = header.textContent + ' <i class="sort-icon desc" style="border: solid var(--text-muted); border-width: 0 1.5px 1.5px 0; display: inline-block; padding: 2px; transform: rotate(45deg); vertical-align: middle; margin-left: 4px; opacity: 0.3;"></i>';
-      
-      header.addEventListener('click', () => {
-        const field = header.getAttribute('data-sort');
-        if (this.sortField === field) {
-          this.sortAsc = !this.sortAsc;
-        } else {
-          this.sortField = field;
-          this.sortAsc = true;
+        // Apply sorting if set
+        const sortInfo = this.sortState[tbodyId];
+        if (sortInfo && sortInfo.column) {
+            trades = this.sortTrades(trades, sortInfo.column, sortInfo.direction, direction);
         }
 
-        // Active header style sync
-        headers.forEach(h => {
-          const sIcon = h.querySelector('.sort-icon');
-          if (sIcon) sIcon.style.opacity = '0.3';
+        const hardStopPct = configData?.hard_stop_pct || 5;
+
+        tbody.innerHTML = trades.map(t => {
+            const entry = t.entry_price || 0;
+            const cur = t.current_price || entry;
+            let pnlPct;
+            if (direction === 'SHORT') {
+                pnlPct = entry > 0 ? ((entry - cur) / entry * 100) : 0;
+            } else {
+                pnlPct = entry > 0 ? ((cur - entry) / entry * 100) : 0;
+            }
+            const leverage = t.leverage || 10;
+            const stake = t.stake_remaining || t.stake || 100;
+            const pnlU = stake * leverage * pnlPct / 100;
+
+            // Hold time
+            const openedAt = t.opened_at ? new Date(t.opened_at) : null;
+            const holdHours = openedAt ? ((Date.now() - openedAt.getTime()) / 3600000).toFixed(1) : '--';
+
+            // Calculate distance to effective stop (use trail_stop_price if active, else hard stop)
+            let effectiveStopPrice, distToStop, stopLabel;
+            const trailStop = t.trail_stop_price || 0;
+            const tp1Active = t.tp1_triggered;
+
+            if (trailStop > 0 && (tp1Active || (t.best_pnl_pct || 0) >= (configData?.trail_activate_pct || 3))) {
+                // Use trail/breakeven stop (more restrictive after TP1)
+                effectiveStopPrice = trailStop;
+                stopLabel = tp1Active ? '保本止损' : '移动止损';
+                if (direction === 'SHORT') {
+                    distToStop = entry > 0 ? ((effectiveStopPrice - cur) / cur * 100) : 999;
+                } else {
+                    distToStop = entry > 0 ? ((cur - effectiveStopPrice) / cur * 100) : 999;
+                }
+            } else {
+                // Use hard stop
+                if (direction === 'SHORT') {
+                    effectiveStopPrice = entry * (1 + hardStopPct / 100);
+                    distToStop = entry > 0 ? ((effectiveStopPrice - cur) / cur * 100) : 999;
+                } else {
+                    effectiveStopPrice = entry * (1 - hardStopPct / 100);
+                    distToStop = entry > 0 ? ((cur - effectiveStopPrice) / cur * 100) : 999;
+                }
+                stopLabel = '距止损';
+            }
+
+            // Danger row if within 1% of hard stop
+            const isDanger = distToStop <= 1.0;
+            const dangerClass = isDanger ? 'danger-row' : '';
+
+            // TP progress bar: show TP1 progress before trigger, TP2 progress after
+            let tp1Progress = '';
+            if (t.tp1_triggered) {
+                // TP1 already triggered → show progress towards TP2
+                const tp2Price = t.take_profit_2 || entry * 0.92;
+                if (direction === 'SHORT' && entry > 0) {
+                    const totalDist = entry - tp2Price;
+                    const currentDist = entry - cur;
+                    const pctToTP2 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                    const remainPct = (100 - pctToTP2).toFixed(1);
+                    tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill tp2" style="width:${pctToTP2}%;background:var(--success)"></div></div>
+                        <span style="font-size:0.6rem;color:var(--text-secondary);">距TP2: ${remainPct}%</span>`;
+                } else if (direction === 'LONG' && entry > 0) {
+                    const totalDist = tp2Price - entry;
+                    const currentDist = cur - entry;
+                    const pctToTP2 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                    const remainPct = (100 - pctToTP2).toFixed(1);
+                    tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill tp2" style="width:${pctToTP2}%;background:var(--success)"></div></div>
+                        <span style="font-size:0.6rem;color:var(--text-secondary);">距TP2: ${remainPct}%</span>`;
+                }
+            } else if (direction === 'SHORT' && entry > 0) {
+                const tp1Price = t.take_profit_1 || entry * 0.95;
+                const totalDist = entry - tp1Price;
+                const currentDist = entry - cur;
+                const pctToTP1 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                const remainPct = (100 - pctToTP1).toFixed(1);
+                tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill" style="width:${pctToTP1}%"></div></div>
+                    <span style="font-size:0.6rem;color:var(--text-secondary);">距TP1: ${remainPct}%</span>`;
+            } else if (direction === 'LONG' && entry > 0) {
+                const tp1Price = t.take_profit_1 || entry * 1.05;
+                const totalDist = tp1Price - entry;
+                const currentDist = cur - entry;
+                const pctToTP1 = Math.min(100, Math.max(0, (currentDist / totalDist) * 100));
+                const remainPct = (100 - pctToTP1).toFixed(1);
+                tp1Progress = `<div class="tp-progress"><div class="tp-progress-fill" style="width:${pctToTP1}%"></div></div>
+                    <span style="font-size:0.6rem;color:var(--text-secondary);">距TP1: ${remainPct}%</span>`;
+            }
+
+            // Price animation class
+            const prevPrice = this.previousPrices[t.symbol];
+            let priceClass = '';
+            let priceArrow = '';
+            if (prevPrice !== undefined && prevPrice !== cur) {
+                if (cur > prevPrice) {
+                    priceClass = 'price-up';
+                    priceArrow = '<span class="price-arrow up">↑</span>';
+                } else {
+                    priceClass = 'price-down';
+                    priceArrow = '<span class="price-arrow down">↓</span>';
+                }
+            }
+            // Update previous price
+            this.previousPrices[t.symbol] = cur;
+
+            const protectStage = t.protect_stage ? `<span class="badge badge-info">${t.protect_stage}</span>` : '';
+            const stopPx = (t.protect_stage === 'stage2' && t.trail_stop_price) ? Number(t.trail_stop_price) : Number(t.hard_stop_price || 0);
+            const tpPx = (t.protect_stage === 'stage2') ? Number(t.take_profit_2 || 0) : Number(t.take_profit_1 || 0);
+            const protectStop = t.protect_stop_algo_id
+                ? `<span class="badge" style="background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.25);">SL#${String(t.protect_stop_algo_id).slice(-4)} @ ${stopPx > 0 ? stopPx.toFixed(5) : '--'}</span>`
+                : '';
+            const protectTp = t.protect_tp_algo_id
+                ? `<span class="badge" style="background:rgba(16,185,129,.15);color:var(--success);border:1px solid rgba(16,185,129,.25);">TP#${String(t.protect_tp_algo_id).slice(-4)} @ ${tpPx > 0 ? tpPx.toFixed(5) : '--'}</span>`
+                : '';
+            const extra = direction === 'SHORT'
+                ? (t.tp1_triggered ? '<span class="badge badge-ok">TP1✓</span>' : '')
+                : (t.strategy || '');
+
+            const stopIndicator = `<span class="stop-distance">${stopLabel} ${distToStop.toFixed(1)}%</span>`;
+            const protectLine = (protectStage || protectStop || protectTp) ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${protectStage}${protectStop}${protectTp}</div>` : '';
+
+            return `<tr class="${dangerClass}" data-symbol="${t.symbol}" data-pnl-pct="${pnlPct.toFixed(2)}" data-pnl-u="${pnlU.toFixed(2)}" data-hold="${holdHours}">
+                <td><b>${t.symbol}</b>${stopIndicator}${protectLine}</td>
+                <td>${entry.toFixed(6)}</td>
+                <td class="${priceClass}">${cur.toFixed(6)}${priceArrow}</td>
+                <td>${App.fmtPct(pnlPct)}</td>
+                <td>${App.fmtPnl(pnlU)}</td>
+                <td>${holdHours}h</td>
+                <td>${extra}${tp1Progress}</td>
+            </tr>`;
+        }).join('');
+    },
+
+    // ── Sort Trades ──────────────────────────────────────────────
+    sortTrades(trades, column, direction, tradeDirection) {
+        const sorted = [...trades];
+        sorted.sort((a, b) => {
+            let valA, valB;
+            switch (column) {
+                case 'pnl_pct': {
+                    const entryA = a.entry_price || 0;
+                    const curA = a.current_price || entryA;
+                    const entryB = b.entry_price || 0;
+                    const curB = b.current_price || entryB;
+                    if (tradeDirection === 'SHORT') {
+                        valA = entryA > 0 ? ((entryA - curA) / entryA * 100) : 0;
+                        valB = entryB > 0 ? ((entryB - curB) / entryB * 100) : 0;
+                    } else {
+                        valA = entryA > 0 ? ((curA - entryA) / entryA * 100) : 0;
+                        valB = entryB > 0 ? ((curB - entryB) / entryB * 100) : 0;
+                    }
+                    break;
+                }
+                case 'pnl_u': {
+                    const entryA = a.entry_price || 0;
+                    const curA = a.current_price || entryA;
+                    const entryB = b.entry_price || 0;
+                    const curB = b.current_price || entryB;
+                    const leverageA = a.leverage || 10;
+                    const stakeA = a.stake_remaining || a.stake || 100;
+                    const leverageB = b.leverage || 10;
+                    const stakeB = b.stake_remaining || b.stake || 100;
+                    let pctA, pctB;
+                    if (tradeDirection === 'SHORT') {
+                        pctA = entryA > 0 ? ((entryA - curA) / entryA * 100) : 0;
+                        pctB = entryB > 0 ? ((entryB - curB) / entryB * 100) : 0;
+                    } else {
+                        pctA = entryA > 0 ? ((curA - entryA) / entryA * 100) : 0;
+                        pctB = entryB > 0 ? ((curB - entryB) / entryB * 100) : 0;
+                    }
+                    valA = stakeA * leverageA * pctA / 100;
+                    valB = stakeB * leverageB * pctB / 100;
+                    break;
+                }
+                case 'hold_time': {
+                    const openA = a.opened_at ? new Date(a.opened_at).getTime() : Date.now();
+                    const openB = b.opened_at ? new Date(b.opened_at).getTime() : Date.now();
+                    valA = Date.now() - openA;
+                    valB = Date.now() - openB;
+                    break;
+                }
+                default:
+                    valA = 0; valB = 0;
+            }
+            return direction === 'asc' ? valA - valB : valB - valA;
         });
+        return sorted;
+    },
 
-        const activeIcon = header.querySelector('.sort-icon');
-        if (activeIcon) {
-          activeIcon.style.opacity = '1.0';
-          if (this.sortAsc) {
-            activeIcon.style.transform = 'rotate(-135deg)'; // up arrow
-          } else {
-            activeIcon.style.transform = 'rotate(45deg)'; // down arrow
-          }
-        }
-        
-        if (rerenderFn) rerenderFn();
-      });
-    });
-  },
+    // ── Init Sort Headers ────────────────────────────────────────
+    initSortHeaders(tableContainerId, tbodyId, rerenderFn) {
+        const container = document.getElementById(tableContainerId);
+        if (!container) return;
 
-  // Binance WebSocket real-time price tick animation & updater
-  updatePrice: function(symbol, price, lastData) {
-    const row = document.getElementById(`pos-row-${symbol.replace('/', '-')}`);
-    if (!row) return;
+        container.querySelectorAll('th.sortable').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.sort;
+                const current = this.sortState[tbodyId] || { column: '', direction: 'desc' };
 
-    // Retrieve trade original fields from cached array
-    const trade = (this.lastTrades || []).find(t => t.symbol === symbol);
-    if (!trade) return;
+                if (current.column === col) {
+                    current.direction = current.direction === 'desc' ? 'asc' : 'desc';
+                } else {
+                    current.column = col;
+                    current.direction = 'desc';
+                }
+                this.sortState[tbodyId] = current;
 
-    const oldPrice = parseFloat(trade.current_price || 0);
-    const newPrice = parseFloat(price);
-    
-    // Set updated price
-    trade.current_price = newPrice;
-    if (lastData && lastData[symbol]) {
-      lastData[symbol].current_price = newPrice;
+                // Update header classes
+                container.querySelectorAll('th.sortable').forEach(h => {
+                    h.classList.remove('sort-asc', 'sort-desc');
+                });
+                th.classList.add(current.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+
+                // Re-render
+                if (rerenderFn) rerenderFn();
+            });
+        });
+    },
+
+    // ── Update Single Price (from WebSocket) ─────────────────────
+    updatePrice(symbol, price, lastData) {
+        // Update all position tables
+        document.querySelectorAll(`tr[data-symbol="${symbol}"]`).forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 5) return;
+
+            const entryPrice = parseFloat(cells[1].textContent);
+            if (!entryPrice || entryPrice <= 0) return;
+
+            const oldPrice = this.previousPrices[symbol];
+            let priceClass = '';
+            let priceArrow = '';
+            if (oldPrice !== undefined && oldPrice !== price) {
+                if (price > oldPrice) {
+                    priceClass = 'price-up';
+                    priceArrow = '<span class="price-arrow up">↑</span>';
+                } else {
+                    priceClass = 'price-down';
+                    priceArrow = '<span class="price-arrow down">↓</span>';
+                }
+            }
+            this.previousPrices[symbol] = price;
+
+            // Update price cell with animation
+            cells[2].className = priceClass;
+            cells[2].innerHTML = `${price.toFixed(6)}${priceArrow}`;
+
+            // Determine direction
+            const isShort = row.closest('[data-direction="SHORT"]') !== null ||
+                           row.closest('#short-positions-table') !== null;
+            let pnlPct;
+            if (isShort) {
+                pnlPct = (entryPrice - price) / entryPrice * 100;
+            } else {
+                pnlPct = (price - entryPrice) / entryPrice * 100;
+            }
+
+            // Update PnL%
+            cells[3].innerHTML = App.fmtPct(pnlPct);
+
+            // Update PnL U
+            const tradeList = isShort
+                ? (lastData?.short_trades?.open || [])
+                : (lastData?.long_trades?.open || []);
+            const trade = tradeList.find(t => t.symbol === symbol);
+            const stake = trade ? (trade.stake_remaining || trade.stake || 100) : 100;
+            const leverage = trade ? (trade.leverage || 10) : 10;
+            const pnlU = stake * leverage * pnlPct / 100;
+            cells[4].innerHTML = App.fmtPnl(pnlU);
+        });
     }
-
-    // Identify flare status class
-    const priceCell = row.querySelector('.price-cell');
-    if (priceCell) {
-      priceCell.textContent = newPrice.toFixed(6);
-      
-      // Flash animations
-      priceCell.classList.remove('price-up', 'price-down');
-      void priceCell.offsetWidth; // Reflow trigger
-      
-      if (newPrice > oldPrice) {
-        priceCell.classList.add('price-up');
-      } else if (newPrice < oldPrice) {
-        priceCell.classList.add('price-down');
-      }
-    }
-
-    // Core stats recalculation
-    const stats = this.calculateRowStats(trade);
-
-    const pnlUCell = row.querySelector('.pnl-u-cell');
-    if (pnlUCell) pnlUCell.innerHTML = window.App.fmtPnl(stats.pnl_u);
-
-    const pnlPctCell = row.querySelector('.pnl-pct-cell');
-    if (pnlPctCell) pnlPctCell.innerHTML = `${window.App.fmtPct(stats.pnl_pct)} (${trade.leverage}x)`;
-
-    // TP Progress update
-    const tpStage = row.querySelector('.tp-stage-name');
-    if (tpStage) tpStage.textContent = stats.tpLabel;
-
-    const tpPct = row.querySelector('.tp-pct-value');
-    if (tpPct) tpPct.textContent = `${stats.tpProgress.toFixed(0)}%`;
-
-    const tpBar = row.querySelector('.tp-progress-bar');
-    if (tpBar) {
-      tpBar.style.width = `${stats.tpProgress}%`;
-      tpBar.style.backgroundColor = stats.tpColor;
-    }
-
-    const tpTargetLabel = row.querySelector('.tp-targets-lbl');
-    if (tpTargetLabel) tpTargetLabel.textContent = `Target: ${stats.tpTarget.toFixed(6)}`;
-
-    // Stop loss recalculation
-    const slPriceLbl = row.querySelector('.sl-price-lbl');
-    if (slPriceLbl) slPriceLbl.textContent = stats.slPrice ? stats.slPrice.toFixed(6) : '--';
-
-    const slDistCell = row.querySelector('.sl-dist-cell');
-    if (slDistCell) {
-      if (stats.slDistance !== null) {
-        slDistCell.textContent = `距止损: ${stats.slDistance.toFixed(2)}%`;
-        if (stats.slDistance < 1.0) {
-          row.classList.add('danger-row');
-          slDistCell.className = 'sl-dist-cell red';
-        } else {
-          row.classList.remove('danger-row');
-          slDistCell.className = 'sl-dist-cell text-secondary';
-        }
-      } else {
-        slDistCell.textContent = '--';
-      }
-    }
-  }
 };

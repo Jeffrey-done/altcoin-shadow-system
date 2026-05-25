@@ -1,13 +1,196 @@
 {% extends "admin/_base.html" %}
 {% block title %}Admin Panel{% endblock %}
 {% block body %}
+<style>
+/* ── Admin Panel Specific Styles ─────────────────────────────── */
+body { background: var(--bg-body); }
+
+/* Nav Bar */
+.nav-bar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 20, 0.92); backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 14px 24px; display: flex; align-items: center; justify-content: space-between;
+}
+.nav-brand { font-size: 0.9rem; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 10px; }
+.nav-right { display: flex; align-items: center; gap: 16px; }
+.nav-session { font-size: 0.7rem; color: var(--text-muted); }
+
+/* Container */
+.main-container { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
+
+/* Account Switcher */
+.account-bar {
+    background: var(--bg-card); border: 1px solid rgba(59,130,246,0.15);
+    border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 24px;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;
+}
+.account-info { display: flex; align-items: center; gap: 14px; }
+.account-avatar {
+    width: 44px; height: 44px; border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1rem; font-weight: 700; color: white;
+}
+.account-name { font-size: 1.05rem; font-weight: 600; }
+.account-id { font-size: 0.68rem; color: var(--text-muted); font-family: monospace; }
+.account-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Tabs */
+.tabs {
+    display: flex; gap: 4px; margin-bottom: 24px;
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 6px; overflow-x: auto;
+}
+.tab {
+    padding: 10px 18px; border-radius: var(--radius-md); cursor: pointer;
+    font-size: 0.78rem; font-weight: 500; color: var(--text-muted);
+    transition: all 0.2s; white-space: nowrap; border: none; background: none;
+    display: inline-flex; align-items: center; gap: 6px;
+}
+.tab:hover { color: var(--text-primary); background: var(--bg-elevated); }
+.tab.active { color: white; background: var(--accent); }
+.tab [data-lucide] { width: 14px; height: 14px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Forms */
+.form-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.form-row label { flex: 0 0 240px; font-size: 0.78rem; color: var(--text-secondary); }
+.form-row input, .form-row select { flex: 1; min-width: 160px; }
+input[type=text], input[type=password], input[type=number], select {
+    background: var(--bg-input); border: 1px solid var(--border-subtle); color: var(--text-primary);
+    padding: 11px 16px; border-radius: var(--radius-md); font: inherit; font-size: 0.85rem; width: 100%;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus, select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; border-radius: 4px; }
+select { cursor: pointer; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: var(--radius-md); font-size: 0.78rem; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; font-family: inherit; }
+.btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn-primary { background: linear-gradient(135deg, var(--accent), #1d4ed8); color: white; }
+.btn-success { background: linear-gradient(135deg, var(--green), #059669); color: white; }
+.btn-danger { background: linear-gradient(135deg, var(--red), #dc2626); color: white; }
+.btn-warning { background: linear-gradient(135deg, var(--yellow), #d97706); color: #000; }
+.btn-ghost { background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary); }
+.btn-ghost:hover { border-color: var(--text-muted); color: var(--text-primary); transform: none; }
+.btn-sm { padding: 7px 14px; font-size: 0.72rem; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+/* Card (override for panel) */
+.card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px; position: relative; overflow: hidden; }
+.card::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(255,255,255,0.015) 0%, transparent 60%); pointer-events: none; border-radius: inherit; }
+.card-title { font-size: 0.88rem; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border-subtle); }
+.card-title [data-lucide] { width: 18px; height: 18px; color: var(--accent); }
+
+/* Alerts */
+.alert { padding: 12px 16px; border-radius: var(--radius-md); font-size: 0.78rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease; }
+.alert-success { background: var(--green-subtle); border: 1px solid rgba(16,185,129,0.25); color: var(--green); }
+.alert-error { background: var(--red-subtle); border: 1px solid rgba(239,68,68,0.25); color: var(--red); }
+.alert-warning { background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.25); color: var(--yellow); }
+
+/* Status dots */
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.dot-yellow { background: var(--yellow); }
+.dot-gray { background: var(--text-muted); }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 0.68rem; font-weight: 600; }
+.badge-success { background: var(--green-subtle); color: var(--green); }
+.badge-danger { background: var(--red-subtle); color: var(--red); }
+.badge-warning { background: var(--yellow-subtle); color: var(--yellow); }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: var(--overlay); backdrop-filter: blur(6px); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-xl); padding: 32px; width: 90%; max-width: 440px; box-shadow: var(--shadow-md); animation: modalIn 0.2s ease; }
+.modal h3 { margin-bottom: 16px; font-size: 1.05rem; font-weight: 600; }
+
+/* Warn banner */
+.warn-banner { background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.2); color: var(--yellow); padding: 14px 18px; border-radius: var(--radius-md); margin-bottom: 18px; font-size: 0.78rem; line-height: 1.7; }
+
+/* Compound status box */
+.compound-box {
+    margin-top: 18px; padding: 18px 20px; border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--green-subtle), var(--accent-subtle));
+    border: 1px solid rgba(16,185,129,0.15);
+}
+.compound-box .compound-title { font-size: 0.78rem; font-weight: 600; color: var(--green); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+.compound-box .compound-title [data-lucide] { width: 16px; height: 16px; }
+
+/* Animations */
+@keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* Responsive */
+@media (max-width: 768px) {
+    .form-row { flex-direction: column; align-items: flex-start; }
+    .form-row label { flex: none; }
+    .account-bar { flex-direction: column; align-items: flex-start; }
+    .main-container { padding: 16px; }
+}
+
+/* ── Smoke Test (系统自检) ──────────────────────────────── */
+.smoke-phase-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s, background 0.15s;
+}
+.smoke-phase-chip:hover { border-color: var(--accent); background: var(--bg-card-hover); }
+.smoke-phase-chip input[type=checkbox] { margin: 0; }
+.smoke-phase-chip .muted { color: var(--text-muted); }
+
+.smoke-banner { padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); }
+.smoke-banner.smoke-pass { background: var(--green-subtle); border-color: rgba(16,185,129,0.35); color: var(--green); }
+.smoke-banner.smoke-fail { background: var(--red-subtle);   border-color: rgba(239,68,68,0.35);  color: var(--red);   }
+
+.smoke-phase-block { margin-bottom: 18px; }
+.smoke-phase-title {
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--text-secondary); padding: 8px 4px; margin-top: 6px;
+}
+
+.smoke-table {
+    width: 100%; border-collapse: collapse;
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); overflow: hidden;
+    font-size: 0.78rem;
+}
+.smoke-table tr { border-bottom: 1px solid var(--border-subtle); }
+.smoke-table tr:last-child { border-bottom: none; }
+.smoke-table td { padding: 8px 10px; vertical-align: middle; }
+
+.smoke-cell-status { width: 1%; white-space: nowrap; }
+.smoke-cell-id     { width: 1%; white-space: nowrap; color: var(--text-muted); font-family: ui-monospace, monospace; }
+.smoke-cell-name   { color: var(--text-primary); white-space: nowrap; }
+.smoke-cell-detail { color: var(--text-secondary); }
+.smoke-cell-ms     { width: 1%; white-space: nowrap; color: var(--text-muted); text-align: right; }
+
+.smoke-pill {
+    display: inline-block; min-width: 64px; text-align: center;
+    padding: 3px 8px; border-radius: 999px; font-weight: 700; font-size: 0.7rem;
+    letter-spacing: 0.04em;
+}
+.smoke-pass { color: var(--green);  background: var(--green-subtle);  border: 1px solid rgba(16,185,129,0.3); }
+.smoke-fail { color: var(--red);    background: var(--red-subtle);    border: 1px solid rgba(239,68,68,0.3); }
+.smoke-warn { color: var(--yellow); background: var(--yellow-subtle); border: 1px solid rgba(245,158,11,0.3); }
+.smoke-skip { color: var(--text-muted); background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.2); }
+</style>
 
 <!-- NAV BAR -->
 <nav class="nav-bar">
   <div class="nav-brand">
-    <i data-lucide="shield" style="width:18px;height:18px;"></i>
-    <span>量化控制管理员底座</span>
-    <span style="font-size:0.6rem;padding:2px 6px;background:var(--border-subtle);border-radius:4px;color:var(--text-muted);text-transform:uppercase;">V2.0</span>
+    <i data-lucide="settings" style="width:18px;height:18px;"></i> 影子管理
   </div>
   <div class="nav-right">
     <span class="nav-session" id="session-info"></span>
@@ -22,31 +205,26 @@
   <div id="alert-box"></div>
 
   <!-- ACCOUNT BAR -->
-  <div class="account-bar" style="flex-direction:column;align-items:stretch;">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;">
-      <div class="account-info">
-        <div class="account-avatar" id="account-avatar">?</div>
-        <div>
-          <div class="account-name" id="active-account-name">加载中...</div>
-          <div class="account-id" id="active-account-id"></div>
-        </div>
-      </div>
-      <div class="account-actions">
-        <span id="trading-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;">
-          <span style="font-size:0.7rem;color:var(--text-muted);">交易</span>
-          <input type="checkbox" id="account-trading-toggle" onchange="toggleAccountTrading(this)" style="cursor:pointer;">
-          <span class="badge" id="badge-trading">ON</span>
-        </span>
-        <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
-        <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
-        <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
-        <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
+  <div class="account-bar">
+    <div class="account-info">
+      <div class="account-avatar" id="account-avatar">?</div>
+      <div>
+        <div class="account-name" id="active-account-name">加载中...</div>
+        <div class="account-id" id="active-account-id"></div>
       </div>
     </div>
-    <!-- Account Cards Grid -->
-    <div id="account-cards-grid"></div>
+    <div class="account-actions">
+      <span id="trading-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;">
+        <span style="font-size:0.7rem;color:var(--text-muted);">交易</span>
+        <input type="checkbox" id="account-trading-toggle" onchange="toggleAccountTrading(this)" style="cursor:pointer;">
+        <span class="badge" id="badge-trading">ON</span>
+      </span>
+      <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
+      <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
+      <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
+      <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
+    </div>
   </div>
-
 
   <!-- TABS -->
   <div class="tabs">
@@ -94,7 +272,6 @@
     </div>
   </div>
 
-
   <!-- TAB: Credentials -->
   <div class="tab-content" id="tab-creds">
     <div class="card">
@@ -122,14 +299,13 @@
     </div>
   </div>
 
-
   <!-- TAB: Position & Risk -->
   <div class="tab-content" id="tab-position">
 
     <!-- 仓位模式（v5.1）：每账号独立 -->
-    <div class="card" style="border:1px solid rgba(16,185,129,0.25);">
+    <div class="card" style="border:1px solid rgba(99,102,241,0.4);">
       <div class="card-title"><i data-lucide="scaling"></i> 仓位模式（金额缩放）
-        <span class="badge" style="background:var(--accent-subtle);color:var(--accent);margin-left:8px;font-size:0.65rem;">当前账号独立</span>
+        <span class="badge" style="background:rgba(99,102,241,0.15);color:var(--accent);margin-left:8px;font-size:0.65rem;">当前账号独立</span>
       </div>
       <div class="form-row">
         <label>POSITION_MODE</label>
@@ -138,21 +314,49 @@
           <option value="proportional">proportional — 按余额比例自动缩放</option>
         </select>
       </div>
-      <div style="font-size:0.72rem;color:var(--text-muted);margin:8px 0 14px;line-height:1.7;">
-        <b>manual</b>：下方字段用你手填的值（每账号独立）。<br>
+      <div style="font-size:0.72rem;color:var(--text-muted);margin:8px 0 14px;">
+        <b>manual</b>：下方"仓位与杠杆 / 风控参数 / 复利"卡片里
+        DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE
+        用你手填的值（每账号独立）。<br>
         <b>proportional</b>：以 BASELINE_BALANCE=100U 为基准，按
-        <code style="color:var(--accent);">实际余额 / 100</code> 自动缩放。
-        <span style="color:var(--yellow);"><b>COMPOUND_MAX_STAKE 不参与缩放</b>。</span>
+        <code>实际余额 ÷ 100</code> 自动缩放上述 4 个金额字段（杠杆/止盈止损%/RSI 阈值不变）。
+        实盘时余额从交易所拉取（60s 缓存），影子模式用 ACCOUNT_BALANCE 手填值。
+        <span style="color:var(--yellow);"><b>COMPOUND_MAX_STAKE 不参与缩放</b>，绝对值封顶（默认 300U）。</span><br>
+        <span style="color:var(--accent);">⓵ 切换 confirm 后立即保存，30 秒内 scheduler / realtime_monitor / dashboard 三个进程同步生效。</span>
       </div>
       <div id="position-scale-state" class="compound-box" style="border-color:var(--accent);">
-        <div class="compound-title"><i data-lucide="activity" style="width:14px;height:14px;"></i> 当前生效状态（每 30s 刷新）</div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">模式</label><span id="pscale-mode" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">实际余额 / 来源</label><span id="pscale-balance" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">缩放系数 (scale)</label><span id="pscale-scale" style="font-weight:700;color:var(--green);">1.00x</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">DEFAULT_STAKE</label><span id="pscale-stake" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">RISK_MAX_DAILY_LOSS</label><span id="pscale-loss" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">COMPOUND_STEP / INCREASE</label><span id="pscale-compound" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:0;"><label style="color:var(--text-primary);">COMPOUND_MAX_STAKE（不缩放）</label><span id="pscale-maxstake" style="font-weight:700;color:var(--yellow);">--</span></div>
+        <div class="compound-title">
+          <i data-lucide="activity" style="width:14px;height:14px;"></i>
+          当前生效状态（每 30s 刷新）
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">模式</label>
+          <span id="pscale-mode" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">实际余额 / 来源</label>
+          <span id="pscale-balance" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">缩放系数 (scale)</label>
+          <span id="pscale-scale" style="font-weight:700;color:var(--green);">1.00x</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">DEFAULT_STAKE</label>
+          <span id="pscale-stake" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">RISK_MAX_DAILY_LOSS</label>
+          <span id="pscale-loss" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;">
+          <label style="color:var(--text-primary);">COMPOUND_STEP / INCREASE</label>
+          <span id="pscale-compound" style="font-weight:700;">--</span>
+        </div>
+        <div class="form-row" style="margin-bottom:0;">
+          <label style="color:var(--text-primary);">COMPOUND_MAX_STAKE（不缩放）</label>
+          <span id="pscale-maxstake" style="font-weight:700;color:var(--yellow);">--</span>
+        </div>
       </div>
     </div>
 
@@ -163,7 +367,6 @@
       <div class="form-row"><label>Binance 杠杆</label><input type="number" id="cfg-LEVERAGE" min="1" max="20" step="1"></div>
       <div class="form-row"><label>OKX 杠杆</label><input type="number" id="cfg-OKX_DEFAULT_LEVERAGE" min="1" max="20" step="1"></div>
 
-
       <div class="compound-box">
         <div class="compound-title"><i data-lucide="trending-up"></i> 复利状态（自动计算）</div>
         <div class="form-row" style="margin-bottom:8px;"><label style="color:var(--text-primary);">满仓（A级信号）</label><span id="compound-current-stake" style="font-weight:700;color:var(--green);">--</span></div>
@@ -173,7 +376,10 @@
       </div>
 
       <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--accent);display:flex;align-items:center;gap:6px;"><i data-lucide="sliders-horizontal" style="width:14px;height:14px;"></i> 复利曲线参数（每账号独立）</h4>
-      <div class="form-row"><label>启用自动复利</label><input type="checkbox" id="cfg-AUTO_COMPOUND_ENABLED"></div>
+      <div class="form-row">
+        <label>启用自动复利</label>
+        <input type="checkbox" id="cfg-AUTO_COMPOUND_ENABLED">
+      </div>
       <div class="form-row"><label>步进 (盈利每 N U 加一档)</label><input type="number" id="cfg-COMPOUND_STEP" min="10" max="500" step="1"></div>
       <div class="form-row"><label>每档增加保证金 (U)</label><input type="number" id="cfg-COMPOUND_INCREASE" min="1" max="200" step="1"></div>
       <div class="form-row"><label>复利后保证金上限 (U)</label><input type="number" id="cfg-COMPOUND_MAX_STAKE" min="10" max="1000" step="1"></div>
@@ -181,38 +387,10 @@
 
     <div class="card">
       <div class="card-title"><i data-lucide="target"></i> 止盈与止损</div>
-      <div class="form-row">
-        <label>一档止盈系数 (0.80~1.00)</label>
-        <div class="slider-dual-control">
-          <input type="range" id="slider-TP1_MULTIPLIER" min="0.80" max="1.00" step="0.01" oninput="syncSliderToNumber('TP1_MULTIPLIER', this.value)">
-          <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01" oninput="syncNumberToSlider('TP1_MULTIPLIER', this.value)">
-          <span class="slider-value-label" id="lbl-TP1_MULTIPLIER"></span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label>二档止盈系数 (0.70~1.00)</label>
-        <div class="slider-dual-control">
-          <input type="range" id="slider-TP2_MULTIPLIER" min="0.70" max="1.00" step="0.01" oninput="syncSliderToNumber('TP2_MULTIPLIER', this.value)">
-          <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01" oninput="syncNumberToSlider('TP2_MULTIPLIER', this.value)">
-          <span class="slider-value-label" id="lbl-TP2_MULTIPLIER"></span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label>一档平仓比例 (0.1~0.9)</label>
-        <div class="slider-dual-control">
-          <input type="range" id="slider-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1" oninput="syncSliderToNumber('TP1_CLOSE_RATIO', this.value)">
-          <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1" oninput="syncNumberToSlider('TP1_CLOSE_RATIO', this.value)">
-          <span class="slider-value-label" id="lbl-TP1_CLOSE_RATIO"></span>
-        </div>
-      </div>
-      <div class="form-row">
-        <label>硬止损 (%)</label>
-        <div class="slider-dual-control">
-          <input type="range" id="slider-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5" oninput="syncSliderToNumber('HARD_STOP_LOSS_PCT', this.value)">
-          <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5" oninput="syncNumberToSlider('HARD_STOP_LOSS_PCT', this.value)">
-          <span class="slider-value-label" id="lbl-HARD_STOP_LOSS_PCT"></span>
-        </div>
-      </div>
+      <div class="form-row"><label>一档止盈系数 (0.80~1.00)</label><input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>二档止盈系数 (0.70~1.00)</label><input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01"></div>
+      <div class="form-row"><label>一档平仓比例 (0.1~0.9)</label><input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1"></div>
+      <div class="form-row"><label>硬止损 (%)</label><input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5"></div>
       <div class="form-row"><label>滑点告警 (%)</label><input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1"></div>
     </div>
 
@@ -230,18 +408,10 @@
         <i data-lucide="check" style="width:16px;height:16px;"></i> 保存到当前账号
       </button>
       <span style="margin-left:14px;font-size:0.72rem;color:var(--text-muted);">
-        全局字段落到 <code>_global</code>；其余字段落到当前账号。
+        全局字段（实盘开关/路由）落到 <code>_global</code>；其余字段落到顶部所选的当前账号。
       </span>
     </div>
-
-    <!-- Consistency Warnings Banner -->
-    <div id="consistency-warnings">
-      <div class="cw-title"><i data-lucide="alert-triangle" style="width:16px;height:16px;"></i> 一致性警告</div>
-      <ul class="cw-list" id="cw-list"></ul>
-      <button class="cw-dismiss" onclick="dismissConsistencyWarnings()">关闭提示</button>
-    </div>
   </div>
-
 
   <!-- TAB: Preflight -->
   <div class="tab-content" id="tab-preflight">
@@ -263,41 +433,51 @@
     </div>
   </div>
 
-  <!-- TAB: Smoke Test -->
+  <!-- TAB: Smoke Test (系统自检) -->
   <div class="tab-content" id="tab-smoke">
     <div class="card">
       <div class="card-title"><i data-lucide="activity"></i> 系统自检</div>
       <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:14px;">
-        端到端健康检查。<b>不会下任何订单</b>，但 Phase D 会发一条静默 TG 测试消息。
+        端到端健康检查 —— 配置 / 网络 / 实盘凭证 / 运行时数据。<b>不会下任何订单</b>，但 Phase D 会发一条静默 TG 测试消息验证通路。
       </p>
+
+      <!-- Phase selector -->
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;font-size:0.78rem;">
-        <label class="smoke-phase-chip"><input type="checkbox" data-phase="A" checked> <b>A</b> · 配置</label>
-        <label class="smoke-phase-chip"><input type="checkbox" data-phase="B" checked> <b>B</b> · 网络</label>
-        <label class="smoke-phase-chip"><input type="checkbox" data-phase="C"> <b>C</b> · 凭证 <span class="muted" style="font-size:0.7rem;">(需key)</span></label>
-        <label class="smoke-phase-chip"><input type="checkbox" data-phase="D" checked> <b>D</b> · 运行时</label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="A" checked> <b>A</b> · 配置 (静态)</label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="B" checked> <b>B</b> · 网络可达</label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="C"> <b>C</b> · 实盘凭证 <span class="muted" style="font-size:0.7rem;">(需 API key)</span></label>
+        <label class="smoke-phase-chip"><input type="checkbox" data-phase="D" checked> <b>D</b> · 运行时数据</label>
       </div>
+
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:18px;">
         <button class="btn btn-primary" onclick="runSmokeTest()" id="btn-smoke">
           <i data-lucide="play" style="width:14px;height:14px;"></i> 开始检测
         </button>
-        <button class="btn btn-ghost btn-sm" onclick="runSmokeTestAll()" id="btn-smoke-all" title="全部阶段">
-          <i data-lucide="zap" style="width:12px;height:12px;"></i> 全部跑
+        <button class="btn btn-ghost btn-sm" onclick="runSmokeTestAll()" id="btn-smoke-all" title="勾选全部 4 个阶段并立即开跑（含 C）">
+          <i data-lucide="zap" style="width:12px;height:12px;"></i> 全部跑一遍
         </button>
         <span id="smoke-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
       </div>
-      <div id="smoke-summary" style="display:none;margin-bottom:14px;"></div>
+
+      <!-- Summary banner -->
+      <div id="smoke-summary" style="display:none;margin-bottom:14px;padding:14px 16px;border-radius:var(--radius-md);font-size:0.82rem;"></div>
+
+      <!-- Results table -->
       <div id="smoke-results" style="display:none;"></div>
     </div>
   </div>
 
-
-  <!-- TAB: Task Metrics -->
+  <!-- TAB: Task Metrics (任务监控) -->
   <div class="tab-content" id="tab-tasks">
     <div class="card">
       <div class="card-title"><i data-lucide="timer"></i> 任务监控</div>
       <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:14px;">
-        scheduler 任务执行时间线与按任务聚合统计。
+        scheduler 每个任务执行结束后写入 <code>task_metrics.jsonl</code>。这里
+        显示最近的执行时间线 + 按任务聚合的统计 —— 配合 TG 收到的"任务超时"
+        告警可以快速定位是哪个任务、什么时候、超时多少。
       </p>
+
+      <!-- Toolbar -->
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px;font-size:0.78rem;">
         <label>条数</label>
         <select id="task-metrics-limit" style="width:auto;padding:6px 10px;">
@@ -309,6 +489,7 @@
         <label>任务</label>
         <select id="task-metrics-name" style="width:auto;padding:6px 10px;">
           <option value="">全部</option>
+          <!-- 动态填充 -->
         </select>
         <button class="btn btn-primary" onclick="loadTaskMetrics()" id="btn-task-metrics">
           <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> 刷新
@@ -318,10 +499,14 @@
         </button>
         <span id="task-metrics-status" style="font-size:0.78rem;color:var(--text-muted);"></span>
       </div>
+
+      <!-- Per-task summary -->
       <div id="task-metrics-summary" style="margin-bottom:14px;display:none;"></div>
+
+      <!-- Timeline -->
       <div id="task-metrics-timeline" style="display:none;"></div>
       <div id="task-metrics-empty" style="display:none;padding:24px;text-align:center;color:var(--text-muted);font-size:0.82rem;">
-        暂无任务执行事件。等 scheduler 跑过几轮再回来查看。
+        暂无任务执行事件。等 scheduler 跑过几轮(15 分钟一轮的"候选确认"是最常见的)再回来,或检查 <code>task_metrics.jsonl</code> 文件路径。
       </div>
     </div>
   </div>
@@ -365,27 +550,24 @@
   </div>
 </div>
 
-<!-- Toast Notification Container -->
-<div id="toast-container"></div>
 
 
-
-<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
 <script>
 const CSRF_TOKEN = "{{ csrf_token }}";
-const IDLE_REMAINING = {{ idle_remaining }};
-const ABSOLUTE_REMAINING = {{ absolute_remaining }};
 let pendingAction = null;
 let currentAccounts = [];
 let currentActiveId = '';
+// 多账号配置：存所有账号的 overrides + 全局 overrides + fields_meta
+// 用于切换账号下拉时本地 reload 表单，不需要每次发请求
 let lastConfigState = {
-  global_config: {},
-  accounts_config: {},
-  fields_meta: {},
-  config_active_snapshot: {},
-  config_defaults: {},
-  compound_per_account: {},
+  global_config: {},          // _global 段
+  accounts_config: {},        // { acc_id: {...overrides} }
+  fields_meta: {},            // { KEY: {type, label, scope: 'global'|'account'} }
+  config_active_snapshot: {}, // 当前已 apply 到 config 模块的快照（向后兼容；不能用作账号 fallback）
+  config_defaults: {},        // config.py 原始默认值，账号字段在没有 override 时的 fallback
+  compound_per_account: {},   // { acc_id: {current_stake, dynamic_balance} }
 };
+// 仓位/止盈止损/风控/复利 tab 直接跟随顶部活跃账号
 let cfgTargetAccountId = '';
 
 async function api(method, path, body) {
@@ -396,91 +578,14 @@ async function api(method, path, body) {
   if (!res.ok) { if (data.error === 'totp_required') return {needTotp: true}; throw new Error(data.error || data.message || 'HTTP ' + res.status); }
   return data;
 }
-function alertBox(msg, level) { const el = document.getElementById('alert-box'); const cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success'); el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>'; setTimeout(() => { el.innerHTML = ''; }, 5000); if (level === 'ok') showToast('success', msg); else if (level === 'error') showToast('error', msg); }
-
-// ── Toast Notification System ──
-function showToast(type, text) {
-  const container = document.getElementById('toast-container');
-  if (!container) return;
-  const toast = document.createElement('div');
-  toast.className = 'toast toast-' + type;
-  const icon = type === 'success' ? '\u2713' : '\u2717';
-  toast.innerHTML = '<span class="toast-icon">' + icon + '</span><span class="toast-text">' + text + '</span><span class="toast-close" onclick="this.parentElement.remove()">\u00d7</span>';
-  container.appendChild(toast);
-  setTimeout(() => { toast.classList.add('toast-hide'); setTimeout(() => toast.remove(), 300); }, 4000);
-}
-
-// ── Range Slider Sync Functions ──
-function syncSliderToNumber(key, val) {
-  const numEl = document.getElementById('cfg-' + key);
-  const lblEl = document.getElementById('lbl-' + key);
-  if (numEl) numEl.value = val;
-  if (lblEl) lblEl.textContent = val;
-}
-function syncNumberToSlider(key, val) {
-  const sliderEl = document.getElementById('slider-' + key);
-  const lblEl = document.getElementById('lbl-' + key);
-  if (sliderEl) sliderEl.value = val;
-  if (lblEl) lblEl.textContent = val;
-}
-function initSliders() {
-  ['TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'HARD_STOP_LOSS_PCT', 'TP1_CLOSE_RATIO'].forEach(key => {
-    const numEl = document.getElementById('cfg-' + key);
-    const sliderEl = document.getElementById('slider-' + key);
-    const lblEl = document.getElementById('lbl-' + key);
-    if (numEl && sliderEl) {
-      const val = numEl.value || sliderEl.min;
-      sliderEl.value = val;
-      if (lblEl) lblEl.textContent = val;
-    }
-  });
-}
-
-// ── Consistency Warnings ──
-function showConsistencyWarnings(warnings) {
-  const el = document.getElementById('consistency-warnings');
-  const list = document.getElementById('cw-list');
-  if (!el || !list || !warnings || !warnings.length) return;
-  list.innerHTML = warnings.map(w => '<li>' + w + '</li>').join('');
-  el.style.display = 'block';
-  lucide.createIcons();
-}
-function dismissConsistencyWarnings() {
-  const el = document.getElementById('consistency-warnings');
-  if (el) el.style.display = 'none';
-}
-
-// ── Account Cards Grid Rendering ──
-function renderAccountCards() {
-  const grid = document.getElementById('account-cards-grid');
-  if (!grid) return;
-  if (!currentAccounts || currentAccounts.length === 0) { grid.innerHTML = ''; return; }
-  const cfg = lastConfigState.config_active_snapshot || {};
-  grid.innerHTML = currentAccounts.map(acc => {
-    const isActive = acc.id === currentActiveId;
-    const tradingEnabled = acc.trading_enabled !== false;
-    const hasBn = true; // All accounts have potential Binance
-    const hasOkx = true; // All accounts have potential OKX
-    return '<div class="account-card' + (isActive ? ' account-card-active' : '') + '" onclick="switchAccount(\'' + acc.id + '\')">' +
-      (isActive ? '<div class="account-card-active-indicator"></div>' : '') +
-      '<div class="account-card-name">' + acc.name + '</div>' +
-      '<div class="account-card-badges">' +
-        '<span class="account-card-badge account-card-badge-bn">BN</span>' +
-        '<span class="account-card-badge account-card-badge-okx">OKX</span>' +
-      '</div>' +
-      '<div class="account-card-trading">' +
-        '<span class="dot ' + (tradingEnabled ? 'dot-green' : 'dot-red') + '"></span>' +
-        '<span>' + (tradingEnabled ? '交易中' : '已停用') + '</span>' +
-      '</div>' +
-    '</div>';
-  }).join('');
-}
+function alertBox(msg, level) { const el = document.getElementById('alert-box'); const cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success'); el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>'; setTimeout(() => { el.innerHTML = ''; }, 5000); }
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelectorAll('.tab').forEach(t => { if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'" + name + "'")) t.classList.add('active'); });
+  // 进入"任务监控"立刻加载一次（首次切换时）
   if (name === 'tasks' && typeof loadTaskMetrics === 'function') {
     const tl = document.getElementById('task-metrics-timeline');
     const em = document.getElementById('task-metrics-empty');
@@ -490,30 +595,24 @@ function switchTab(name) {
   }
 }
 
-function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => { document.getElementById('totp-code').focus(); }, 50); }
+function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => document.getElementById('totp-code').focus(), 50); }
 function closeTotpModal() { pendingAction = null; document.getElementById('totp-modal').classList.remove('show'); document.getElementById('totp-code').value = ''; }
-async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('验证失败: ' + e.message, 'error'); } }
-
-// ── TOTP Auto-Submit (auto-trigger when 6 digits entered) ──
-document.getElementById('totp-code').addEventListener('input', function() {
-  this.value = this.value.replace(/\D/g, '');
-  if (this.value.length === 6) { setTimeout(submitTotp, 50); }
-});
-
+async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'api/verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('验证失败: ' + e.message, 'error'); } }
 
 function openAccountModal() { document.getElementById('account-modal').classList.add('show'); setTimeout(() => document.getElementById('new-account-name').focus(), 50); }
 function closeAccountModal() { document.getElementById('account-modal').classList.remove('show'); document.getElementById('new-account-name').value = ''; }
 function openRenameModal() { document.getElementById('rename-modal').classList.add('show'); const c = currentAccounts.find(a => a.id === currentActiveId); document.getElementById('rename-account-name').value = c ? c.name : ''; }
 function closeRenameModal() { document.getElementById('rename-modal').classList.remove('show'); }
 
-async function createAccount() { const name = document.getElementById('new-account-name').value.trim(); if (!name) { alertBox('请输入名称', 'error'); return; } const doCreate = async () => { try { const r = await api('POST', 'accounts', {name}); if (r.needTotp) { openTotpModal(doCreate); return; } closeAccountModal(); alertBox('账户已创建: ' + name, 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doCreate(); }
-async function deleteCurrentAccount() { if (!currentActiveId || !confirm('确认删除此账户？此操作不可恢复。')) return; const doDelete = async () => { try { const r = await api('DELETE', 'accounts/' + currentActiveId); if (r.needTotp) { openTotpModal(doDelete); return; } alertBox('账户已删除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doDelete(); }
-async function renameAccount() { const name = document.getElementById('rename-account-name').value.trim(); if (!name) { alertBox('名称不能为空', 'error'); return; } try { await api('PATCH', 'accounts/' + currentActiveId, {name}); closeRenameModal(); alertBox('已重命名', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
-async function switchAccount(accId) { if (accId === currentActiveId) return; try { await api('POST', 'accounts/' + accId + '/activate'); alertBox('已切换', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
+async function createAccount() { const name = document.getElementById('new-account-name').value.trim(); if (!name) { alertBox('请输入名称', 'error'); return; } const doCreate = async () => { try { const r = await api('POST', 'api/accounts', {name}); if (r.needTotp) { openTotpModal(doCreate); return; } closeAccountModal(); alertBox('账户已创建: ' + name, 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doCreate(); }
+async function deleteCurrentAccount() { if (!currentActiveId || !confirm('确认删除此账户？此操作不可恢复。')) return; const doDelete = async () => { try { const r = await api('DELETE', 'api/accounts/' + currentActiveId); if (r.needTotp) { openTotpModal(doDelete); return; } alertBox('账户已删除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; await doDelete(); }
+async function renameAccount() { const name = document.getElementById('rename-account-name').value.trim(); if (!name) { alertBox('名称不能为空', 'error'); return; } try { await api('PATCH', 'api/accounts/' + currentActiveId, {name}); closeRenameModal(); alertBox('已重命名', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
+async function switchAccount(accId) { if (accId === currentActiveId) return; try { await api('POST', 'api/accounts/' + accId + '/activate'); alertBox('已切换', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }
 
 async function loadState() {
   try {
-    const s = await api('GET', 'config');
+    const s = await api('GET', 'api/state');
+    // 缓存多账号配置原始数据（切账号下拉时本地 reload 表单用，不再发请求）
     lastConfigState.global_config = s.global_config || {};
     lastConfigState.accounts_config = s.accounts_config || {};
     lastConfigState.fields_meta = s.fields_meta || {};
@@ -523,6 +622,7 @@ async function loadState() {
     lastConfigState.position_scale = s.position_scale || {};
     lastConfigState.position_scale_per_account = s.position_scale_per_account || {};
 
+    // 1. 全局字段：始终从 global_config 读（落到 #cfg-LIVE_MODE 等）
     Object.entries(s.config || {}).forEach(([k, v]) => {
       const meta = (s.fields_meta || {})[k];
       if (meta && meta.scope === 'global') {
@@ -532,6 +632,7 @@ async function loadState() {
       }
     });
 
+    // 2. 账号字段：等下面 currentAccounts 决定后再 populate（见 onTargetAccountChange）
     const bnBadge = document.getElementById('badge-live-bn'), okxBadge = document.getElementById('badge-live-okx');
     bnBadge.textContent = s.config.LIVE_MODE ? 'LIVE' : 'OFF'; bnBadge.className = 'badge ' + (s.config.LIVE_MODE ? 'badge-danger' : 'badge-success');
     okxBadge.textContent = s.config.OKX_LIVE_MODE ? 'LIVE' : 'OFF'; okxBadge.className = 'badge ' + (s.config.OKX_LIVE_MODE ? 'badge-danger' : 'badge-success');
@@ -539,22 +640,35 @@ async function loadState() {
     const okx = s.exchanges.okx; document.getElementById('okx-status').innerHTML = okx.has_credentials ? '<span class="dot dot-green"></span> 已配置 | ' + (okx.masked.api_key || '') : '<span class="dot dot-red"></span> 未配置';
     const sess = s.session; document.getElementById('session-info').innerHTML = Math.floor(sess.idle_remaining_sec / 60) + ' min | ' + (sess.fresh_totp ? '<span class="dot dot-green"></span>' : '<span class="dot dot-yellow"></span>') + ' 2FA';
     currentAccounts = s.accounts || []; currentActiveId = s.active_account || ''; updateAccountUI();
+
+    // 3. 渲染"配置目标账号"下拉，默认选当前活跃账号
     rebuildCfgTargetAccountDropdown();
+
+    // 4. populate 账号字段表单（基于 cfgTargetAccountId）
     populateAccountFieldsForm();
+
+    // 5. 复利显示（基于 cfgTargetAccountId）
     refreshCompoundDisplay();
+
+    // 6. 仓位模式状态显示（v5.1 / 阶段 3：每账号独立）
     renderPositionScaleStateForCurrentTarget();
+
     lucide.createIcons();
   } catch (e) { alertBox('加载失败: ' + e.message, 'error'); }
 }
 
-
+// 阶段 3（2026-05）：选当前目标账号的 scale state 渲染
+// 切账号时也要重渲染，所以独立成一个 helper
 function renderPositionScaleStateForCurrentTarget() {
   const perAcc = (lastConfigState.position_scale_per_account || {});
   const aid = cfgTargetAccountId || '';
+  // 优先用该账号自己的 state；找不到时 fallback 到全局（活跃账号的）
   const ps = (aid && perAcc[aid]) ? perAcc[aid] : (lastConfigState.position_scale || {});
   renderPositionScaleState(ps);
 }
 
+// 渲染仓位模式状态卡片，并在 proportional 模式下把被缩放的 4 个字段
+// 标记成只读 + 提示"由比例模式自动计算"，避免用户混淆。
 function renderPositionScaleState(ps) {
   const mode = ps.mode || 'manual';
   const scale = (ps.scale != null) ? Number(ps.scale).toFixed(2) : '1.00';
@@ -562,78 +676,171 @@ function renderPositionScaleState(ps) {
   const sf = ps.scaled_fields || {};
   const baseline = ps.baseline_balance || 100;
   const cfg = lastConfigState.config_active_snapshot || {};
-  const srcLabel = {'config':'配置(影子/手填)','binance':'交易所(Binance)','okx':'交易所(OKX)','both':'交易所(双所)','unavailable':'不可用'}[src] || src;
-  const setText = (id, val, color) => { const el = document.getElementById(id); if (!el) return; el.textContent = val; if (color) el.style.color = color; };
-  setText('pscale-mode', mode === 'proportional' ? 'PROPORTIONAL（按比例）' : 'MANUAL（手动）', mode === 'proportional' ? 'var(--accent)' : 'var(--text-primary)');
+
+  const srcLabel = {
+    'config':      '配置(影子/手填)',
+    'binance':     '交易所(Binance 实盘)',
+    'okx':         '交易所(OKX 实盘)',
+    'both':        '交易所(双所相加)',
+    'unavailable': '不可用 → 回退',
+  }[src] || src;
+
+  const setText = (id, val, color) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = val;
+    if (color) el.style.color = color;
+  };
+
+  // ── 模式标签 ──
+  setText('pscale-mode',
+          mode === 'proportional' ? 'PROPORTIONAL（按比例）' : 'MANUAL（手动）',
+          mode === 'proportional' ? 'var(--accent)' : 'var(--text-primary)');
+
+  // ── 余额显示 ──
+  // proportional: 显示 effective_balance（实盘从交易所拉的真实余额）
+  // manual:       显示 ACCOUNT_BALANCE（手填值），用灰色字体表示"未启用比例计算"
   let balDisplay, balColor;
   if (mode === 'proportional') {
     const bal = (ps.effective_balance != null) ? Number(ps.effective_balance).toFixed(2) : '--';
-    balDisplay = bal + 'U（' + srcLabel + ', baseline=' + baseline + 'U）';
+    balDisplay = `${bal}U（${srcLabel}, baseline=${baseline}U）`;
     balColor = 'var(--text-primary)';
   } else {
     const acctBal = cfg.ACCOUNT_BALANCE != null ? cfg.ACCOUNT_BALANCE : '--';
-    balDisplay = acctBal + 'U（ACCOUNT_BALANCE，未启用比例缩放）';
+    balDisplay = `${acctBal}U（ACCOUNT_BALANCE，未启用比例缩放）`;
     balColor = 'var(--text-muted)';
   }
   setText('pscale-balance', balDisplay, balColor);
-  if (mode === 'proportional') { setText('pscale-scale', scale + 'x', 'var(--green)'); }
-  else { setText('pscale-scale', 'N/A（manual 模式不缩放）', 'var(--text-muted)'); }
-  const fieldVal = (key) => { if (mode === 'proportional' && sf[key] != null) return sf[key]; return cfg[key] != null ? cfg[key] : '--'; };
-  const stake = fieldVal('DEFAULT_STAKE'), loss = fieldVal('RISK_MAX_DAILY_LOSS');
-  const step = fieldVal('COMPOUND_STEP'), inc = fieldVal('COMPOUND_INCREASE');
+
+  // ── scale 显示 ──
+  // proportional: 显示真实 scale 值（绿色高亮）
+  // manual:       显示 N/A（灰色），强调"未启用"
+  if (mode === 'proportional') {
+    setText('pscale-scale', `${scale}x`, 'var(--green)');
+  } else {
+    setText('pscale-scale', 'N/A（manual 模式不缩放）', 'var(--text-muted)');
+  }
+
+  // ── 4 个金额字段 ──
+  // proportional: 用后端返回的 scaled_fields（PRISTINE × scale 计算结果）
+  // manual:       用 config 模块的当前值（即用户在"仓位与风控" tab 改过的值或 PRISTINE 默认）
+  const fieldVal = (key) => {
+    if (mode === 'proportional' && sf[key] != null) return sf[key];
+    return cfg[key] != null ? cfg[key] : '--';
+  };
+  const stake = fieldVal('DEFAULT_STAKE');
+  const loss = fieldVal('RISK_MAX_DAILY_LOSS');
+  const step = fieldVal('COMPOUND_STEP');
+  const inc = fieldVal('COMPOUND_INCREASE');
   const fieldColor = mode === 'proportional' ? 'var(--text-primary)' : 'var(--text-secondary)';
-  setText('pscale-stake', stake + 'U', fieldColor);
-  setText('pscale-loss', loss + 'U', fieldColor);
-  setText('pscale-compound', step + 'U / ' + inc + 'U', fieldColor);
+  setText('pscale-stake', `${stake}U`, fieldColor);
+  setText('pscale-loss', `${loss}U`, fieldColor);
+  setText('pscale-compound', `${step}U / ${inc}U`, fieldColor);
+
   const maxStake = cfg.COMPOUND_MAX_STAKE != null ? cfg.COMPOUND_MAX_STAKE : '--';
-  setText('pscale-maxstake', maxStake + 'U（绝对值上限）', 'var(--yellow)');
-  const scaledFieldIds = ['cfg-DEFAULT_STAKE', 'cfg-RISK_MAX_DAILY_LOSS', 'cfg-COMPOUND_STEP', 'cfg-COMPOUND_INCREASE'];
+  setText('pscale-maxstake', `${maxStake}U（绝对值上限）`, 'var(--yellow)');
+
+  // ── 在 proportional 模式下锁定仓位 tab 上 4 个被自动缩放的字段 ──
+  const scaledFieldIds = ['cfg-DEFAULT_STAKE', 'cfg-RISK_MAX_DAILY_LOSS',
+                          'cfg-COMPOUND_STEP', 'cfg-COMPOUND_INCREASE'];
   scaledFieldIds.forEach(id => {
-    const el = document.getElementById(id); if (!el) return;
-    if (mode === 'proportional') { el.readOnly = true; el.disabled = false; el.style.background = 'var(--bg-elevated)'; el.style.opacity = '0.5'; el.title = '比例模式下由系统自动计算'; }
-    else { el.readOnly = false; el.style.background = ''; el.style.opacity = ''; el.title = ''; }
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (mode === 'proportional') {
+      el.readOnly = true;
+      el.disabled = false;
+      el.style.background = 'var(--bg-elevated)';
+      el.style.opacity = '0.5';
+      el.title = `比例模式下由系统自动计算 = PRISTINE × scale (${scale}x)。要手动调请切换到 manual 模式。`;
+    } else {
+      el.readOnly = false;
+      el.style.background = '';
+      el.style.opacity = '';
+      el.title = '';
+    }
   });
 }
 
-function rebuildCfgTargetAccountDropdown() { cfgTargetAccountId = currentActiveId || ''; }
+// 跟随顶部账号选择器
+function rebuildCfgTargetAccountDropdown() {
+  cfgTargetAccountId = currentActiveId || '';
+}
 
+// populate 仓位/止盈止损/风控/复利 表单为指定账号的值
+//
+// 关键修复：未覆盖字段的 fallback 是 config_defaults（config.py 原始值），
+// 而不是 config_active_snapshot（被 apply_overrides 污染过的当前活跃账号的值）。
+// 之前 fallback 走 config_active_snapshot 时，没设过的账号会显示活跃账号的值，
+// 看起来"改一个动全部"——这就是用户报告的 bug。
 function populateAccountFieldsForm() {
   const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
   const defaults = lastConfigState.config_defaults || {};
   const meta = lastConfigState.fields_meta || {};
+
   Object.keys(meta).forEach(key => {
     if (meta[key].scope !== 'account') return;
-    const el = document.getElementById('cfg-' + key); if (!el) return;
+    const el = document.getElementById('cfg-' + key);
+    if (!el) return;
     const isOverridden = accOverrides[key] !== undefined;
-    let val = isOverridden ? accOverrides[key] : defaults[key];
-    if (el.parentElement && el.parentElement.classList.contains('form-row')) {
-      if (isOverridden) { el.style.borderColor = ''; el.style.opacity = ''; el.title = ''; }
-      else { el.style.borderColor = 'var(--border-subtle)'; el.style.opacity = '0.6'; el.title = '默认值；保存后会成为该账号的覆盖值'; }
+    let val;
+    if (isOverridden) {
+      val = accOverrides[key];
+    } else {
+      val = defaults[key];
     }
-    if (val === undefined || val === null) { if (el.type !== 'checkbox') el.value = ''; else el.checked = false; return; }
-    if (el.type === 'checkbox') el.checked = !!val; else el.value = val;
-    // Sync range sliders
-    syncNumberToSlider(key, val);
+    // 视觉提示：用默认值的字段加柔和淡灰色边框，让用户知道是 fallback
+    if (el.parentElement && el.parentElement.classList.contains('form-row')) {
+      if (isOverridden) {
+        el.style.borderColor = '';
+        el.style.opacity = '';
+        el.title = '';
+      } else {
+        el.style.borderColor = 'var(--border-subtle)';
+        el.style.opacity = '0.6';
+        el.title = '该账号未设置此项，显示的是 config.py 默认值；保存后会成为该账号的覆盖值';
+      }
+    }
+    if (val === undefined || val === null) {
+      if (el.type !== 'checkbox') el.value = '';
+      else el.checked = false;
+      return;
+    }
+    if (el.type === 'checkbox') el.checked = !!val;
+    else el.value = val;
   });
-  initSliders();
 }
 
+// 切换账号时自动刷新（顶部 account-switcher 触发 switchAccount → loadState → 这里）
 
+// 刷新复利状态显示（按 cfgTargetAccountId）
 function refreshCompoundDisplay() {
   const cs = (lastConfigState.compound_per_account || {})[cfgTargetAccountId];
   if (!cs) return;
   const accOverrides = (lastConfigState.accounts_config || {})[cfgTargetAccountId] || {};
   const defaults = lastConfigState.config_defaults || {};
   const stake = cs.current_stake;
-  const baseStake = accOverrides.DEFAULT_STAKE !== undefined ? accOverrides.DEFAULT_STAKE : (defaults.DEFAULT_STAKE !== undefined ? defaults.DEFAULT_STAKE : 50);
-  const enabled = accOverrides.AUTO_COMPOUND_ENABLED !== undefined ? accOverrides.AUTO_COMPOUND_ENABLED : (defaults.AUTO_COMPOUND_ENABLED !== undefined ? defaults.AUTO_COMPOUND_ENABLED : true);
+  // baseStake 也走 per-account → pristine 默认 这条路径，不能走 config_active_snapshot
+  const baseStake = accOverrides.DEFAULT_STAKE !== undefined
+    ? accOverrides.DEFAULT_STAKE
+    : (defaults.DEFAULT_STAKE !== undefined ? defaults.DEFAULT_STAKE : 50);
+  const enabled = accOverrides.AUTO_COMPOUND_ENABLED !== undefined
+    ? accOverrides.AUTO_COMPOUND_ENABLED
+    : (defaults.AUTO_COMPOUND_ENABLED !== undefined ? defaults.AUTO_COMPOUND_ENABLED : true);
+
   document.getElementById('compound-current-stake').textContent = stake + 'U';
   document.getElementById('compound-half-stake').textContent = Math.round(stake * 0.5) + 'U';
   document.getElementById('compound-dynamic-balance').textContent = cs.dynamic_balance + 'U';
   const stEl = document.getElementById('compound-status');
-  if (enabled && stake > baseStake) { stEl.textContent = '已激活 (+' + (stake - baseStake) + 'U)'; stEl.className = 'badge badge-success'; }
-  else if (enabled) { stEl.textContent = '已启用（等待中）'; stEl.className = 'badge badge-warning'; }
-  else { stEl.textContent = '未启用'; stEl.className = 'badge badge-danger'; }
+  if (enabled && stake > baseStake) {
+    stEl.textContent = '已激活 (+' + (stake - baseStake) + 'U)';
+    stEl.className = 'badge badge-success';
+  } else if (enabled) {
+    stEl.textContent = '已启用（等待中）';
+    stEl.className = 'badge badge-warning';
+  } else {
+    stEl.textContent = '未启用';
+    stEl.className = 'badge badge-danger';
+  }
 }
 
 function updateAccountUI() {
@@ -642,6 +849,7 @@ function updateAccountUI() {
     document.getElementById('active-account-name').textContent = active.name;
     document.getElementById('active-account-id').textContent = currentActiveId;
     document.getElementById('account-avatar').textContent = active.name.charAt(0).toUpperCase();
+    // 同步交易开关的显示状态
     const toggle = document.getElementById('account-trading-toggle');
     const badge = document.getElementById('badge-trading');
     const enabled = active.trading_enabled !== false;
@@ -658,7 +866,6 @@ function updateAccountUI() {
     opt.selected = acc.id === currentActiveId;
     sel.appendChild(opt);
   });
-  renderAccountCards();
 }
 
 async function toggleAccountTrading(el) {
@@ -667,68 +874,127 @@ async function toggleAccountTrading(el) {
   const name = active ? active.name : currentActiveId;
   const enabled = el.checked;
   const action = enabled ? '开启' : '关闭';
-  if (!confirm('确认' + action + '账户「' + name + '」的交易开关？')) { el.checked = !enabled; return; }
-  try { await api('POST', 'accounts/' + currentActiveId + '/trading', {enabled}); alertBox('账户交易已' + action, enabled ? 'ok' : 'warning'); loadState(); }
-  catch (e) { el.checked = !enabled; alertBox('操作失败: ' + e.message, 'error'); }
+  if (!confirm(`确认${action}账户「${name}」的交易开关？\n\n${enabled ? '开启后：下一个信号会为此账户开仓。' : '关闭后：下一个信号不再为此账户开新仓，但已有持仓继续被监控、到点平仓。'}`)) {
+    el.checked = !enabled;
+    return;
+  }
+  try {
+    await api('POST', 'api/accounts/' + currentActiveId + '/trading', {enabled});
+    alertBox(`账户「${name}」交易已${action}`, enabled ? 'ok' : 'warning');
+    loadState();
+  } catch (e) {
+    el.checked = !enabled;
+    alertBox('操作失败: ' + e.message, 'error');
+  }
 }
 
 function toggleLiveMode(key, el) {
   const label = key === 'LIVE_MODE' ? 'Binance 实盘' : 'OKX 实盘';
   const action = el.checked ? '开启' : '关闭';
-  if (!confirm('确认' + action + ' ' + label + '？\n\n' + (el.checked ? '开启后下一个信号将执行真实订单！' : '关闭后将回到影子模式。'))) { el.checked = !el.checked; return; }
+  if (!confirm(`⚠️ 确认${action} ${label}？\n\n${el.checked ? '开启后下一个信号将执行真实订单！' : '关闭后将回到影子模式。'}`)) {
+    el.checked = !el.checked; return;
+  }
   const doToggle = async () => {
-    try { const r = await api('POST', 'config', {changes: {[key]: el.checked}}); if (r.needTotp) { openTotpModal(doToggle); return; } alertBox(label + ' 已' + action, el.checked ? 'warning' : 'ok'); loadState(); }
-    catch (e) { el.checked = !el.checked; alertBox('切换失败: ' + e.message, 'error'); }
+    try {
+      const r = await api('POST', 'api/config', {changes: {[key]: el.checked}});
+      if (r.needTotp) { openTotpModal(doToggle); return; }
+      alertBox(`${label} 已${action}`, el.checked ? 'warning' : 'ok');
+      loadState();
+    } catch (e) { el.checked = !el.checked; alertBox('切换失败: ' + e.message, 'error'); }
   }; doToggle();
 }
 
-
+// 仓位模式切换：立即保存 + 弹 confirm + 失败回滚（与 toggleLiveMode 同模式）
 function togglePositionMode(el) {
   const newMode = el.value;
   const oldMode = (lastConfigState.config_active_snapshot || {}).POSITION_MODE || 'manual';
   if (newMode === oldMode) return;
+
   const warning = newMode === 'proportional'
-    ? '切到 proportional（按余额比例自动缩放）？\nDEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE 会自动计算。'
-    : '切回 manual（手动模式）？4 个金额字段恢复手填值。';
-  if (!confirm(warning)) { el.value = oldMode; return; }
+    ? '⚠️ 切到 proportional（按余额比例自动缩放）？\n\n' +
+      'DEFAULT_STAKE / RISK_MAX_DAILY_LOSS / COMPOUND_STEP / COMPOUND_INCREASE\n' +
+      '会由系统按 "实际余额 ÷ 100" 自动计算。\n\n' +
+      '实盘模式下会从交易所拉取真实余额（60s 缓存）；\n' +
+      '影子模式用 ACCOUNT_BALANCE 手填值。\n\n' +
+      'COMPOUND_MAX_STAKE 不缩放（保持 300U 绝对上限）。'
+    : '⚠️ 切回 manual（手动模式）？\n\n' +
+      '4 个金额字段会恢复成你在"仓位与风控" tab 手填的值。';
+
+  if (!confirm(warning)) {
+    el.value = oldMode;
+    return;
+  }
+
   const doToggle = async () => {
-    try { const r = await api('POST', 'config', { account_id: currentActiveId, changes: { POSITION_MODE: newMode } }); if (r.needTotp) { openTotpModal(doToggle); return; } alertBox('已切到 ' + (newMode === 'proportional' ? 'PROPORTIONAL' : 'MANUAL') + ' 模式', newMode === 'proportional' ? 'warning' : 'ok'); loadState(); }
-    catch (e) { el.value = oldMode; alertBox('切换失败: ' + e.message, 'error'); }
-  }; doToggle();
+    try {
+      const r = await api('POST', 'api/config', { account_id: currentActiveId, changes: { POSITION_MODE: newMode } });
+      if (r.needTotp) { openTotpModal(doToggle); return; }
+      const label = newMode === 'proportional' ? 'PROPORTIONAL' : 'MANUAL';
+      alertBox(`已切到 ${label} 模式（当前账号，30s 内生效）`,
+               newMode === 'proportional' ? 'warning' : 'ok');
+      loadState();
+    } catch (e) {
+      el.value = oldMode;
+      alertBox('切换失败: ' + e.message, 'error');
+    }
+  };
+  doToggle();
 }
 
+// 保存"仓位与风控"tab 上的所有字段：合并成一次 /api/config POST，避免重复 TG。
+// server 端 /api/config 会自动按 fields_meta.scope 拆分账号字段 vs 全局字段，
+// 分别 save_account_overrides / save_global_overrides，但只推送一条 TG 总结。
 function saveConfig() {
   const accId = cfgTargetAccountId || currentActiveId || '';
-  if (!accId) { alertBox('请先选择一个账号', 'error'); return; }
+  if (!accId) {
+    alertBox('请先选择一个账号', 'error');
+    return;
+  }
   const meta = lastConfigState.fields_meta || {};
   const changes = {};
+
   Object.keys(meta).forEach(key => {
-    const el = document.getElementById('cfg-' + key); if (!el) return;
+    const el = document.getElementById('cfg-' + key);
+    if (!el) return;
     let value;
     if (el.type === 'checkbox') value = el.checked;
-    else if (el.type === 'number') { if (el.value === '' || el.value === null) return; value = parseFloat(el.value); if (Number.isNaN(value)) return; }
-    else { value = el.value; }
+    else if (el.type === 'number') {
+      if (el.value === '' || el.value === null) return; // 空值跳过
+      value = parseFloat(el.value);
+      if (Number.isNaN(value)) return;
+    } else {
+      value = el.value;
+    }
     changes[key] = value;
   });
-  if (!Object.keys(changes).length) { alertBox('没有需要保存的字段', 'warning'); return; }
+
+  if (!Object.keys(changes).length) {
+    alertBox('没有需要保存的字段', 'warning');
+    return;
+  }
+
   const doSave = async () => {
     try {
-      const r = await api('POST', 'config', { account_id: accId, changes });
+      // server 端按 fields_meta.scope 自动分流：
+      //   account 字段 → save_account_overrides(account_id)
+      //   global  字段 → save_global_overrides()
+      // 一次请求 → 一条 TG 总结
+      const r = await api('POST', 'api/config', { account_id: accId, changes });
       if (r.needTotp) { openTotpModal(doSave); return; }
       const accName = (currentAccounts.find(a => a.id === accId) || {}).name || accId;
       const accCount = (r.saved && r.saved.account_fields || []).length;
       const globalCount = (r.saved && r.saved.global || []).length;
-      const summary = [accCount ? accCount + ' 项到账号「' + accName + '」' : '', globalCount ? globalCount + ' 项到全局' : ''].filter(Boolean).join('，') || Object.keys(r.applied||{}).length + ' 项更改';
+      const summary = [
+        accCount ? `${accCount} 项到账号「${accName}」` : '',
+        globalCount ? `${globalCount} 项到全局` : '',
+      ].filter(Boolean).join('，') || `${Object.keys(r.applied||{}).length} 项更改`;
       alertBox('已保存：' + summary, 'ok');
-      // Show consistency warnings if present
-      if (r.consistency_warnings && r.consistency_warnings.length) {
-        showConsistencyWarnings(r.consistency_warnings);
-      } else {
-        dismissConsistencyWarnings();
-      }
       loadState();
-    } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
-  }; doSave();
+    } catch (e) {
+      alertBox('保存失败: ' + e.message, 'error');
+    }
+  };
+  doSave();
 }
 
 function saveCredentials(exchange) {
@@ -736,29 +1002,27 @@ function saveCredentials(exchange) {
     const prefix = exchange === 'binance' ? 'bn' : exchange;
     const body = {}; ['api_key','secret','passphrase'].forEach(f => { const el = document.getElementById(prefix + '-' + f); if (el && el.value.trim()) body[f] = el.value.trim(); });
     if (!Object.keys(body).length) { alertBox('没有需要保存的字段', 'warning'); return; }
-    try { const r = await api('POST', 'credentials/' + exchange, body); if (r.needTotp) { openTotpModal(doSave); return; } alertBox(exchange + ' 凭证已保存', 'ok'); document.querySelectorAll('#tab-creds input[type=password]').forEach(i => i.value = ''); loadState(); }
-    catch (e) { alertBox('操作失败: ' + e.message, 'error'); }
+    try { const r = await api('POST', 'api/credentials/' + exchange, body); if (r.needTotp) { openTotpModal(doSave); return; } alertBox(exchange + ' 凭证已保存', 'ok'); document.querySelectorAll('#tab-creds input[type=password]').forEach(i => i.value = ''); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); }
   }; doSave();
 }
 
 function clearCredentials(exchange) {
   if (!confirm('确认清除所有 ' + exchange + ' 凭证？')) return;
-  const doClear = async () => { try { const r = await api('DELETE', 'credentials/' + exchange); if (r.needTotp) { openTotpModal(doClear); return; } alertBox('已清除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; doClear();
+  const doClear = async () => { try { const r = await api('DELETE', 'api/credentials/' + exchange); if (r.needTotp) { openTotpModal(doClear); return; } alertBox('已清除', 'ok'); loadState(); } catch (e) { alertBox('操作失败: ' + e.message, 'error'); } }; doClear();
 }
-
 
 async function runPreflightCheck() {
   document.getElementById('btn-preflight').disabled = true;
   document.getElementById('preflight-status').textContent = '检测中...';
   try {
-    const r = await api('POST', 'preflight', {});
+    const r = await api('POST', 'api/preflight-check', {});
     document.getElementById('preflight-results').style.display = 'block';
     const rt = r.routing || {};
-    document.getElementById('preflight-routing').innerHTML = '<b>Routing:</b> ' + (rt.behavior || 'N/A') + '<br>LIVE_MODE=' + rt.LIVE_MODE + ' | OKX_LIVE_MODE=' + rt.OKX_LIVE_MODE + ' | Stake=' + rt.DEFAULT_STAKE + 'U | Lev=' + rt.LEVERAGE + 'x';
+    document.getElementById('preflight-routing').innerHTML = `<b>Routing:</b> ${rt.behavior || 'N/A'}<br>LIVE_MODE=${rt.LIVE_MODE} | OKX_LIVE_MODE=${rt.OKX_LIVE_MODE} | Stake=${rt.DEFAULT_STAKE}U | Lev=${rt.LEVERAGE}x`;
     let html = '';
     for (const [ex, result] of Object.entries(r.results || {})) {
-      html += '<div style="margin-bottom:12px;"><b>' + ex.toUpperCase() + '</b> ' + (result.pass ? '<span class="badge badge-success">PASS</span>' : '<span class="badge badge-danger">FAIL</span>') + '<br>';
-      (result.checks || []).forEach(c => { html += '<div style="padding:4px 0;font-size:0.75rem;"><span class="dot dot-' + (c.status === 'pass' ? 'green' : c.status === 'fail' ? 'red' : 'yellow') + '"></span> ' + c.name + ': ' + c.msg + '</div>'; });
+      html += `<div style="margin-bottom:12px;"><b>${ex.toUpperCase()}</b> ${result.pass ? '<span class="badge badge-success">PASS</span>' : '<span class="badge badge-danger">FAIL</span>'}<br>`;
+      (result.checks || []).forEach(c => { html += `<div style="padding:4px 0;font-size:0.75rem;"><span class="dot dot-${c.status === 'pass' ? 'green' : c.status === 'fail' ? 'red' : 'yellow'}"></span> ${c.name}: ${c.msg}</div>`; });
       html += '</div>';
     }
     document.getElementById('preflight-exchanges').innerHTML = html;
@@ -767,100 +1031,266 @@ async function runPreflightCheck() {
   document.getElementById('btn-preflight').disabled = false;
 }
 
-// ── Smoke Test ──
-const SMOKE_PHASE_TITLES = { A: '配置', B: '网络', C: '凭证', D: '运行时' };
-const SMOKE_STATUS_META = { pass: { glyph: '\u2713', cls: 'smoke-pass', label: 'PASS' }, fail: { glyph: '\u2717', cls: 'smoke-fail', label: 'FAIL' }, warn: { glyph: '!', cls: 'smoke-warn', label: 'WARN' }, skip: { glyph: '\u00b7', cls: 'smoke-skip', label: 'SKIP' } };
-function _escHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-function _selectedSmokePhases() { return Array.from(document.querySelectorAll('#tab-smoke input[data-phase]:checked')).map(el => el.getAttribute('data-phase')); }
+// ── 系统自检 (smoke test) ─────────────────────────────────────
+const SMOKE_PHASE_TITLES = {
+  A: '配置 (静态)',
+  B: '网络可达',
+  C: '实盘凭证',
+  D: '运行时数据',
+};
+const SMOKE_STATUS_META = {
+  pass: { glyph: '✓', cls: 'smoke-pass',  label: 'PASS' },
+  fail: { glyph: '✗', cls: 'smoke-fail',  label: 'FAIL' },
+  warn: { glyph: '!', cls: 'smoke-warn',  label: 'WARN' },
+  skip: { glyph: '·', cls: 'smoke-skip',  label: 'SKIP' },
+};
 
-async function runSmokeTest() { const phases = _selectedSmokePhases(); if (!phases.length) { alertBox('请至少选择一个阶段', 'warning'); return; } await _runSmoke(phases); }
-async function runSmokeTestAll() { document.querySelectorAll('#tab-smoke input[data-phase]').forEach(el => el.checked = true); await _runSmoke(['A','B','C','D']); }
+function _escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _selectedSmokePhases() {
+  return Array.from(document.querySelectorAll('#tab-smoke input[data-phase]:checked'))
+    .map(el => el.getAttribute('data-phase'));
+}
+
+async function runSmokeTest() {
+  const phases = _selectedSmokePhases();
+  if (phases.length === 0) { alertBox('请至少选择一个阶段', 'warning'); return; }
+  await _runSmoke(phases);
+}
+
+async function runSmokeTestAll() {
+  document.querySelectorAll('#tab-smoke input[data-phase]').forEach(el => el.checked = true);
+  await _runSmoke(['A', 'B', 'C', 'D']);
+}
 
 async function _runSmoke(phases) {
-  const btn = document.getElementById('btn-smoke'), btnAll = document.getElementById('btn-smoke-all');
-  const statusEl = document.getElementById('smoke-status'), summary = document.getElementById('smoke-summary'), results = document.getElementById('smoke-results');
-  btn.disabled = true; btnAll.disabled = true; statusEl.textContent = '正在执行 ' + phases.join(',') + ' ...'; summary.style.display = 'none'; results.style.display = 'none';
+  const btn      = document.getElementById('btn-smoke');
+  const btnAll   = document.getElementById('btn-smoke-all');
+  const statusEl = document.getElementById('smoke-status');
+  const summary  = document.getElementById('smoke-summary');
+  const results  = document.getElementById('smoke-results');
+
+  btn.disabled = true; btnAll.disabled = true;
+  statusEl.textContent = `正在执行 ${phases.join(',')} ...`;
+  summary.style.display = 'none';
+  results.style.display = 'none';
+
   try {
-    const r = await api('POST', 'smoke-test', { phases });
-    if (r.needTotp) { statusEl.textContent = '需要 TOTP'; openTotpModal(() => _runSmoke(phases)); return; }
+    const r = await api('POST', 'api/smoke-test', { phases });
+    if (r.needTotp) { statusEl.textContent = '需要 TOTP 验证'; openTotpModal(() => _runSmoke(phases)); return; }
+
+    // ── Summary banner ──
     const s = r.summary || {};
-    const okCls = s.all_ok ? 'smoke-pass' : 'smoke-fail';
-    summary.className = 'smoke-banner ' + okCls;
-    summary.innerHTML = '<b>' + (s.all_ok ? '全部通过' : '存在失败项') + '</b> <span style="margin-left:14px;font-size:0.78rem;">总计 ' + s.total + ' · pass=' + s.pass + ' · fail=' + s.fail + ' · warn=' + s.warn + ' · skip=' + s.skip + '</span>';
+    const okCls   = s.all_ok ? 'smoke-pass' : 'smoke-fail';
+    const okText  = s.all_ok ? '全部通过 ✓' : '存在失败项 ✗';
+    summary.className = '';
+    summary.classList.add('smoke-banner', okCls);
+    summary.innerHTML =
+      `<b>${okText}</b>` +
+      `<span style="margin-left:14px;font-size:0.78rem;">阶段=${(s.phases||[]).join(',')} ` +
+      `· 总计 ${s.total} 项 · ` +
+      `<span class="smoke-pass">pass=${s.pass}</span> · ` +
+      `<span class="smoke-fail">fail=${s.fail}</span> · ` +
+      `<span class="smoke-warn">warn=${s.warn}</span> · ` +
+      `<span class="smoke-skip">skip=${s.skip}</span></span>`;
     summary.style.display = 'block';
-    const byPhase = {}; (r.results || []).forEach(item => { (byPhase[item.phase] = byPhase[item.phase] || []).push(item); });
+
+    // ── Group by phase ──
+    const byPhase = {};
+    (r.results || []).forEach(item => {
+      (byPhase[item.phase] = byPhase[item.phase] || []).push(item);
+    });
+
     let html = '';
     (s.phases || []).forEach(p => {
       const rows = byPhase[p] || [];
-      html += '<div class="smoke-phase-block"><div class="smoke-phase-title">Phase ' + p + ' · ' + (SMOKE_PHASE_TITLES[p]||p) + ' (' + rows.length + ')</div>';
+      html += `<div class="smoke-phase-block"><div class="smoke-phase-title">Phase ${p} · ${_escHtml(SMOKE_PHASE_TITLES[p] || p)} <span class="muted">(${rows.length})</span></div>`;
       html += '<table class="smoke-table"><tbody>';
-      rows.forEach(row => { const meta = SMOKE_STATUS_META[row.status] || SMOKE_STATUS_META.fail; html += '<tr><td class="smoke-cell-status"><span class="smoke-pill ' + meta.cls + '">' + meta.glyph + ' ' + meta.label + '</span></td><td class="smoke-cell-id">' + _escHtml(row.id) + '</td><td class="smoke-cell-name">' + _escHtml(row.name) + '</td><td class="smoke-cell-detail">' + _escHtml(row.detail) + '</td><td class="smoke-cell-ms">' + row.duration_ms + 'ms</td></tr>'; });
+      rows.forEach(row => {
+        const meta = SMOKE_STATUS_META[row.status] || SMOKE_STATUS_META.fail;
+        html += `<tr>` +
+                `<td class="smoke-cell-status"><span class="smoke-pill ${meta.cls}">${meta.glyph} ${meta.label}</span></td>` +
+                `<td class="smoke-cell-id">${_escHtml(row.id)}</td>` +
+                `<td class="smoke-cell-name">${_escHtml(row.name)}</td>` +
+                `<td class="smoke-cell-detail">${_escHtml(row.detail)}</td>` +
+                `<td class="smoke-cell-ms">${row.duration_ms}ms</td>` +
+                `</tr>`;
+      });
       html += '</tbody></table></div>';
     });
-    results.innerHTML = html; results.style.display = 'block';
-    statusEl.textContent = s.all_ok ? '全部通过' : '失败 ' + s.fail + ' 项';
-  } catch (e) { alertBox('自检失败: ' + e.message, 'error'); statusEl.textContent = 'Error'; }
-  finally { btn.disabled = false; btnAll.disabled = false; }
+    results.innerHTML = html;
+    results.style.display = 'block';
+    statusEl.textContent = s.all_ok ? '✓ 全部通过' : `✗ 失败 ${s.fail} 项`;
+  } catch (e) {
+    alertBox('自检失败: ' + e.message, 'error');
+    statusEl.textContent = 'Error';
+  } finally {
+    btn.disabled = false; btnAll.disabled = false;
+  }
 }
 
+// ── 任务监控 (task metrics) ─────────────────────────────────────
+const TASK_STATUS_META = {
+  ok:      { glyph: '✓',  cls: 'smoke-pass', label: 'OK' },
+  error:   { glyph: '✗',  cls: 'smoke-fail', label: 'ERROR' },
+  timeout: { glyph: '⏰', cls: 'smoke-warn', label: 'TIMEOUT' },
+  killed:  { glyph: '☠',  cls: 'smoke-fail', label: 'KILLED' },
+};
 
-// ── Task Metrics ──
-const TASK_STATUS_META = { ok: { glyph: '\u2713', cls: 'smoke-pass', label: 'OK' }, error: { glyph: '\u2717', cls: 'smoke-fail', label: 'ERROR' }, timeout: { glyph: '\u23f0', cls: 'smoke-warn', label: 'TIMEOUT' }, killed: { glyph: '\u2620', cls: 'smoke-fail', label: 'KILLED' } };
 let _taskAutoTimer = null;
 const _knownTaskNames = new Set();
-function _fmtTaskTs(ts) { if (!ts) return '?'; const d = new Date(ts * 1000); const pad = n => String(n).padStart(2, '0'); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth()+1) + '-' + pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()); }
-function _fmtTaskDuration(sec) { if (sec === null || sec === undefined) return '\u2014'; const n = Number(sec); if (!isFinite(n)) return '?'; if (n < 60) return n.toFixed(1) + 's'; const m = Math.floor(n / 60); const s = (n - m * 60).toFixed(1); return m + 'm' + s + 's'; }
+
+function _fmtTaskTs(ts) {
+  if (!ts) return '?';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth()+1) + '-' + pad(d.getUTCDate())
+       + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+}
+function _fmtTaskDuration(sec) {
+  if (sec === null || sec === undefined) return '—';
+  const n = Number(sec);
+  if (!isFinite(n)) return '?';
+  if (n < 60) return n.toFixed(1) + 's';
+  const m = Math.floor(n / 60);
+  const s = (n - m * 60).toFixed(1);
+  return m + 'm' + (s.length < 4 ? '0' : '') + s + 's';
+}
 
 async function loadTaskMetrics() {
   const limit = document.getElementById('task-metrics-limit').value;
-  const name = document.getElementById('task-metrics-name').value;
-  const btn = document.getElementById('btn-task-metrics');
-  const statusEl = document.getElementById('task-metrics-status');
-  const timeline = document.getElementById('task-metrics-timeline');
+  const name  = document.getElementById('task-metrics-name').value;
+  const btn   = document.getElementById('btn-task-metrics');
+  const statusEl  = document.getElementById('task-metrics-status');
+  const timeline  = document.getElementById('task-metrics-timeline');
   const summaryEl = document.getElementById('task-metrics-summary');
-  const emptyEl = document.getElementById('task-metrics-empty');
-  btn.disabled = true; statusEl.textContent = '加载中...';
+  const emptyEl   = document.getElementById('task-metrics-empty');
+
+  btn.disabled = true;
+  statusEl.textContent = '加载中...';
+
   try {
-    const qs = new URLSearchParams({ limit }); if (name) qs.set('name', name);
-    const res = await fetch('task-metrics?' + qs.toString(), { headers: { 'X-Admin-CSRF': CSRF_TOKEN }, credentials: 'same-origin' });
-    const data = await res.json().catch(() => ({}));
+    const qs = new URLSearchParams({ limit });
+    if (name) qs.set('name', name);
+    const res = await fetch('api/task-metrics?' + qs.toString(), {
+      headers: { 'X-Admin-CSRF': CSRF_TOKEN }, credentials: 'same-origin',
+    });
+    const data = await res.json();
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-    const events = data.events || []; const summary = data.summary || {};
+
+    const events = data.events || [];
+    const summary = data.summary || {};
+
+    // 维护任务名下拉
     Object.keys(summary).forEach(n => _knownTaskNames.add(n));
     events.forEach(e => { if (e.name) _knownTaskNames.add(e.name); });
     _refreshTaskNameSelect(name);
-    if (events.length === 0) { timeline.style.display = 'none'; summaryEl.style.display = 'none'; emptyEl.style.display = 'block'; statusEl.textContent = '0 条'; return; }
+
+    if (events.length === 0) {
+      timeline.style.display = 'none';
+      summaryEl.style.display = 'none';
+      emptyEl.style.display = 'block';
+      statusEl.textContent = '0 条';
+      return;
+    }
     emptyEl.style.display = 'none';
-    let summaryHtml = '<div class="smoke-phase-title">按任务聚合</div><table class="smoke-table"><tbody>';
-    summaryHtml += '<tr style="background:var(--bg-elevated);font-weight:600;"><td>任务</td><td>总数</td><td>成功</td><td>失败</td><td>超时</td><td>强杀</td><td>平均</td><td>最大</td><td>最近</td></tr>';
+
+    // ── Per-task summary table ──
+    let summaryHtml = '<div class="smoke-phase-title">按任务聚合</div>';
+    summaryHtml += '<table class="smoke-table"><tbody>';
+    summaryHtml += '<tr style="background:var(--bg-elevated);font-weight:600;">' +
+                   '<td>任务</td><td>总数</td><td>成功</td><td>失败</td>' +
+                   '<td>超时</td><td>强杀</td><td>平均</td><td>最大</td><td>最近</td></tr>';
     Object.keys(summary).sort().forEach(n => {
-      const b = summary[n]; const bad = (b.timeout||0) + (b.killed||0) + (b.error||0);
+      const b = summary[n];
+      const bad = (b.timeout||0) + (b.killed||0) + (b.error||0);
       const cls = bad ? 'smoke-fail' : ((b.avg_duration_sec||0) > 60 ? 'smoke-warn' : 'smoke-pass');
-      summaryHtml += '<tr><td><span class="smoke-pill ' + cls + '" style="min-width:auto;">' + _escHtml(n) + '</span></td><td>' + (b.total||0) + '</td><td>' + (b.ok||0) + '</td><td>' + (b.error||0) + '</td><td>' + (b.timeout||0) + '</td><td>' + (b.killed||0) + '</td><td>' + _fmtTaskDuration(b.avg_duration_sec) + '</td><td>' + _fmtTaskDuration(b.max_duration_sec) + '</td><td>' + (b.last_ts ? _fmtTaskTs(b.last_ts) : '\u2014') + '</td></tr>';
+      summaryHtml += `<tr>` +
+        `<td><span class="smoke-pill ${cls}" style="min-width:auto;">${_escHtml(n)}</span></td>` +
+        `<td>${b.total||0}</td><td>${b.ok||0}</td><td>${b.error||0}</td>` +
+        `<td>${b.timeout||0}</td><td>${b.killed||0}</td>` +
+        `<td>${_fmtTaskDuration(b.avg_duration_sec)}</td>` +
+        `<td>${_fmtTaskDuration(b.max_duration_sec)}</td>` +
+        `<td>${b.last_ts ? _fmtTaskTs(b.last_ts) : '—'}</td>` +
+        `</tr>`;
     });
-    summaryHtml += '</tbody></table>'; summaryEl.innerHTML = summaryHtml; summaryEl.style.display = 'block';
-    let html = '<div class="smoke-phase-title">最近 ' + events.length + ' 条事件</div><table class="smoke-table"><tbody>';
-    html += '<tr style="background:var(--bg-elevated);font-weight:600;font-size:0.72rem;"><td>状态</td><td>时间</td><td>任务</td><td>耗时</td><td>模式</td><td>退出码</td><td>诊断</td></tr>';
+    summaryHtml += '</tbody></table>';
+    summaryEl.innerHTML = summaryHtml;
+    summaryEl.style.display = 'block';
+
+    // ── Timeline (倒序: 最新在最上) ──
+    let html = '<div class="smoke-phase-title">最近 ' + events.length + ' 条事件(最新在上)</div>';
+    html += '<table class="smoke-table"><tbody>';
+    html += '<tr style="background:var(--bg-elevated);font-weight:600;font-size:0.72rem;">' +
+            '<td>状态</td><td>时间 (UTC)</td><td>任务</td>' +
+            '<td>耗时</td><td>模式</td><td>退出码</td><td>诊断</td></tr>';
     [...events].reverse().forEach(ev => {
       const meta = TASK_STATUS_META[ev.status] || TASK_STATUS_META.error;
       const diagParts = [];
-      if (ev.timeout_sec && ev.duration_sec >= ev.timeout_sec * 0.9) diagParts.push('<span class="smoke-warn">' + Math.floor(ev.duration_sec/ev.timeout_sec*100) + '% 接近超时</span>');
+      const tos = ev.timeout_sec || 0;
+      if (tos && ev.duration_sec >= tos * 0.9) {
+        diagParts.push(`<span class="smoke-warn">${Math.floor(ev.duration_sec/tos*100)}% 接近超时</span>`);
+      }
+      if (ev.spawn_dt && ev.spawn_dt > 5) {
+        diagParts.push(`<span class="smoke-warn">spawn 慢 ${ev.spawn_dt.toFixed(1)}s</span>`);
+      }
       if (ev.error) diagParts.push(_escHtml(String(ev.error).slice(0, 40)));
-      html += '<tr><td><span class="smoke-pill ' + meta.cls + '">' + meta.glyph + ' ' + meta.label + '</span></td><td class="smoke-cell-id">' + _escHtml(_fmtTaskTs(ev.ts)) + '</td><td class="smoke-cell-name">' + _escHtml(ev.name||'?') + '</td><td>' + _fmtTaskDuration(ev.duration_sec) + '</td><td class="smoke-cell-id">' + _escHtml(ev.mode||'?') + '</td><td class="smoke-cell-id">' + (ev.exitcode === null || ev.exitcode === undefined ? '\u2014' : ev.exitcode) + '</td><td class="smoke-cell-detail">' + diagParts.join(' \u00b7 ') + '</td></tr>';
+      html += `<tr>` +
+              `<td><span class="smoke-pill ${meta.cls}">${meta.glyph} ${meta.label}</span></td>` +
+              `<td class="smoke-cell-id">${_escHtml(_fmtTaskTs(ev.ts))}</td>` +
+              `<td class="smoke-cell-name">${_escHtml(ev.name||'?')}</td>` +
+              `<td>${_fmtTaskDuration(ev.duration_sec)}</td>` +
+              `<td class="smoke-cell-id">${_escHtml(ev.mode||'?')}</td>` +
+              `<td class="smoke-cell-id">${ev.exitcode === null || ev.exitcode === undefined ? '—' : ev.exitcode}</td>` +
+              `<td class="smoke-cell-detail">${diagParts.join(' · ')}</td>` +
+              `</tr>`;
     });
-    html += '</tbody></table>'; timeline.innerHTML = html; timeline.style.display = 'block';
-    statusEl.textContent = '已加载 ' + events.length + ' 条';
-  } catch (e) { alertBox('加载任务监控失败: ' + e.message, 'error'); statusEl.textContent = 'Error'; }
-  finally { btn.disabled = false; }
+    html += '</tbody></table>';
+    timeline.innerHTML = html;
+    timeline.style.display = 'block';
+
+    statusEl.textContent = `已加载 ${events.length} 条事件`;
+  } catch (e) {
+    alertBox('加载任务监控失败: ' + e.message, 'error');
+    statusEl.textContent = 'Error';
+  } finally {
+    btn.disabled = false;
+  }
 }
-function _refreshTaskNameSelect(currentValue) { const sel = document.getElementById('task-metrics-name'); if (!sel) return; const existing = new Set(Array.from(sel.options).map(o => o.value)); Array.from(_knownTaskNames).sort().forEach(n => { if (!existing.has(n)) { const opt = document.createElement('option'); opt.value = n; opt.textContent = n; sel.appendChild(opt); } }); if (currentValue) sel.value = currentValue; }
-function autoRefreshTaskMetrics() { const label = document.getElementById('btn-task-auto-label'); if (_taskAutoTimer) { clearInterval(_taskAutoTimer); _taskAutoTimer = null; label.textContent = '自动刷新'; return; } loadTaskMetrics(); _taskAutoTimer = setInterval(loadTaskMetrics, 30000); label.textContent = '停止自动'; }
+
+function _refreshTaskNameSelect(currentValue) {
+  const sel = document.getElementById('task-metrics-name');
+  if (!sel) return;
+  const existing = new Set(Array.from(sel.options).map(o => o.value));
+  const sorted = Array.from(_knownTaskNames).sort();
+  sorted.forEach(n => {
+    if (!existing.has(n)) {
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      sel.appendChild(opt);
+    }
+  });
+  if (currentValue) sel.value = currentValue;
+}
+
+function autoRefreshTaskMetrics() {
+  const label = document.getElementById('btn-task-auto-label');
+  if (_taskAutoTimer) {
+    clearInterval(_taskAutoTimer); _taskAutoTimer = null;
+    label.textContent = '自动刷新';
+    return;
+  }
+  loadTaskMetrics();
+  _taskAutoTimer = setInterval(loadTaskMetrics, 30000); // 30s
+  label.textContent = '停止自动';
+}
 
 // Account switcher event
 document.getElementById('account-switcher').addEventListener('change', function() { switchAccount(this.value); });
-
-// Session countdown
-initSessionCountdown(IDLE_REMAINING, ABSOLUTE_REMAINING);
 
 // Init
 loadState();

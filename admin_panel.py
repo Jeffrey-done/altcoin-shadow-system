@@ -428,14 +428,8 @@ def create_blueprint(url_secret: str) -> Blueprint:
     @bp.route('/panel', methods=['GET'])
     @_require_login
     def panel():
-        auth = session.get('admin_auth', {})
-        now = time.time()
-        idle_remaining = max(0, int(SESSION_IDLE_TIMEOUT - (now - auth.get('last_seen', now))))
-        absolute_remaining = max(0, int(SESSION_ABSOLUTE_TIMEOUT - (now - auth.get('created_at', now))))
         return render_template('admin/panel.html',
-                               csrf_token=session['csrf_token'],
-                               idle_remaining=idle_remaining,
-                               absolute_remaining=absolute_remaining)
+                               csrf_token=session['csrf_token'])
 
     # ══════════════════════════════════════════════════════════════════
     #  API：多账户管理

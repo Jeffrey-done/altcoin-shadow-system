@@ -1,309 +1,166 @@
 {% extends "base.html" %}
 
-{% block title %}单币回测 | Altcoin Shadow System{% endblock %}
+{% block title %}单币回测 - Shadow Trading{% endblock %}
+{% block page_title %}📈 单币回测结果{% endblock %}
+{% block subtitle %}<span id="bt-meta">加载中...</span>{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
 
 {% block content %}
-<div class="dashboard-grid">
-  
-  <!-- Left Side: Config & KPI (span 4) -->
-  <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Current Config Card -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="compass" class="purple" style="width: 16px; height: 16px;"></i> 当前回测参数
-        </div>
-      </div>
-      <div class="card-body" style="display: flex; flex-direction: column; gap: 10px;" id="config-container">
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">Daily RSI 阈值</span>
-          <span class="mono font-bold" id="bt-daily-rsi">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">TP1</span>
-          <span class="mono font-bold" id="bt-tp1">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">TP2</span>
-          <span class="mono font-bold" id="bt-tp2">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">硬止损</span>
-          <span class="mono font-bold" id="bt-hard-stop">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">H4 RSI Drop</span>
-          <span class="mono font-bold" id="bt-h4-rsi">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">移动止损激活</span>
-          <span class="mono font-bold" id="bt-trail">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">杠杆</span>
-          <span class="mono font-bold" id="bt-leverage">--</span>
-        </div>
-        <div class="flex-between">
-          <span class="text-secondary">单笔仓位</span>
-          <span class="mono font-bold" id="bt-stake">--</span>
-        </div>
-      </div>
-    </div>
+<div id="content"><div class="empty-state"><p>正在加载回测数据...</p>
+    <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT --days 90</code></p></div></div>
+{% endblock %}
 
-    <!-- KPI Summary -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="bar-chart-2" class="purple" style="width: 16px; height: 16px;"></i> 回测核心 KPI
-        </div>
-      </div>
-      <div class="card-body" style="display: flex; flex-direction: column; gap: 10px;" id="kpi-container">
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">总收益率 (ROI)</span>
-          <span class="mono font-bold" id="kpi-roi">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">总净利润</span>
-          <span class="mono font-bold" id="kpi-net-pnl">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">最大回撤</span>
-          <span class="mono font-bold red" id="kpi-max-dd">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">夏普率</span>
-          <span class="mono font-bold" id="kpi-sharpe">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">盈亏比</span>
-          <span class="mono font-bold" id="kpi-pf">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">胜率</span>
-          <span class="mono font-bold" id="kpi-win-rate">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 6px;">
-          <span class="text-secondary">总笔数</span>
-          <span class="mono font-bold" id="kpi-trades">--</span>
-        </div>
-        <div class="flex-between">
-          <span class="text-secondary">最大连亏</span>
-          <span class="mono font-bold" id="kpi-max-loss-streak">--</span>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Right Side: Chart & Trades (span 8) -->
-  <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Equity Curve -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="line-chart" class="purple" style="width: 16px; height: 16px;"></i> 
-          <span id="chart-title">回测权益曲线</span>
-        </div>
-        <span class="text-muted" style="font-size: 11px;" id="chart-meta">--</span>
-      </div>
-      <div class="card-body">
-        <canvas id="single-backtest-canvas" width="600" height="260" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
-        <div id="chart-empty" class="empty-state" style="display:none;">
-          <i data-lucide="line-chart" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
-          <span>暂无回测曲线数据，请运行 python3 backtest.py</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Recent Trades -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="files" class="blue" style="width: 16px; height: 16px;"></i> 回测交易记录
-        </div>
-        <span class="text-muted" style="font-size: 11px;" id="trades-count">--</span>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>币种</th>
-                <th>方向</th>
-                <th>入场价</th>
-                <th>出场价</th>
-                <th>盈亏</th>
-                <th>平仓原因</th>
-                <th>持仓时间</th>
-              </tr>
-            </thead>
-            <tbody id="trades-tbody">
-              <tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-</div>
-
+{% block scripts %}
 <script>
-document.addEventListener("DOMContentLoaded", () => {
+function loadData() {
+    fetch('/api/backtest').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
 
-  fetch('/api/backtest')
-    .then(res => res.json())
-    .then(data => {
-      if (!data || Object.keys(data).length === 0) {
-        document.getElementById('trades-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">暂无回测数据，请运行 python3 backtest.py</td></tr>';
-        document.getElementById('chart-empty').style.display = 'flex';
-        return;
-      }
+        let warnHtml = '';
+        if (data.current_config && data.config_snapshot) {
+            const cur = data.current_config;
+            const snap = data.config_snapshot;
+            const mismatches = [];
+            if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
+            if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
+            if (snap.tp2_pct && snap.tp2_pct !== cur.tp2_pct) mismatches.push(`TP2: ${snap.tp2_pct}%→${cur.tp2_pct}%`);
+            if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
+            if (snap.h4_rsi_drop && snap.h4_rsi_drop !== cur.h4_rsi_drop) mismatches.push(`回落: ${snap.h4_rsi_drop}→${cur.h4_rsi_drop}`);
+            if (mismatches.length > 0) {
+                warnHtml = `<div class="card" style="border-color:var(--yellow);margin-bottom:12px;"><b style="color:var(--yellow);">⚠️ 参数已变更，回测数据可能过期</b><br>
+                    <span class="card-sub">变更项: ${mismatches.join(' | ')}<br>请重新运行: <code>python3 backtest.py --symbol PEPE/USDT</code></span></div>`;
+            }
+        }
 
-      // Config
-      const cfg = data.current_config || {};
-      document.getElementById('bt-daily-rsi').textContent = cfg.daily_rsi_min || '--';
-      document.getElementById('bt-tp1').textContent = cfg.tp1_pct ? cfg.tp1_pct + '%' : '--';
-      document.getElementById('bt-tp2').textContent = cfg.tp2_pct ? cfg.tp2_pct + '%' : '--';
-      document.getElementById('bt-hard-stop').textContent = cfg.hard_stop_pct ? cfg.hard_stop_pct + '%' : '--';
-      document.getElementById('bt-h4-rsi').textContent = cfg.h4_rsi_drop || '--';
-      document.getElementById('bt-trail').textContent = cfg.trail_activate_pct ? cfg.trail_activate_pct + '%' : '--';
-      document.getElementById('bt-leverage').textContent = cfg.leverage ? cfg.leverage + 'x' : '--';
-      document.getElementById('bt-stake').textContent = cfg.stake ? cfg.stake + ' U' : '--';
+        if (!data || (!data.results && !data.top_results)) {
+            content.innerHTML = warnHtml + `<div class="empty-state"><p>暂无回测数据</p>
+                <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT</code></p></div>`;
+            return;
+        }
 
-      // KPIs
-      const metrics = data.metrics || data;
-      const roi = parseFloat(metrics.roi || metrics.total_return_pct || 0);
-      const roiEl = document.getElementById('kpi-roi');
-      roiEl.textContent = (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%';
-      roiEl.className = 'mono font-bold ' + (roi >= 0 ? 'green' : 'red');
+        const meta = document.getElementById('bt-meta');
+        meta.textContent = `${data.symbol || (data.symbols||[]).join(', ')} | ${data.days}天 | ${(data.timestamp||'').slice(0,16)}`;
 
-      const netPnl = parseFloat(metrics.total_pnl || metrics.net_profit || 0);
-      const netEl = document.getElementById('kpi-net-pnl');
-      netEl.textContent = (netPnl >= 0 ? '+' : '') + netPnl.toFixed(2) + ' U';
-      netEl.className = 'mono font-bold ' + (netPnl >= 0 ? 'green' : 'red');
+        if (data.top_results) {
+            content.innerHTML = warnHtml + renderGridResults(data.top_results);
+        } else {
+            const results = data.results || [];
+            if (results.length === 0) {
+                content.innerHTML = warnHtml + '<div class="empty-state">无结果</div>';
+                return;
+            }
+            let html = warnHtml;
+            for (const r of results) { html += renderSingleResult(r); }
+            content.innerHTML = html;
+        }
 
-      const maxDD = parseFloat(metrics.max_drawdown || metrics.max_drawdown_pct || 0);
-      document.getElementById('kpi-max-dd').textContent = maxDD.toFixed(2) + '%';
-
-      const sharpe = parseFloat(metrics.sharpe || metrics.sharpe_ratio || 0);
-      document.getElementById('kpi-sharpe').textContent = sharpe > 0 ? sharpe.toFixed(2) : '--';
-
-      const pf = parseFloat(metrics.profit_factor || 0);
-      document.getElementById('kpi-pf').textContent = pf > 0 ? pf.toFixed(2) : '--';
-
-      const wr = parseFloat(metrics.win_rate || 0);
-      const wrEl = document.getElementById('kpi-win-rate');
-      wrEl.textContent = wr.toFixed(1) + '%';
-      wrEl.className = 'mono font-bold ' + (wr >= 50 ? 'green' : 'red');
-
-      document.getElementById('kpi-trades').textContent = metrics.total_trades || 0;
-      document.getElementById('kpi-max-loss-streak').textContent = metrics.max_loss_streak || metrics.max_consecutive_losses || '--';
-
-      // Chart title
-      document.getElementById('chart-title').textContent = `${metrics.symbol || data.symbol || '回测'} 权益曲线`;
-      document.getElementById('chart-meta').textContent = metrics.period || data.period || '';
-
-      // Trades list
-      const trades = data.trades || [];
-      const tbody = document.getElementById('trades-tbody');
-      document.getElementById('trades-count').textContent = `共 ${trades.length} 笔`;
-
-      if (trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">无交易记录</td></tr>';
-      } else {
-        let html = '';
-        trades.slice(-30).reverse().forEach(t => {
-          const pnl = parseFloat(t.pnl || 0);
-          html += `<tr>
-            <td class="mono font-bold">${t.symbol || '--'}</td>
-            <td><span class="badge ${t.direction === 'LONG' ? 'badge-green' : 'badge-red'}">${t.direction || 'SHORT'}</span></td>
-            <td class="mono">${parseFloat(t.entry_price || 0).toFixed(6)}</td>
-            <td class="mono">${parseFloat(t.exit_price || 0).toFixed(6)}</td>
-            <td class="mono font-bold ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} U</td>
-            <td class="text-muted">${t.close_reason || t.exit_reason || '--'}</td>
-            <td class="mono text-muted">${t.hold_hours ? t.hold_hours + 'h' : '--'}</td>
-          </tr>`;
-        });
-        tbody.innerHTML = html;
-      }
-
-      // Chart
-      renderEquityCurve(data);
-    })
-    .catch(err => {
-      console.error('回测数据加载失败:', err);
-      document.getElementById('trades-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">数据加载失败</td></tr>';
+        // Draw equity chart
+        setTimeout(() => {
+            const results = data.results || data.top_results;
+            if (results && results.length > 0) drawEquityChart(results[0]);
+        }, 100);
+    }).catch(err => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${err.message}</div>`;
     });
+}
 
-  function renderEquityCurve(data) {
-    const canvas = document.getElementById("single-backtest-canvas");
-    if (!canvas) return;
+function renderSingleResult(r) {
+    const p = r.params || {};
+    const passBadge = (r.win_rate >= 50 && r.profit_loss_ratio >= 1.5)
+        ? '<span class="badge badge-ok">达标</span>'
+        : (r.win_rate >= 40 ? '<span class="badge badge-warn">需优化</span>' : '<span class="badge badge-stop">不佳</span>');
 
-    const equity = data.equity_curve || data.cumulative_pnl || null;
-    if (!equity || equity.length < 2) {
-      canvas.style.display = 'none';
-      document.getElementById('chart-empty').style.display = 'flex';
-      return;
+    let html = `<div class="grid grid-5">
+        <div class="card"><div class="card-header">总盈亏</div><div class="card-value ${App.pnlColor(r.total_pnl)}">${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}U</div><div class="card-sub">${r.total_trades} 笔</div></div>
+        <div class="card"><div class="card-header">胜率</div><div class="card-value ${r.win_rate >= 50 ? 'green' : 'yellow'}">${r.win_rate}%</div><div class="card-sub">${r.wins}胜 / ${r.losses}负</div></div>
+        <div class="card"><div class="card-header">盈亏比</div><div class="card-value ${r.profit_loss_ratio >= 1.5 ? 'green' : 'yellow'}">${r.profit_loss_ratio.toFixed(2)}x</div><div class="card-sub">赢${r.avg_win.toFixed(1)} / 亏${r.avg_loss.toFixed(1)}</div></div>
+        <div class="card"><div class="card-header">最大回撤</div><div class="card-value red">${r.max_drawdown.toFixed(1)}%</div><div class="card-sub">连亏${r.max_consecutive_losses}次</div></div>
+        <div class="card"><div class="card-header">评级 ${passBadge}</div><div class="card-value blue">${r.sharpe_ratio.toFixed(2)}</div><div class="card-sub">夏普率</div></div>
+    </div>
+    <div class="card" style="margin-top:12px;"><div class="section-title">📊 权益曲线</div><div style="width:100%;height:200px;position:relative;"><canvas id="equity-chart"></canvas></div></div>
+    <div class="grid grid-2" style="margin-top:12px;">
+        <div class="card"><div class="section-title">📝 交易明细</div><div class="table-wrapper"><table>
+            <thead><tr><th>入场时间</th><th>盈亏</th><th>原因</th><th>持仓</th><th>TP1</th></tr></thead><tbody>`;
+    const trades = (r.trades || []).slice(-20);
+    for (const t of trades) {
+        const cls = t.pnl_usd > 0 ? 'green' : 'red';
+        html += `<tr><td>${(t.entry_time||'').slice(0,16)}</td><td class="${cls}">${t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}U</td><td>${t.exit_reason}</td><td>${t.hold_bars}h</td><td>${t.tp1_hit ? '✓' : ''}</td></tr>`;
     }
+    html += `</tbody></table></div></div><div class="card"><div class="section-title">⚙️ 参数</div><div class="table-wrapper"><table><tbody>
+        <tr><td>RSI 阈值</td><td><b>${p.daily_rsi_min || '--'}</b></td></tr>
+        <tr><td>RSI 回落</td><td><b>${p.h4_rsi_drop || '--'} 点</b></td></tr>
+        <tr><td>TP1</td><td><b>-${p.tp1_pct || '--'}%</b></td></tr>
+        <tr><td>TP2</td><td><b>-${p.tp2_pct || '--'}%</b></td></tr>
+        <tr><td>硬止损</td><td><b>+${p.hard_stop_pct || '--'}%</b></td></tr>
+        <tr><td>移动止损激活</td><td><b>${p.trail_activate_pct || '--'}%</b></td></tr>
+        <tr><td>最大持仓</td><td><b>${p.max_hold_bars || '--'}h</b></td></tr>
+        <tr><td>杠杆</td><td><b>${p.leverage || '--'}x</b></td></tr>
+    </tbody></table></div></div></div>`;
+    return html;
+}
 
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
+function renderGridResults(topResults) {
+    let html = `<div class="card"><div class="section-title">🏆 参数网格搜索 Top ${topResults.length}</div><div class="table-wrapper"><table>
+        <thead><tr><th>#</th><th>PnL</th><th>胜率</th><th>盈亏比</th><th>回撤</th><th>连亏</th><th>TP1</th><th>TP2</th><th>止损</th><th>RSI</th><th>Drop</th><th>单数</th></tr></thead><tbody>`;
+    topResults.slice(0, 20).forEach((r, i) => {
+        const p = r.params || {};
+        const cls = r.total_pnl > 0 ? 'green' : 'red';
+        html += `<tr><td>${i+1}</td><td class="${cls}"><b>${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}</b></td><td>${r.win_rate}%</td><td>${r.profit_loss_ratio.toFixed(2)}x</td><td>${r.max_drawdown.toFixed(1)}%</td><td>${r.max_consecutive_losses}</td><td>${p.tp1_pct}%</td><td>${p.tp2_pct}%</td><td>${p.hard_stop_pct}%</td><td>${p.daily_rsi_min}</td><td>${p.h4_rsi_drop}</td><td>${r.total_trades}</td></tr>`;
+    });
+    html += '</tbody></table></div></div>';
+    if (topResults.length > 0) { html += renderSingleResult(topResults[0]); }
+    return html;
+}
 
-    const padding = 45;
-    const xRange = w - padding * 2;
-    const yRange = h - padding * 2;
-
-    const maxVal = Math.max(...equity) * 1.05 || 100;
-    const minVal = Math.min(...equity) * (Math.min(...equity) < 0 ? 1.05 : 0.95) || 0;
+function drawEquityChart(result) {
+    if (!result || !result.equity_curve || result.equity_curve.length < 2) return;
+    const canvas = document.getElementById('equity-chart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const data = result.equity_curve;
+    const w = canvas.parentElement.clientWidth, h = 200;
+    canvas.width = w; canvas.height = h;
+    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const chartW = w - padding.left - padding.right, chartH = h - padding.top - padding.bottom;
+    const minVal = Math.min(...data), maxVal = Math.max(...data);
     const range = maxVal - minVal || 1;
 
-    // Grid
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding + (yRange / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding, y);
-      ctx.lineTo(w - padding, y);
-      ctx.stroke();
+    const style = getComputedStyle(document.documentElement);
+    const bgColor = style.getPropertyValue('--chart-bg').trim() || '#161b22';
+    const gridColor = style.getPropertyValue('--chart-grid').trim() || '#30363d';
+    const textColor = style.getPropertyValue('--text-secondary').trim() || '#8b949e';
+    const greenColor = style.getPropertyValue('--green').trim() || '#3fb950';
+    const redColor = style.getPropertyValue('--red').trim() || '#f85149';
 
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      ctx.font = "9px JetBrains Mono";
-      const label = (maxVal - (range / 4) * i).toFixed(0);
-      ctx.fillText(label, 5, y + 3);
+    ctx.fillStyle = bgColor; ctx.fillRect(0, 0, w, h);
+    const baseY = padding.top + chartH - ((data[0] - minVal) / range) * chartH;
+    ctx.strokeStyle = gridColor; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(padding.left, baseY); ctx.lineTo(w - padding.right, baseY); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle = data[data.length - 1] >= data[0] ? greenColor : redColor;
+    ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+        const x = padding.left + (i / (data.length - 1)) * chartW;
+        const y = padding.top + chartH - ((data[i] - minVal) / range) * chartH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
-
-    // Equity line
-    ctx.beginPath();
-    equity.forEach((val, idx) => {
-      const x = padding + (xRange / (equity.length - 1)) * idx;
-      const y = h - padding - ((val - minVal) / range) * yRange;
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#a855f7";
-    ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.fillStyle = textColor; ctx.font = '11px sans-serif';
+    ctx.fillText(maxVal.toFixed(0) + 'U', 4, padding.top + 10);
+    ctx.fillText(minVal.toFixed(0) + 'U', 4, h - padding.bottom - 4);
+    const finalVal = data[data.length - 1];
+    ctx.fillStyle = finalVal >= data[0] ? greenColor : redColor;
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(`${finalVal.toFixed(1)}U`, w - padding.right - 50, padding.top + 10);
+}
 
-    // Fill
-    ctx.lineTo(padding + xRange, h - padding);
-    ctx.lineTo(padding, h - padding);
-    ctx.closePath();
-    const gradient = ctx.createLinearGradient(0, padding, 0, h - padding);
-    gradient.addColorStop(0, "rgba(168, 85, 247, 0.12)");
-    gradient.addColorStop(1, "rgba(168, 85, 247, 0.0)");
-    ctx.fillStyle = gradient;
-    ctx.fill();
-  }
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
 });
 </script>
 {% endblock %}

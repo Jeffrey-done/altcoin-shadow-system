@@ -1,95 +1,41 @@
 {% extends "admin/_base.html" %}
 {% block title %}管理员登录{% endblock %}
 {% block content %}
-
-{% if lockout %}
-{# ── Lockout state: 5 failures reached ── #}
-<div class="lockout-screen">
-  <div class="lockout-card">
-    <i data-lucide="lock" style="width:36px;height:36px;color:var(--text-muted);margin:0 auto 16px;display:block;"></i>
-    <h2>SYS_LINK_TERMINATED</h2>
-    <p style="color:var(--text-muted);font-size:0.72rem;">404 - Not Found</p>
-    <p style="margin-top:12px;font-size:0.68rem;color:#1e293b;">
-      检测到连续登录失败。系统后台连接已被阻断，任何登录提示和接口回应已被彻底销毁。
-    </p>
-  </div>
-</div>
-
-{% else %}
-{# ── Normal login form ── #}
-<div class="auth-card animate-fade-in">
-  {# Header #}
-  <div class="auth-header">
-    <div>
-      <div class="auth-brand">
-        <i data-lucide="sparkles" style="width:14px;height:14px;"></i>
-        <span>QUANT COREGATEWAY</span>
-      </div>
-      <h1 style="font-size:1.15rem;font-weight:700;letter-spacing:-0.02em;margin-top:6px;color:var(--text-primary);">
-        量化控制中心管理员登录
-      </h1>
+<div class="card">
+  <div style="text-align:center;margin-bottom:28px;">
+    <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--accent-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
+      <i data-lucide="shield-check" style="width:28px;height:28px;color:var(--accent);"></i>
     </div>
-    <span style="font-size:0.65rem;padding:4px 8px;border-radius:var(--radius-sm);background:var(--border-subtle);color:var(--text-muted);text-transform:uppercase;font-weight:600;">
-      Admin Portal
-    </span>
+    <h2 style="margin-bottom:4px;">管理员登录</h2>
+    <p class="muted" style="font-size:0.78rem;">影子交易系统</p>
   </div>
 
-  {# Body #}
-  <div class="auth-body">
-    {% if error %}
-    <div class="msg-error">
-      <i data-lucide="shield-alert" style="width:16px;height:16px;color:var(--red);flex-shrink:0;margin-top:2px;"></i>
-      <div>
-        <span style="font-weight:600;display:block;">登录校验未通过:</span>
-        <p style="color:#fca5a5;opacity:0.9;">{{ error }}</p>
-        {% if remaining_attempts is defined and remaining_attempts is not none %}
-        <span style="font-size:0.68rem;color:rgba(239,68,68,0.7);display:block;margin-top:4px;">
-          剩余重试机会: {{ remaining_attempts }} 次
-        </span>
-        {% endif %}
-      </div>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <form method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div style="margin-bottom:16px;">
+      <label for="password">密码</label>
+      <input type="password" id="password" name="password" required autofocus
+             autocomplete="current-password" placeholder="请输入管理员密码">
     </div>
-    {% endif %}
 
-    <form method="post" autocomplete="off" id="login-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="margin-bottom:24px;">
+      <label for="totp">动态验证码（6位数字）</label>
+      <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
+             inputmode="numeric" autocomplete="one-time-code"
+             placeholder="验证器6位数字">
+    </div>
 
-      <div style="margin-bottom:18px;">
-        <label for="password">超级安全口令 / SECURITY PASSWORD</label>
-        <div style="position:relative;">
-          <i data-lucide="key-round" style="width:16px;height:16px;color:var(--text-muted);position:absolute;left:14px;top:13px;"></i>
-          <input type="password" id="password" name="password" required autofocus
-                 autocomplete="current-password"
-                 placeholder="请输入超级密钥..."
-                 style="padding-left:40px;">
-        </div>
-      </div>
+    <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
+      <i data-lucide="log-in" style="width:16px;height:16px;"></i>
+      登录
+    </button>
+  </form>
 
-      <div style="margin-bottom:24px;" id="login-totp-section">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-          <label for="totp" style="margin-bottom:0;">谷歌 TOTP 6 位动态验证码</label>
-          <span style="font-size:0.65rem;color:var(--accent);font-family:monospace;font-weight:600;">2FA Active</span>
-        </div>
-        <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
-               inputmode="numeric" autocomplete="one-time-code"
-               placeholder="000000"
-               style="text-align:center;font-size:1rem;font-weight:700;letter-spacing:0.25em;color:var(--accent);">
-      </div>
-
-      <div style="padding-top:4px;">
-        <button type="submit" class="btn-primary" style="width:100%;padding:14px;border-radius:var(--radius-md);font-size:0.82rem;">
-          <i data-lucide="log-in" style="width:14px;height:14px;"></i>
-          确认登入密道后端
-        </button>
-      </div>
-    </form>
-  </div>
-
-  {# Footer #}
-  <div class="auth-footer">
-    <span>连续5次失败将锁定IP 30分钟</span>
-  </div>
+  <p class="muted" style="margin-top:24px;font-size:0.7rem;text-align:center;">
+    连续5次失败将锁定IP 30分钟
+  </p>
 </div>
-{% endif %}
-
 {% endblock %}

@@ -1,361 +1,116 @@
 {% extends "base.html" %}
 
-{% block title %}周报分析 | Altcoin Shadow System{% endblock %}
+{% block title %}策略周报 - Shadow Trading{% endblock %}
+{% block page_title %}📋 策略周报{% endblock %}
+{% block subtitle %}自动生成的周度策略表现报告{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
 
 {% block content %}
-<div class="dashboard-grid">
-  
-  <!-- Main report header (span 12) -->
-  <section class="grid-col-12 card" id="report-header-card">
-    <div class="card-header" style="background: linear-gradient(90deg, var(--bg-card) 0%, rgba(168, 85, 247, 0.05) 100%);">
-      <div class="card-title">
-        <i data-lucide="file-text" class="purple" style="width: 18px; height: 18px;"></i>
-        <span id="report-title">量化交易执行周报分析报告</span>
-      </div>
-      <div style="display: flex; gap: 8px;">
-        <button class="btn-secondary" onclick="window.print()"><i data-lucide="printer" style="width: 14px; height:14px;"></i> 打印</button>
-      </div>
-    </div>
-    <div class="card-body">
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-        <div>
-          <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">本周累盈: <span class="mono" id="report-total-pnl">--</span></h2>
-          <p class="text-muted" style="font-size: 12px;" id="report-summary-text">加载中...</p>
-        </div>
-        <div style="display: flex; gap: 24px;">
-          <div style="text-align: right;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">本周交易笔数</div>
-            <div class="mono" style="font-size: 16px; font-weight: 700;" id="report-total-trades">--</div>
-          </div>
-          <div style="text-align: right;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">综合胜率</div>
-            <div class="mono" style="font-size: 16px; font-weight: 700;" id="report-win-rate">--</div>
-          </div>
-          <div style="text-align: right;">
-            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">最大回撤</div>
-            <div class="mono red" style="font-size: 16px; font-weight: 700;" id="report-max-drawdown">--</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
+<div id="content"><div class="empty-state">加载中...</div></div>
+{% endblock %}
 
-  <!-- Left Side: Performance charts (span 8) -->
-  <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Weekly PnL Chart -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="line-chart" class="purple" style="width: 16px; height: 16px;"></i> 本周累计收益走势
-        </div>
-      </div>
-      <div class="card-body">
-        <canvas id="weekly-report-canvas" width="600" height="220" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
-      </div>
-    </div>
-
-    <!-- Per-Symbol Performance Table -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="pie-chart" class="blue" style="width: 16px; height: 16px;"></i> 交易品种明细
-        </div>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div class="table-responsive">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>交易对</th>
-                <th>方向</th>
-                <th>笔数</th>
-                <th>胜率</th>
-                <th>贡献 PnL</th>
-              </tr>
-            </thead>
-            <tbody id="weekly-details-tbody">
-              <tr><td colspan="5" class="text-muted" style="text-align:center; padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Daily PnL Breakdown -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="calendar" class="purple" style="width: 16px; height: 16px;"></i> 每日盈亏明细
-        </div>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div class="table-responsive">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>日期</th>
-                <th>交易笔数</th>
-                <th>日盈亏</th>
-                <th>累计盈亏</th>
-              </tr>
-            </thead>
-            <tbody id="weekly-daily-tbody">
-              <tr><td colspan="4" class="text-muted" style="text-align:center; padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Right Side: KPI Summary (span 4) -->
-  <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
-    
-    <!-- Weekly KPIs -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <i data-lucide="calculator" class="purple" style="width: 16px; height: 16px;"></i> 核心 KPI
-        </div>
-      </div>
-      <div class="card-body" style="display: flex; flex-direction: column; gap: 12px;" id="kpi-container">
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">盈亏比 (Profit Factor)</span>
-          <span class="mono font-bold" id="kpi-profit-factor">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">平均每笔盈亏</span>
-          <span class="mono font-bold" id="kpi-avg-pnl">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">最佳单笔</span>
-          <span class="mono green font-bold" id="kpi-best-trade">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">最差单笔</span>
-          <span class="mono red font-bold" id="kpi-worst-trade">--</span>
-        </div>
-        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-          <span class="text-secondary">最大连胜</span>
-          <span class="mono" id="kpi-max-win-streak">--</span>
-        </div>
-        <div class="flex-between">
-          <span class="text-secondary">最大连亏</span>
-          <span class="mono" id="kpi-max-loss-streak">--</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Strategy Suggestion -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title" style="color: var(--yellow);">
-          <i data-lucide="sparkles" class="yellow" style="width: 16px; height: 16px;"></i> 策略建议
-        </div>
-      </div>
-      <div class="card-body" id="strategy-advice-container">
-        <div style="font-size: 12px; line-height: 1.6; color: var(--text-secondary);" id="strategy-advice-content">
-          加载中...
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-</div>
-
+{% block scripts %}
 <script>
-document.addEventListener("DOMContentLoaded", () => {
+function loadData() {
+    fetch('/api/weekly-report').then(r => r.json()).then(data => {
+        const content = document.getElementById('content');
+        if (!data || !data.stats) {
+            content.innerHTML = `<div class="empty-state"><p>暂无周报数据</p><p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 weekly_report.py</code></p></div>`;
+            return;
+        }
+        const meta = data.metadata || {};
+        const stats = data.stats;
+        const suggestions = data.suggestions || [];
+        const gradeEmoji = {'A':'🏆','B':'✅','C':'⚠️','F':'❌'}[meta.grade] || '❓';
 
-  fetch('/api/weekly-report')
-    .then(res => res.json())
-    .then(data => {
-      if (!data || Object.keys(data).length === 0) {
-        document.getElementById('report-summary-text').textContent = '暂无周报数据，请等待系统生成。';
-        return;
-      }
+        let html = `
+        <div class="grid grid-5">
+            <div class="card">
+                <div class="card-header">评级</div>
+                <div class="card-value">${gradeEmoji} ${meta.grade||'-'}</div>
+                <div class="card-sub">ROI: ${(meta.roi_pct||0).toFixed(1)}%</div>
+            </div>
+            <div class="card">
+                <div class="card-header">总盈亏</div>
+                <div class="card-value ${App.pnlColor(stats.total_pnl)}">${App.fmtPnl(stats.total_pnl||0)}</div>
+            </div>
+            <div class="card">
+                <div class="card-header">交易数</div>
+                <div class="card-value blue">${stats.total_trades||0}</div>
+                <div class="card-sub">${stats.win_count||0}胜 / ${stats.loss_count||0}负</div>
+            </div>
+            <div class="card">
+                <div class="card-header">胜率</div>
+                <div class="card-value ${(stats.win_rate||0) >= 50 ? 'green' : 'yellow'}">${stats.win_rate||0}%</div>
+            </div>
+            <div class="card">
+                <div class="card-header">平均持仓</div>
+                <div class="card-value blue">${(stats.avg_hold_hours||0).toFixed(1)}h</div>
+            </div>
+        </div>
 
-      // Header
-      const week = data.week_range || data.period || '';
-      if (week) {
-        document.getElementById('report-title').textContent = `周报 ${week}`;
-      }
+        <div class="grid grid-2">
+            <div class="card">
+                <div class="section-title">💰 盈亏分布</div>
+                <div class="table-wrapper"><table><tbody>
+                    <tr><td>做空策略</td><td><b>${App.fmtPnl(stats.short_pnl||0)}</b></td></tr>
+                    <tr><td>最佳交易</td><td><b>${stats.best_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.best_trade?.pnl||0)}</td></tr>
+                    <tr><td>最差交易</td><td><b>${stats.worst_trade?.symbol||'-'}</b> ${App.fmtPnl(stats.worst_trade?.pnl||0)}</td></tr>
+                    <tr><td>最大单日亏损</td><td>${App.fmtPnl(stats.max_drawdown_day||0)}</td></tr>
+                </tbody></table></div>
+            </div>
+            <div class="card">
+                <div class="section-title">📊 策略明细</div>
+                <div class="table-wrapper"><table><thead><tr><th>策略</th><th>交易数</th><th>盈亏</th><th>胜率</th></tr></thead><tbody>`;
 
-      const totalPnl = parseFloat(data.total_pnl || 0);
-      const pnlEl = document.getElementById('report-total-pnl');
-      pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' USDT';
-      pnlEl.className = 'mono ' + (totalPnl >= 0 ? 'green' : 'red');
+        if (stats.strategy_breakdown) {
+            for (const [strat, s] of Object.entries(stats.strategy_breakdown)) {
+                const wr = s.count > 0 ? (s.wins / s.count * 100).toFixed(0) : 0;
+                html += `<tr><td><b>${strat}</b></td><td>${s.count}</td><td>${App.fmtPnl(s.pnl)}</td><td>${wr}%</td></tr>`;
+            }
+        }
+        html += `</tbody></table></div></div></div>`;
 
-      document.getElementById('report-total-trades').textContent = data.total_trades || 0;
+        // Daily breakdown
+        if (stats.daily_breakdown && Object.keys(stats.daily_breakdown).length > 0) {
+            html += `<div class="card" style="margin-top:12px;"><div class="section-title">📅 每日盈亏</div><div class="table-wrapper"><table>
+                <thead><tr><th>日期</th><th>盈亏</th><th>可视化</th></tr></thead><tbody>`;
+            const maxAbs = Math.max(...Object.values(stats.daily_breakdown).map(v => Math.abs(v)), 1);
+            for (const [day, pnl] of Object.entries(stats.daily_breakdown)) {
+                const barW = Math.abs(pnl) / maxAbs * 100;
+                const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                html += `<tr><td>${day}</td><td>${App.fmtPnl(pnl)}</td>
+                    <td><div style="height:12px;width:${barW}%;background:${color};border-radius:2px;"></div></td></tr>`;
+            }
+            html += `</tbody></table></div></div>`;
+        }
 
-      const winRate = parseFloat(data.win_rate || 0);
-      const wrEl = document.getElementById('report-win-rate');
-      wrEl.textContent = winRate.toFixed(1) + '%';
-      wrEl.className = 'mono ' + (winRate >= 50 ? 'green' : 'red') + ' font-bold';
+        // Suggestions
+        if (suggestions.length > 0) {
+            html += `<div class="card" style="margin-top:12px;"><div class="section-title">💡 策略建议</div><ul style="padding-left:20px;">`;
+            suggestions.forEach(s => { html += `<li style="margin-bottom:6px;font-size:0.85rem;">${s}</li>`; });
+            html += `</ul></div>`;
+        }
 
-      const maxDD = parseFloat(data.max_drawdown || 0);
-      document.getElementById('report-max-drawdown').textContent = maxDD.toFixed(2) + '%';
+        // Metadata
+        html += `<div class="card-sub" style="margin-top:12px;text-align:center;">
+            报告范围: ${(meta.week_start||'').slice(0,10)} ~ ${(meta.week_end||'').slice(0,10)} |
+            生成时间: ${(meta.generated_at||'').slice(0,16).replace('T',' ')} UTC</div>`;
 
-      document.getElementById('report-summary-text').textContent = data.summary || '策略运行中，数据已加载。';
-
-      // KPIs
-      const pf = parseFloat(data.profit_factor || 0);
-      const pfEl = document.getElementById('kpi-profit-factor');
-      pfEl.textContent = pf > 0 ? pf.toFixed(2) : '--';
-      pfEl.className = 'mono font-bold ' + (pf >= 1.5 ? 'green' : (pf > 0 ? 'yellow' : ''));
-
-      const avgPnl = parseFloat(data.avg_pnl || 0);
-      const avgEl = document.getElementById('kpi-avg-pnl');
-      avgEl.textContent = (avgPnl >= 0 ? '+' : '') + avgPnl.toFixed(2) + ' U';
-      avgEl.className = 'mono font-bold ' + (avgPnl >= 0 ? 'green' : 'red');
-
-      const best = parseFloat(data.best_trade || 0);
-      document.getElementById('kpi-best-trade').textContent = '+' + best.toFixed(2) + ' U';
-      const worst = parseFloat(data.worst_trade || 0);
-      document.getElementById('kpi-worst-trade').textContent = worst.toFixed(2) + ' U';
-
-      document.getElementById('kpi-max-win-streak').textContent = data.max_win_streak || '--';
-      document.getElementById('kpi-max-loss-streak').textContent = data.max_loss_streak || '--';
-
-      // Strategy advice
-      const advice = data.advice || data.suggestions || data.strategy_advice || '';
-      if (advice) {
-        document.getElementById('strategy-advice-content').innerHTML = advice.replace(/\n/g, '<br>');
-      } else {
-        document.getElementById('strategy-advice-content').textContent = '暂无策略建议。';
-      }
-
-      // Per-symbol breakdown
-      const symbols = data.per_symbol || data.symbol_breakdown || [];
-      const detailsTbody = document.getElementById('weekly-details-tbody');
-      if (symbols.length > 0) {
-        let html = '';
-        symbols.forEach(s => {
-          const pnl = parseFloat(s.pnl || 0);
-          const wr = parseFloat(s.win_rate || 0);
-          html += `<tr>
-            <td class="mono font-bold">${s.symbol || '--'}</td>
-            <td><span class="badge ${s.direction === 'LONG' ? 'badge-green' : 'badge-red'}">${s.direction || 'SHORT'}</span></td>
-            <td class="mono">${s.trades || s.count || 0}</td>
-            <td class="mono ${wr >= 50 ? 'green' : 'red'}">${wr.toFixed(1)}%</td>
-            <td class="mono font-bold ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} U</td>
-          </tr>`;
-        });
-        detailsTbody.innerHTML = html;
-      } else {
-        detailsTbody.innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center; padding:24px;">无品种明细数据</td></tr>';
-      }
-
-      // Daily breakdown
-      const daily = data.daily_pnl || data.daily || [];
-      const dailyTbody = document.getElementById('weekly-daily-tbody');
-      if (daily.length > 0) {
-        let html = '';
-        let cum = 0;
-        daily.forEach(d => {
-          const dayPnl = parseFloat(d.pnl || 0);
-          cum += dayPnl;
-          html += `<tr>
-            <td class="mono">${d.date || '--'}</td>
-            <td class="mono">${d.trades || 0}</td>
-            <td class="mono font-bold ${dayPnl >= 0 ? 'green' : 'red'}">${dayPnl >= 0 ? '+' : ''}${dayPnl.toFixed(2)} U</td>
-            <td class="mono ${cum >= 0 ? 'green' : 'red'}">${cum >= 0 ? '+' : ''}${cum.toFixed(2)} U</td>
-          </tr>`;
-        });
-        dailyTbody.innerHTML = html;
-      } else {
-        dailyTbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center; padding:24px;">无每日明细</td></tr>';
-      }
-
-      // Chart
-      renderWeeklyChart(daily);
-    })
-    .catch(err => {
-      console.error('周报加载失败:', err);
-      document.getElementById('report-summary-text').textContent = '周报数据加载失败。';
+        content.innerHTML = html;
+    }).catch(e => {
+        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
     });
+}
 
-  function renderWeeklyChart(daily) {
-    const canvas = document.getElementById("weekly-report-canvas");
-    if (!canvas || !daily || daily.length === 0) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
-
-    const padding = 40;
-    const xRange = w - padding * 2;
-    const yRange = h - padding * 2;
-
-    // Build cumulative data
-    let cumData = [];
-    let cum = 0;
-    daily.forEach(d => {
-      cum += parseFloat(d.pnl || 0);
-      cumData.push(cum);
-    });
-
-    if (cumData.length < 2) return;
-
-    const maxVal = Math.max(...cumData, 0) * 1.1 || 10;
-    const minVal = Math.min(...cumData, 0) * 1.1 || -10;
-    const range = maxVal - minVal || 1;
-
-    // Grid
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding + (yRange / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(padding, y);
-      ctx.lineTo(w - padding, y);
-      ctx.stroke();
-    }
-
-    // Line
-    ctx.beginPath();
-    cumData.forEach((val, idx) => {
-      const x = padding + (xRange / (cumData.length - 1)) * idx;
-      const y = h - padding - ((val - minVal) / range) * yRange;
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#a855f7";
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-
-    // Fill
-    ctx.lineTo(padding + xRange, h - padding);
-    ctx.lineTo(padding, h - padding);
-    ctx.closePath();
-    const gradient = ctx.createLinearGradient(0, padding, 0, h - padding);
-    gradient.addColorStop(0, "rgba(168, 85, 247, 0.15)");
-    gradient.addColorStop(1, "rgba(168, 85, 247, 0.0)");
-    ctx.fillStyle = gradient;
-    ctx.fill();
-
-    // Dots + labels
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.font = "9px JetBrains Mono";
-    cumData.forEach((val, idx) => {
-      const x = padding + (xRange / (cumData.length - 1)) * idx;
-      const y = h - padding - ((val - minVal) / range) * yRange;
-      ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = "#a855f7";
-      ctx.fill();
-
-      if (daily[idx] && daily[idx].date) {
-        ctx.fillStyle = "rgba(255,255,255,0.4)";
-        ctx.fillText(daily[idx].date.slice(5), x - 12, h - 12);
-      }
-    });
-  }
+document.addEventListener('DOMContentLoaded', () => {
+    loadData();
+    AutoRefresh.init(loadData);
 });
 </script>
 {% endblock %}
