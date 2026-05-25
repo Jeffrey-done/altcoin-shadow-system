@@ -66,6 +66,79 @@ short_overbought:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  Funding Rate 套利策略
+# ══════════════════════════════════════════════════════════════════
+funding_arb:
+  enabled: true
+  version: "1.0.0"
+
+  # 入场阈值
+  thresholds:
+    positive_rate: 0.08                # 正费率入场阈值 (%/8h)
+    negative_rate: -0.05               # 负费率入场阈值 (%/8h)
+
+  # 过滤
+  filters:
+    min_volume_24h: 2000000            # 最低 24h 成交量 (USDT)
+    min_oi_usdt: 5000000               # 最低 OI (USDT)
+    max_spread_pct: 0.1                # 最大买卖价差 %
+
+  # 仓位
+  position:
+    default_stake: 30
+    leverage: 5
+    max_open_positions: 2
+
+  # 止盈止损
+  exits:
+    hard_stop_pct: 2.0
+    take_profit_pct: 1.5
+    time_stop_hours: 24
+    min_profit_for_hold: 0.3
+
+  # 交叉验证
+  cross_validate:
+    enabled: true
+    rate_agreement_pct: 0.03
+
+
+# ══════════════════════════════════════════════════════════════════
+#  超卖做多策略（对冲做空风险）
+# ══════════════════════════════════════════════════════════════════
+long_oversold:
+  enabled: true
+  version: "1.0.0"
+
+  # 扫描过滤
+  scan:
+    vol_min: 1000000
+    price_max: 5.0
+    pct_24h_max: -15                   # 24h 跌幅超过 15%
+
+  # RSI 参数
+  rsi:
+    period: 14
+    daily_max: 25                      # 日线 RSI < 25 = 超卖
+    h4_enter: 30                       # 4h RSI 反弹进入阈值
+    h4_rise: 8                         # 4h RSI 需从谷值回升的点数
+
+  # 止盈止损
+  exits:
+    tp1_pct: 5.0
+    tp2_pct: 10.0
+    tp1_close_ratio: 0.5
+    hard_stop_pct: 4.0
+    trail_activate_pct: 3.0
+    trail_retrace_ratio: 0.4
+    max_hold_hours: 48
+
+  # 仓位
+  position:
+    default_stake: 20
+    leverage: 5
+
+
+# ══════════════════════════════════════════════════════════════════
 #  宏观信号整合（multi-signal + Crypto-Market-Monitor）
 # ══════════════════════════════════════════════════════════════════
 macro:

@@ -528,14 +528,7 @@ class AsyncStrategyEngine:
                 f"📤 退出信号: {exit_signal.trade_id} "
                 f"reason={exit_signal.reason.value}"
             )
-            # TODO: 执行平仓
-            from event_bus import emit_trade_closed
-            emit_trade_closed(
-                trade_id=exit_signal.trade_id,
-                symbol='',
-                pnl=exit_signal.pnl_estimate,
-                close_type=exit_signal.reason.value,
-            )
+            await self._execute_close(exit_signal, open_trades, tickers)
 
     async def _handle_signal(self, signal):
         """处理确认后的信号 → 风控 → 执行"""
@@ -554,8 +547,228 @@ class AsyncStrategyEngine:
             triggered=True,
         )
 
-        # TODO: 风控检查 + SmartOrder 执行
-        # 这里是占位，实际应调用 risk/portfolio.py + execution/smart_order.py
+        # ── 1. 单笔风控检查（原 risk_control.can_open_trade）──
+        loop = asyncio.get_running_loop()
+        try:
+            from risk_control import can_open_trade
+            from common import get_current_account_id
+            account_id = get_current_account_id()
+            allowed, reason = await loop.run_in_executor(
+                self._strategy_pool,
+                lambda: can_open_trade(account_id=account_id)
+            )
+            if not allowed:
+                logger.info(f"🚫 风控拒绝 {signal.symbol}: {reason}")
+                from event_bus import emit_risk_alert
+                emit_risk_alert('open_rejected', reason, account_id=account_id)
+                return
+        except Exception as e:
+            logger.warning(f"风控检查异常，保守拒绝: {e}")
+            return
+
+        # ── 2. 组合风控检查（Portfolio Risk）──
+        try:
+            from risk.portfolio import PortfolioRiskManager, PortfolioRiskConfig
+            from db.compat import load_open_trades, load_all_trades
+            import config as cfg
+
+            balance = getattr(cfg, 'ACCOUNT_BALANCE', 100)
+            portfolio_mgr = PortfolioRiskManager(
+                config=PortfolioRiskConfig(),
+                account_balance=balance,
+            )
+            open_positions = await loop.run_in_executor(
+                self._strategy_pool, load_open_trades
+            )
+            historical = await loop.run_in_executor(
+                self._strategy_pool,
+                lambda: load_all_trades(status='closed')
+            )
+
+            risk_result = portfolio_mgr.check_new_position(
+                symbol=signal.symbol,
+                stake=signal.stake,
+                open_positions=open_positions,
+                historical_trades=historical[-50:] if historical else None,
+            )
+            if not risk_result.approved:
+                logger.info(f"🚫 组合风控拒绝 {signal.symbol}: {risk_result.reason}")
+                return
+
+            # 应用 Kelly 建议仓位
+            if risk_result.adjustments.get('suggested_stake'):
+                adjusted_stake = risk_result.adjustments['suggested_stake']
+                if adjusted_stake < signal.stake:
+                    logger.info(
+                        f"📐 Kelly 调整仓位: {signal.stake:.0f}U → {adjusted_stake:.0f}U"
+                    )
+                    signal.stake = adjusted_stake
+        except Exception as e:
+            logger.warning(f"组合风控检查异常（不阻塞）: {e}")
+
+        # ── 3. 深度分析 + 智能执行 ──
+        try:
+            from execution.orderbook_monitor import get_depth_monitor
+            from execution.smart_order import get_smart_order_engine, OrderSide
+
+            # 深度分析
+            monitor = get_depth_monitor()
+            side = 'sell' if signal.direction.value == 'SHORT' else 'buy'
+            notional = signal.stake * signal.leverage
+
+            analysis = await loop.run_in_executor(
+                self._strategy_pool,
+                lambda: monitor.analyze(signal.symbol, side=side, notional_usdt=notional)
+            )
+
+            if analysis.recommendation == 'abort':
+                logger.warning(
+                    f"❌ 深度不足，中止 {signal.symbol}: "
+                    f"预估滑点 {analysis.estimated_slippage_bps:.0f} bps"
+                )
+                return
+
+            # 执行下单
+            smart_engine = get_smart_order_engine()
+            order_side = OrderSide.SELL if signal.direction.value == 'SHORT' else OrderSide.BUY
+
+            # 估算下单量
+            mid_price = analysis.mid_price or 1.0
+            amount = notional / mid_price if mid_price > 0 else 0
+
+            if amount <= 0:
+                logger.warning(f"❌ 计算下单量为 0: {signal.symbol}")
+                return
+
+            exec_result = await loop.run_in_executor(
+                self._strategy_pool,
+                lambda: smart_engine.execute(
+                    symbol=signal.symbol,
+                    side=order_side,
+                    amount=amount,
+                    notional_usdt=notional,
+                    exchange_name='binance',
+                    account_id=account_id,
+                )
+            )
+
+            if exec_result.fill_rate > 0:
+                logger.info(
+                    f"✅ 开仓成功: {signal.symbol} {signal.direction.value} "
+                    f"avg_price={exec_result.avg_price:.8g} "
+                    f"filled={exec_result.fill_rate*100:.0f}% "
+                    f"slippage={exec_result.avg_slippage_bps:.1f}bps"
+                )
+
+                # 记录交易
+                from risk_control import record_trade_opened
+                record_trade_opened(signal.stake, account_id=account_id)
+
+                # 发布开仓事件
+                from event_bus import emit_trade_opened
+                emit_trade_opened(
+                    trade_id=f"{signal.strategy_name}_{signal.symbol}_{int(time.time())}",
+                    symbol=signal.symbol,
+                    direction=signal.direction.value,
+                    stake=signal.stake,
+                    exchange='binance',
+                    account_id=account_id,
+                    entry_price=exec_result.avg_price,
+                    score=signal.score,
+                )
+            else:
+                logger.warning(
+                    f"❌ 开仓失败: {signal.symbol} error={exec_result.error}"
+                )
+        except Exception as e:
+            logger.error(f"执行层异常: {e}", exc_info=True)
+
+    async def _execute_close(self, exit_signal, open_trades: list, tickers: dict):
+        """执行平仓"""
+        loop = asyncio.get_running_loop()
+        trade_data = next(
+            (t for t in open_trades if t.get('id') == exit_signal.trade_id), None
+        )
+        if not trade_data:
+            logger.warning(f"平仓目标交易未找到: {exit_signal.trade_id}")
+            return
+
+        symbol = trade_data.get('symbol', '')
+        direction = trade_data.get('direction', 'SHORT')
+        exchange = trade_data.get('exchange', 'shadow')
+        account_id = trade_data.get('account_id', '')
+
+        try:
+            from execution.smart_order import get_smart_order_engine, OrderSide
+
+            # 平仓方向与开仓相反
+            close_side = OrderSide.BUY if direction == 'SHORT' else OrderSide.SELL
+            shares = trade_data.get('shares', 0) or 0
+            stake_remaining = trade_data.get('stake_remaining', trade_data.get('stake', 0))
+            notional = stake_remaining * trade_data.get('leverage', 10)
+
+            # 计算平仓量
+            close_amount = shares * exit_signal.close_ratio
+            if close_amount <= 0:
+                # fallback: 用 notional / price 估算
+                price = tickers.get(symbol, {}).get('last', trade_data.get('current_price', 0))
+                if price > 0:
+                    close_amount = notional * exit_signal.close_ratio / price
+
+            if close_amount <= 0:
+                logger.warning(f"平仓量计算为 0: {exit_signal.trade_id}")
+                return
+
+            smart_engine = get_smart_order_engine()
+            exec_result = await loop.run_in_executor(
+                self._strategy_pool,
+                lambda: smart_engine.execute(
+                    symbol=symbol,
+                    side=close_side,
+                    amount=close_amount,
+                    notional_usdt=notional * exit_signal.close_ratio,
+                    exchange_name=exchange if exchange != 'shadow' else 'binance',
+                    account_id=account_id,
+                    urgent=(exit_signal.reason.value == 'hard_stop'),  # 止损紧急执行
+                )
+            )
+
+            if exec_result.fill_rate > 0:
+                logger.info(
+                    f"✅ 平仓成功: {symbol} reason={exit_signal.reason.value} "
+                    f"avg_price={exec_result.avg_price:.8g}"
+                )
+
+                # 记录平仓
+                from risk_control import record_trade_closed
+                record_trade_closed(
+                    exit_signal.pnl_estimate,
+                    stake=stake_remaining * exit_signal.close_ratio,
+                    account_id=account_id,
+                )
+
+                # 发布事件
+                from event_bus import emit_trade_closed
+                emit_trade_closed(
+                    trade_id=exit_signal.trade_id,
+                    symbol=symbol,
+                    pnl=exit_signal.pnl_estimate,
+                    close_type=exit_signal.reason.value,
+                    exchange=exchange,
+                )
+            else:
+                logger.warning(
+                    f"❌ 平仓失败: {symbol} error={exec_result.error}"
+                )
+                # 推送告警
+                from event_bus import emit_risk_alert
+                emit_risk_alert(
+                    'close_failed',
+                    f"{symbol} 平仓失败: {exec_result.error}，请手动处理！",
+                    account_id=account_id,
+                )
+        except Exception as e:
+            logger.error(f"平仓执行异常 ({symbol}): {e}", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -14,6 +14,11 @@
 x-common-app: &common-app
   build: .
   env_file: .env
+  environment:
+    - REDIS_URL=redis://redis:6379/0
+  depends_on:
+    redis:
+      condition: service_healthy
   volumes:
     # 运行时数据文件（持仓/风控/候选池）
     # docker-entrypoint.sh 会在容器启动时自动初始化缺失的 JSON 文件
@@ -38,11 +43,35 @@ x-common-app: &common-app
   restart: unless-stopped
 
 services:
+  # ══════════════════════════════════════════════════════════════════
+  #  基础设施
+  # ══════════════════════════════════════════════════════════════════
+
+  # Redis — 事件总线 + 缓存层
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ══════════════════════════════════════════════════════════════════
+  #  应用服务
+  # ══════════════════════════════════════════════════════════════════
+
   # 实时仪表盘
   dashboard:
     <<: *common-app
     environment:
       - ALLOW_INSECURE_DASHBOARD=1
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "8080:8080"
     command: python3 dashboard.py
@@ -52,11 +81,33 @@ services:
     <<: *common-app
     command: python3 scheduler.py
     depends_on:
-      - dashboard
+      redis:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
 
   # 实时止盈止损监控器
   realtime-monitor:
     <<: *common-app
     command: python3 realtime_monitor.py
     depends_on:
-      - dashboard
+      redis:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
+
+  # 异步策略引擎（可选，USE_ASYNC_ENGINE=1 时启用）
+  async-engine:
+    <<: *common-app
+    command: python3 async_engine.py
+    environment:
+      - USE_ASYNC_ENGINE=1
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - async
+
+volumes:
+  redis-data:
