@@ -1,0 +1,21 @@
+# 风控配置
+# 全局风控参数，支持按账户覆盖
+
+global:
+  max_daily_loss: 30           # 单日最大亏损上限 (USDT)
+  max_daily_trades: 3          # 单日最大开仓次数
+  consecutive_loss_pause: 3    # 连续亏损 N 次后暂停
+  pause_hours: 24              # 暂停时长
+  max_position_pct: 0.5        # 最大持仓占余额比例
+  cooldown_hours: 24           # 同币种止损后冷却期
+  cooldown_scope: global       # 冷却作用域: global | per_account
+
+# 多账户覆盖示例（取消注释并修改）
+# accounts:
+#   acc_main:
+#     max_daily_loss: 50
+#     max_daily_trades: 5
+#     max_position_pct: 0.6
+#   acc_test:
+#     max_daily_loss: 10
+#     max_daily_trades: 2

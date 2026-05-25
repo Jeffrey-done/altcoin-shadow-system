@@ -1,0 +1,65 @@
+# 策略配置
+# 每个策略一个顶层 key，参数与 strategies/*/params.py 对应
+
+short_overbought:
+  enabled: true
+  version: "5.0.0"
+
+  # 扫描过滤
+  scan:
+    vol_min: 500000
+    price_max: 1.0
+    pct_24h_min: 10
+
+  # RSI 参数
+  rsi:
+    period: 14
+    daily_min: 75
+    h4_enter: 70
+    h4_drop: 10
+    h4_peak_lookback: 10
+
+  # 妖币识别
+  yao:
+    oi_change_min: 0.30
+    funding_max: 0.05
+    funding_min: -0.03
+    funding_hot: 0.03
+
+  # 弃盘点
+  abandon:
+    body_drop_pct: 3
+    consecutive: 2
+    oi_drop_pct: 0.02
+
+  # 止盈止损
+  exits:
+    tp1_pct: 5.0
+    tp2_pct: 8.0
+    tp1_close_ratio: 0.5
+    hard_stop_pct: 5.0
+    trail_activate_pct: 3.0
+    trail_retrace_ratio: 0.4
+    max_hold_hours: 24
+
+  # 信号评分阈值
+  scoring:
+    full_threshold: 70
+    half_threshold: 40
+    skip_threshold: 40
+
+  # BTC 趋势过滤
+  btc_filter:
+    enabled: true
+    crash_threshold: -5.0
+    pump_threshold: 8.0
+
+  # OKX 交叉验证
+  okx_cross:
+    enabled: false
+    bonus: 8
+
+  # 仓位
+  position:
+    default_stake: 30
+    leverage: 10

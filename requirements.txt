@@ -13,3 +13,22 @@ websocket-client==1.8.0     # Binance WebSocket 实时行情
 flask==3.0.3                # Web 框架
 flask-socketio==5.4.1       # WebSocket 实时推送
 eventlet==0.36.1            # SocketIO 异步后端（Docker 部署必需）
+
+# ══════════════════════════════════════════════════════════════════
+#  Phase 1 新增：数据层 + 策略引擎 + 配置管理
+# ══════════════════════════════════════════════════════════════════
+
+# 数据库 ORM
+sqlalchemy>=2.0.30          # SQLAlchemy 2.x ORM
+alembic>=1.13.0             # 数据库 schema 迁移
+
+# 策略引擎 & 回测
+pandas>=2.2.0               # 数据分析 / 向量化回测
+numpy>=1.26.0               # 数值计算
+
+# 配置管理
+pyyaml>=6.0.1               # YAML 配置文件解析
+pydantic>=2.7.0             # 配置 / 参数验证
+
+# 参数优化（可选，生产部署不需要）
+optuna>=3.6.0               # 贝叶斯参数优化

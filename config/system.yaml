@@ -1,0 +1,84 @@
+# 系统配置
+# 运行时、调度、交易所、部署相关
+
+# 账户 & 模式
+account:
+  balance: 100                 # 账户总本金 (USDT)
+  live_mode: false             # 实盘模式
+  shadow_parallel: true        # 实盘时保留影子交易对照
+  position_mode: manual        # manual | proportional
+  baseline_balance: 100        # 比例模式基准本金
+
+# 自动复利
+compound:
+  enabled: true
+  step: 50                     # 每累计盈利 N U
+  increase: 25                 # 每步增加保证金
+  max_stake: 300               # 单笔保证金上限
+
+# 调度器
+scheduler:
+  task_timeout_seconds: 600
+  check_candidates_interval_minutes: 5
+  check_candidates_budget_sec: 480
+  check_candidates_per_candidate_sec: 30
+  check_candidates_parallelism: 4
+
+# 交易所
+exchanges:
+  binance:
+    enabled: true
+    leverage: 10
+    slippage_alert_pct: 1.0
+  okx:
+    enabled: false
+    leverage: 10
+    live_mode: false
+    cross_validate: false
+
+  # 实盘路由
+  primary_exchange: binance      # binance | okx | both | auto
+  primary_fallback: binance
+  price_divergence_max_pct: 2.0
+
+# 数据库
+database:
+  engine: sqlite               # sqlite | postgresql
+  # PostgreSQL 配置（engine=postgresql 时生效）
+  # host: localhost
+  # port: 5432
+  # user: altcoin
+  # password: altcoin
+  # name: altcoin_shadow
+
+# 通知
+notifications:
+  telegram:
+    enabled: true
+  ws_disconnect_alert_minutes: 5
+
+# 回测
+backtest:
+  slippage_pct: 0.1
+  fee_pct: 0.04
+  default_days: 90
+  symbols:
+    - PEPE/USDT
+    - DOGE/USDT
+    - SHIB/USDT
+    - FLOKI/USDT
+    - BONK/USDT
+    - WIF/USDT
+    - PEOPLE/USDT
+    - ORDI/USDT
+
+# 周报
+weekly_report:
+  enabled: true
+  roi_grade_a: 15
+  roi_grade_b: 5
+  roi_grade_c: 0
+
+# 交易归档
+archive:
+  days: 30
