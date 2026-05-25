@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}策略评分 - Shadow Trading{% endblock %}
-{% block page_title %}🎯 策略评分详情{% endblock %}
+{% block page_title %}策略评分详情{% endblock %}
 {% block subtitle %}信号评分系统 | 动态仓位管理{% endblock %}
 
 {% block header_controls %}
@@ -24,56 +24,39 @@ function loadData() {
 
         let html = `
         <div class="grid grid-3">
-            <div class="card">
-                <div class="card-header">评分系统</div>
-                <div class="card-value ${cfg.signal_score_enabled ? 'green' : 'red'}">${cfg.signal_score_enabled ? '已启用' : '已关闭'}</div>
-            </div>
-            <div class="card">
-                <div class="card-header">A级阈值（全仓）</div>
-                <div class="card-value green">≥ ${cfg.score_full_threshold||70}分</div>
-            </div>
-            <div class="card">
-                <div class="card-header">B级阈值（半仓）</div>
-                <div class="card-value yellow">≥ ${cfg.score_half_threshold||40}分</div>
-                <div class="card-sub">&lt; ${cfg.score_half_threshold||40}分: 跳过</div>
-            </div>
+            <div class="card"><div class="card-header">评分系统</div><div class="card-value ${cfg.signal_score_enabled ? 'green' : 'red'}">${cfg.signal_score_enabled ? '已启用' : '已关闭'}</div></div>
+            <div class="card"><div class="card-header">A级阈值（全仓）</div><div class="card-value green">≥ ${cfg.score_full_threshold||70}分</div></div>
+            <div class="card"><div class="card-header">B级阈值（半仓）</div><div class="card-value yellow">≥ ${cfg.score_half_threshold||40}分</div><div class="card-sub">&lt; ${cfg.score_half_threshold||40}分: 跳过</div></div>
         </div>
-
-        <div class="card" style="margin-bottom:12px;">
-            <div class="section-title">📊 评分维度说明</div>
-            <div class="grid grid-4" style="margin-top:8px;">
+        <div class="card" style="margin-bottom:14px;">
+            <div class="section-title"><i data-lucide="info"></i> 评分维度说明</div>
+            <div class="grid grid-4" style="margin-top:6px;">
                 <div><b>RSI强度</b> (0~25)<br><span class="card-sub">日线RSI越高越强</span></div>
                 <div><b>妖币特征</b> (0~25)<br><span class="card-sub">妖币评分0/1/2/3</span></div>
                 <div><b>触发方式</b> (0~25)<br><span class="card-sub">弃盘点>RSI回落</span></div>
                 <div><b>市场热度</b> (0~25)<br><span class="card-sub">OI+费率+BTC趋势</span></div>
             </div>
         </div>
-
-        <div class="card"><div class="section-title">📝 最近交易评分记录</div><div class="table-wrapper"><table>
+        <div class="card"><div class="section-title"><i data-lucide="list"></i> 最近交易评分记录</div><div class="table-wrapper"><table>
             <thead><tr><th>币种</th><th>方向</th><th>策略</th><th>评分</th><th>等级</th><th>维度</th><th>结果</th><th>状态</th></tr></thead><tbody>`;
 
         trades.forEach(t => {
             const gradeBadge = t.score_grade === 'A' ? '<span class="badge badge-a">A</span>'
                 : t.score_grade === 'B' ? '<span class="badge badge-b">B</span>'
-                : t.score_grade === 'SKIP' ? '<span class="badge badge-skip">SKIP</span>'
-                : '<span class="card-sub">--</span>';
-            const scoreBar = t.score !== null ? `<div class="risk-bar" style="width:80px;display:inline-block;vertical-align:middle;">
+                : t.score_grade === 'SKIP' ? '<span class="badge badge-skip">SKIP</span>' : '<span class="card-sub">--</span>';
+            const scoreBar = t.score !== null ? `<div class="risk-bar" style="width:70px;display:inline-block;vertical-align:middle;">
                 <div class="risk-bar-fill" style="width:${t.score}%;background:${t.score>=70?'var(--green)':t.score>=40?'var(--yellow)':'var(--red)'}"></div></div>
-                <span style="font-size:0.75rem;margin-left:4px;">${t.score}</span>` : '--';
+                <span style="font-size:0.7rem;margin-left:4px;">${t.score}</span>` : '--';
             let dims = '--';
-            if (t.score_details) {
-                dims = Object.entries(t.score_details).map(([k,v]) => `${k}:${v}`).join(' ');
-            }
+            if (t.score_details) dims = Object.entries(t.score_details).map(([k,v]) => `${k}:${v}`).join(' ');
             const resultStr = t.pnl !== null ? App.fmtPnl(t.pnl) : '<span class="badge badge-open">持仓中</span>';
             const statusBadge = t.status === 'open' ? '<span class="badge badge-open">open</span>' : '<span class="badge badge-closed">closed</span>';
             html += `<tr><td><b>${t.symbol}</b></td><td>${t.direction}</td><td>${t.strategy||'--'}</td>
-                <td>${scoreBar}</td><td>${gradeBadge}</td><td style="font-size:0.7rem;">${dims}</td>
+                <td>${scoreBar}</td><td>${gradeBadge}</td><td style="font-size:0.65rem;">${dims}</td>
                 <td>${resultStr}</td><td>${statusBadge}</td></tr>`;
         });
-
         html += `</tbody></table></div></div>`;
 
-        // Score distribution stats
         const scored = trades.filter(t => t.score !== null);
         if (scored.length > 0) {
             const aCount = scored.filter(t => t.score >= (cfg.score_full_threshold||70)).length;
@@ -81,24 +64,17 @@ function loadData() {
             const skipCount = scored.filter(t => t.score < (cfg.score_half_threshold||40)).length;
             const aPnl = scored.filter(t => t.score >= (cfg.score_full_threshold||70) && t.pnl !== null).reduce((s,t) => s + t.pnl, 0);
             const bPnl = scored.filter(t => t.score >= (cfg.score_half_threshold||40) && t.score < (cfg.score_full_threshold||70) && t.pnl !== null).reduce((s,t) => s + t.pnl, 0);
-
-            html += `<div class="card" style="margin-top:12px;"><div class="section-title">📈 评分分布统计</div>
+            html += `<div class="card" style="margin-top:14px;"><div class="section-title"><i data-lucide="bar-chart"></i> 评分分布统计</div>
                 <div class="grid grid-3">
                     <div><span class="badge badge-a">A级</span> ${aCount}笔 | PnL: ${App.fmtPnl(aPnl)}</div>
                     <div><span class="badge badge-b">B级</span> ${bCount}笔 | PnL: ${App.fmtPnl(bPnl)}</div>
                     <div><span class="badge badge-skip">跳过</span> ${skipCount}笔</div>
                 </div></div>`;
         }
-
         content.innerHTML = html;
-    }).catch(e => {
-        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
-    });
+        if (window.lucide) lucide.createIcons();
+    }).catch(e => { document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`; });
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    loadData();
-    AutoRefresh.init(loadData);
-});
+document.addEventListener('DOMContentLoaded', () => { loadData(); AutoRefresh.init(loadData); });
 </script>
 {% endblock %}

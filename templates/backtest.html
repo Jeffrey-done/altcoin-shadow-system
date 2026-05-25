@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}单币回测 - Shadow Trading{% endblock %}
-{% block page_title %}📈 单币回测结果{% endblock %}
+{% block page_title %}单币回测结果{% endblock %}
 {% block subtitle %}<span id="bt-meta">加载中...</span>{% endblock %}
 
 {% block header_controls %}
@@ -12,7 +12,7 @@
 
 {% block content %}
 <div id="content"><div class="empty-state"><p>正在加载回测数据...</p>
-    <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT --days 90</code></p></div></div>
+    <p style="margin-top:8px;font-size:0.76rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT --days 90</code></p></div></div>
 {% endblock %}
 
 {% block scripts %}
@@ -20,11 +20,9 @@
 function loadData() {
     fetch('/api/backtest').then(r => r.json()).then(data => {
         const content = document.getElementById('content');
-
         let warnHtml = '';
         if (data.current_config && data.config_snapshot) {
-            const cur = data.current_config;
-            const snap = data.config_snapshot;
+            const cur = data.current_config, snap = data.config_snapshot;
             const mismatches = [];
             if (snap.daily_rsi_min && snap.daily_rsi_min !== cur.daily_rsi_min) mismatches.push(`RSI: ${snap.daily_rsi_min}→${cur.daily_rsi_min}`);
             if (snap.tp1_pct && snap.tp1_pct !== cur.tp1_pct) mismatches.push(`TP1: ${snap.tp1_pct}%→${cur.tp1_pct}%`);
@@ -32,49 +30,34 @@ function loadData() {
             if (snap.hard_stop_pct && snap.hard_stop_pct !== cur.hard_stop_pct) mismatches.push(`止损: ${snap.hard_stop_pct}%→${cur.hard_stop_pct}%`);
             if (snap.h4_rsi_drop && snap.h4_rsi_drop !== cur.h4_rsi_drop) mismatches.push(`回落: ${snap.h4_rsi_drop}→${cur.h4_rsi_drop}`);
             if (mismatches.length > 0) {
-                warnHtml = `<div class="card" style="border-color:var(--yellow);margin-bottom:12px;"><b style="color:var(--yellow);">⚠️ 参数已变更，回测数据可能过期</b><br>
-                    <span class="card-sub">变更项: ${mismatches.join(' | ')}<br>请重新运行: <code>python3 backtest.py --symbol PEPE/USDT</code></span></div>`;
+                warnHtml = `<div class="card" style="border-color:var(--yellow);margin-bottom:14px;"><b style="color:var(--yellow);">⚠️ 参数已变更，回测数据可能过期</b><br><span class="card-sub">变更项: ${mismatches.join(' | ')}</span></div>`;
             }
         }
-
         if (!data || (!data.results && !data.top_results)) {
-            content.innerHTML = warnHtml + `<div class="empty-state"><p>暂无回测数据</p>
-                <p style="margin-top:8px;font-size:0.8rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT</code></p></div>`;
+            content.innerHTML = warnHtml + `<div class="empty-state"><p>暂无回测数据</p><p style="margin-top:8px;font-size:0.76rem;">运行: <code>python3 backtest.py --symbol PEPE/USDT</code></p></div>`;
             return;
         }
-
         const meta = document.getElementById('bt-meta');
         meta.textContent = `${data.symbol || (data.symbols||[]).join(', ')} | ${data.days}天 | ${(data.timestamp||'').slice(0,16)}`;
-
-        if (data.top_results) {
-            content.innerHTML = warnHtml + renderGridResults(data.top_results);
-        } else {
+        if (data.top_results) { content.innerHTML = warnHtml + renderGridResults(data.top_results); }
+        else {
             const results = data.results || [];
-            if (results.length === 0) {
-                content.innerHTML = warnHtml + '<div class="empty-state">无结果</div>';
-                return;
-            }
+            if (!results.length) { content.innerHTML = warnHtml + '<div class="empty-state">无结果</div>'; return; }
             let html = warnHtml;
-            for (const r of results) { html += renderSingleResult(r); }
+            for (const r of results) html += renderSingleResult(r);
             content.innerHTML = html;
         }
-
-        // Draw equity chart
-        setTimeout(() => {
-            const results = data.results || data.top_results;
-            if (results && results.length > 0) drawEquityChart(results[0]);
-        }, 100);
-    }).catch(err => {
-        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${err.message}</div>`;
-    });
+        setTimeout(() => { const results = data.results || data.top_results; if (results && results.length > 0) drawEquityChart(results[0]); }, 100);
+        if (window.lucide) lucide.createIcons();
+    }).catch(err => { document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${err.message}</div>`; });
 }
+
 
 function renderSingleResult(r) {
     const p = r.params || {};
     const passBadge = (r.win_rate >= 50 && r.profit_loss_ratio >= 1.5)
         ? '<span class="badge badge-ok">达标</span>'
         : (r.win_rate >= 40 ? '<span class="badge badge-warn">需优化</span>' : '<span class="badge badge-stop">不佳</span>');
-
     let html = `<div class="grid grid-5">
         <div class="card"><div class="card-header">总盈亏</div><div class="card-value ${App.pnlColor(r.total_pnl)}">${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}U</div><div class="card-sub">${r.total_trades} 笔</div></div>
         <div class="card"><div class="card-header">胜率</div><div class="card-value ${r.win_rate >= 50 ? 'green' : 'yellow'}">${r.win_rate}%</div><div class="card-sub">${r.wins}胜 / ${r.losses}负</div></div>
@@ -82,16 +65,15 @@ function renderSingleResult(r) {
         <div class="card"><div class="card-header">最大回撤</div><div class="card-value red">${r.max_drawdown.toFixed(1)}%</div><div class="card-sub">连亏${r.max_consecutive_losses}次</div></div>
         <div class="card"><div class="card-header">评级 ${passBadge}</div><div class="card-value blue">${r.sharpe_ratio.toFixed(2)}</div><div class="card-sub">夏普率</div></div>
     </div>
-    <div class="card" style="margin-top:12px;"><div class="section-title">📊 权益曲线</div><div style="width:100%;height:200px;position:relative;"><canvas id="equity-chart"></canvas></div></div>
-    <div class="grid grid-2" style="margin-top:12px;">
-        <div class="card"><div class="section-title">📝 交易明细</div><div class="table-wrapper"><table>
+    <div class="card" style="margin-top:14px;"><div class="section-title"><i data-lucide="trending-up"></i> 权益曲线</div><div style="width:100%;height:180px;position:relative;"><canvas id="equity-chart"></canvas></div></div>
+    <div class="grid grid-2" style="margin-top:14px;">
+        <div class="card"><div class="section-title"><i data-lucide="list"></i> 交易明细</div><div class="table-wrapper"><table>
             <thead><tr><th>入场时间</th><th>盈亏</th><th>原因</th><th>持仓</th><th>TP1</th></tr></thead><tbody>`;
     const trades = (r.trades || []).slice(-20);
     for (const t of trades) {
-        const cls = t.pnl_usd > 0 ? 'green' : 'red';
-        html += `<tr><td>${(t.entry_time||'').slice(0,16)}</td><td class="${cls}">${t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}U</td><td>${t.exit_reason}</td><td>${t.hold_bars}h</td><td>${t.tp1_hit ? '✓' : ''}</td></tr>`;
+        html += `<tr><td>${(t.entry_time||'').slice(0,16)}</td><td class="${t.pnl_usd > 0 ? 'green' : 'red'}">${t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}U</td><td>${t.exit_reason}</td><td>${t.hold_bars}h</td><td>${t.tp1_hit ? '✓' : ''}</td></tr>`;
     }
-    html += `</tbody></table></div></div><div class="card"><div class="section-title">⚙️ 参数</div><div class="table-wrapper"><table><tbody>
+    html += `</tbody></table></div></div><div class="card"><div class="section-title"><i data-lucide="settings"></i> 参数</div><div class="table-wrapper"><table><tbody>
         <tr><td>RSI 阈值</td><td><b>${p.daily_rsi_min || '--'}</b></td></tr>
         <tr><td>RSI 回落</td><td><b>${p.h4_rsi_drop || '--'} 点</b></td></tr>
         <tr><td>TP1</td><td><b>-${p.tp1_pct || '--'}%</b></td></tr>
@@ -103,19 +85,18 @@ function renderSingleResult(r) {
     </tbody></table></div></div></div>`;
     return html;
 }
-
 function renderGridResults(topResults) {
-    let html = `<div class="card"><div class="section-title">🏆 参数网格搜索 Top ${topResults.length}</div><div class="table-wrapper"><table>
+    let html = `<div class="card"><div class="section-title"><i data-lucide="trophy"></i> 参数网格搜索 Top ${topResults.length}</div><div class="table-wrapper"><table>
         <thead><tr><th>#</th><th>PnL</th><th>胜率</th><th>盈亏比</th><th>回撤</th><th>连亏</th><th>TP1</th><th>TP2</th><th>止损</th><th>RSI</th><th>Drop</th><th>单数</th></tr></thead><tbody>`;
     topResults.slice(0, 20).forEach((r, i) => {
         const p = r.params || {};
-        const cls = r.total_pnl > 0 ? 'green' : 'red';
-        html += `<tr><td>${i+1}</td><td class="${cls}"><b>${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}</b></td><td>${r.win_rate}%</td><td>${r.profit_loss_ratio.toFixed(2)}x</td><td>${r.max_drawdown.toFixed(1)}%</td><td>${r.max_consecutive_losses}</td><td>${p.tp1_pct}%</td><td>${p.tp2_pct}%</td><td>${p.hard_stop_pct}%</td><td>${p.daily_rsi_min}</td><td>${p.h4_rsi_drop}</td><td>${r.total_trades}</td></tr>`;
+        html += `<tr><td>${i+1}</td><td class="${r.total_pnl > 0 ? 'green' : 'red'}"><b>${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(1)}</b></td><td>${r.win_rate}%</td><td>${r.profit_loss_ratio.toFixed(2)}x</td><td>${r.max_drawdown.toFixed(1)}%</td><td>${r.max_consecutive_losses}</td><td>${p.tp1_pct}%</td><td>${p.tp2_pct}%</td><td>${p.hard_stop_pct}%</td><td>${p.daily_rsi_min}</td><td>${p.h4_rsi_drop}</td><td>${r.total_trades}</td></tr>`;
     });
     html += '</tbody></table></div></div>';
-    if (topResults.length > 0) { html += renderSingleResult(topResults[0]); }
+    if (topResults.length > 0) html += renderSingleResult(topResults[0]);
     return html;
 }
+
 
 function drawEquityChart(result) {
     if (!result || !result.equity_curve || result.equity_curve.length < 2) return;
@@ -123,20 +104,18 @@ function drawEquityChart(result) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const data = result.equity_curve;
-    const w = canvas.parentElement.clientWidth, h = 200;
+    const w = canvas.parentElement.clientWidth, h = 180;
     canvas.width = w; canvas.height = h;
-    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const padding = { top: 20, right: 20, bottom: 25, left: 50 };
     const chartW = w - padding.left - padding.right, chartH = h - padding.top - padding.bottom;
     const minVal = Math.min(...data), maxVal = Math.max(...data);
     const range = maxVal - minVal || 1;
-
     const style = getComputedStyle(document.documentElement);
-    const bgColor = style.getPropertyValue('--chart-bg').trim() || '#161b22';
+    const bgColor = style.getPropertyValue('--chart-bg').trim() || '#0d1117';
     const gridColor = style.getPropertyValue('--chart-grid').trim() || '#30363d';
     const textColor = style.getPropertyValue('--text-secondary').trim() || '#8b949e';
     const greenColor = style.getPropertyValue('--green').trim() || '#3fb950';
     const redColor = style.getPropertyValue('--red').trim() || '#f85149';
-
     ctx.fillStyle = bgColor; ctx.fillRect(0, 0, w, h);
     const baseY = padding.top + chartH - ((data[0] - minVal) / range) * chartH;
     ctx.strokeStyle = gridColor; ctx.setLineDash([4, 4]);
@@ -149,18 +128,14 @@ function drawEquityChart(result) {
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
-    ctx.fillStyle = textColor; ctx.font = '11px sans-serif';
+    ctx.fillStyle = textColor; ctx.font = '10px sans-serif';
     ctx.fillText(maxVal.toFixed(0) + 'U', 4, padding.top + 10);
     ctx.fillText(minVal.toFixed(0) + 'U', 4, h - padding.bottom - 4);
     const finalVal = data[data.length - 1];
     ctx.fillStyle = finalVal >= data[0] ? greenColor : redColor;
-    ctx.font = 'bold 12px sans-serif';
+    ctx.font = 'bold 11px sans-serif';
     ctx.fillText(`${finalVal.toFixed(1)}U`, w - padding.right - 50, padding.top + 10);
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    loadData();
-    AutoRefresh.init(loadData);
-});
+document.addEventListener('DOMContentLoaded', () => { loadData(); AutoRefresh.init(loadData); });
 </script>
 {% endblock %}

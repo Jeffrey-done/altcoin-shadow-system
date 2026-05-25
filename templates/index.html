@@ -6,26 +6,23 @@
 {% block subtitle %}<span id="timestamp">连接中...</span>{% endblock %}
 
 {% block header_controls %}
-<span id="connection-status" style="font-size:0.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:4px;">
+<span id="connection-status" style="font-size:0.7rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:4px;">
     <i data-lucide="wifi-off" style="width:14px;height:14px;"></i>
 </span>
 {% endblock %}
 
 {% block head_extra %}
-{# Socket.IO 客户端从同源加载，避免外网 CDN 在某些网络下卡住整页加载（30s 超时 → 长时间白屏） #}
 <script defer src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 {% endblock %}
 
 {% block content %}
-<!-- 多账户总览（全局视图） -->
-<div class="card" style="margin-bottom:16px;" id="accounts-overview-card">
+<!-- 多账户总览 -->
+<div class="card" style="margin-bottom:14px;" id="accounts-overview-card">
     <div class="section-title">
         <i data-lucide="users"></i> 账户总览
         <span class="sync-status" id="sync-status"><span class="sync-dot"></span> 实时</span>
     </div>
-    <div class="account-overview" id="accounts-overview">
-        <!-- JS 动态填充 -->
-    </div>
+    <div class="account-overview" id="accounts-overview"></div>
 </div>
 
 <!-- 核心指标 -->
@@ -57,40 +54,39 @@
     </div>
 </div>
 
+
 <!-- 执行与对账指标 -->
-<div class="card" style="margin-bottom:16px;border:1px solid rgba(34,197,94,.35);">
+<div class="card" style="margin-bottom:14px;border:1px solid rgba(63,185,80,.2);">
     <div class="section-title"><i data-lucide="activity"></i> 执行与对账</div>
     <div class="grid grid-4" id="exec-metrics">
-        <div><span class="card-sub">开仓成功率</span><div style="font-weight:600;" id="exec-open-rate">--</div></div>
-        <div><span class="card-sub">平仓成功率</span><div style="font-weight:600;" id="exec-close-rate">--</div></div>
-        <div><span class="card-sub">开仓失败数</span><div style="font-weight:600;" id="exec-open-failed">--</div></div>
-        <div><span class="card-sub">对账差异事件</span><div style="font-weight:600;" id="exec-reconcile-diff">--</div></div>
+        <div><span class="card-sub">开仓成功率</span><div style="font-weight:700;" id="exec-open-rate">--</div></div>
+        <div><span class="card-sub">平仓成功率</span><div style="font-weight:700;" id="exec-close-rate">--</div></div>
+        <div><span class="card-sub">开仓失败数</span><div style="font-weight:700;" id="exec-open-failed">--</div></div>
+        <div><span class="card-sub">对账差异事件</span><div style="font-weight:700;" id="exec-reconcile-diff">--</div></div>
     </div>
-    <div id="exec-recent-errors" style="margin-top:8px;font-size:0.72rem;color:var(--text-muted);"></div>
+    <div id="exec-recent-errors" style="margin-top:6px;font-size:0.68rem;color:var(--text-muted);"></div>
 </div>
 
 <!-- 仓位使用 -->
-<div class="card" style="margin-bottom:16px;">
+<div class="card" style="margin-bottom:14px;">
     <div class="section-title"><i data-lucide="pie-chart"></i> 仓位占用</div>
     <div class="pool-bar" id="pool-bar"></div>
-    <div class="grid grid-4" id="pool-details" style="margin-top:10px;"></div>
+    <div class="grid grid-4" id="pool-details" style="margin-top:8px;"></div>
 </div>
 
 <!-- 交易模式筛选 -->
-<div class="card" style="margin-bottom:16px;">
+<div class="card" style="margin-bottom:14px;">
     <div class="section-title"><i data-lucide="filter"></i> 交易模式</div>
     <div class="filter-tabs" id="mode-filter">
         <button class="filter-tab" data-mode="all">全部</button>
         <button class="filter-tab" data-mode="shadow">影子</button>
         <button class="filter-tab active" data-mode="live">实盘</button>
     </div>
-    <div id="mode-summary" style="margin-top:10px;font-size:0.75rem;color:var(--text-muted);"></div>
+    <div id="mode-summary" style="margin-top:8px;font-size:0.7rem;color:var(--text-muted);"></div>
 </div>
 
-
-
 <!-- 做空持仓 -->
-<div class="card" id="short-positions-table" data-direction="SHORT" style="margin-bottom:16px;">
+<div class="card" id="short-positions-table" data-direction="SHORT" style="margin-bottom:14px;">
     <div class="section-title"><i data-lucide="arrow-down-circle"></i> 做空持仓 <span class="card-sub" id="short-pnl-info"></span></div>
     <div class="table-wrapper">
         <table>
@@ -104,11 +100,12 @@
             <tbody id="short-trades"></tbody>
         </table>
     </div>
-    <div class="card-sub" id="short-empty" style="padding:16px;text-align:center;display:none;">暂无做空持仓</div>
+    <div class="card-sub" id="short-empty" style="padding:14px;text-align:center;display:none;">暂无做空持仓</div>
 </div>
 
-<!-- 做多持仓 (Pre-Pump Sniffer) -->
-<div class="card" id="long-positions-table" data-direction="LONG" style="margin-bottom:16px;">
+
+<!-- 做多持仓 -->
+<div class="card" id="long-positions-table" data-direction="LONG" style="margin-bottom:14px;">
     <div class="section-title"><i data-lucide="arrow-up-circle"></i> 做多持仓 <span class="card-sub" id="long-pnl-info"></span></div>
     <div class="table-wrapper">
         <table>
@@ -122,7 +119,7 @@
             <tbody id="long-trades"></tbody>
         </table>
     </div>
-    <div class="card-sub" id="long-empty" style="padding:16px;text-align:center;display:none;">暂无做多持仓</div>
+    <div class="card-sub" id="long-empty" style="padding:14px;text-align:center;display:none;">暂无做多持仓</div>
 </div>
 
 <div class="grid grid-2">
@@ -141,12 +138,12 @@
                 <tbody id="candidates"></tbody>
             </table>
         </div>
-        <div class="card-sub" id="cand-empty" style="padding:16px;text-align:center;display:none;">暂无候选</div>
+        <div class="card-sub" id="cand-empty" style="padding:14px;text-align:center;display:none;">暂无候选</div>
     </div>
 </div>
 
-<!-- 做多候选池 (Pre-Pump Sniffer) -->
-<div class="card" style="margin-top:16px;margin-bottom:16px;">
+<!-- 做多候选池 -->
+<div class="card" style="margin-top:14px;margin-bottom:14px;">
     <div class="section-title"><i data-lucide="radar"></i> 做多嗅探池 <span class="card-sub">Pre-Pump Sniffer</span></div>
     <div class="table-wrapper">
         <table>
@@ -154,41 +151,41 @@
             <tbody id="long-candidates"></tbody>
         </table>
     </div>
-    <div class="card-sub" id="long-cand-empty" style="padding:16px;text-align:center;display:none;">暂无做多嗅探信号</div>
-</div>
+    <div class="card-sub" id="long-cand-empty" style="padding:14px;text-align:center;display:none;">暂无做多嗅探信号</div>
 </div>
 
+
 <!-- 盈亏曲线 -->
-<div class="card" style="margin-top:16px;">
+<div class="card" style="margin-top:14px;">
     <div class="section-title"><i data-lucide="activity"></i> 盈亏走势</div>
     <div class="chart-controls">
         <button class="chart-range-btn" data-range="7d">近7天</button>
         <button class="chart-range-btn" data-range="30d">近30天</button>
         <button class="chart-range-btn active" data-range="all">全部</button>
-        <span style="margin-left:auto;font-size:0.68rem;color:var(--text-muted);">累计 &bull; 每日</span>
+        <span style="margin-left:auto;font-size:0.62rem;color:var(--text-muted);">累计 &bull; 每日</span>
     </div>
-    <div style="height:240px;position:relative;">
+    <div style="height:220px;position:relative;">
         <canvas id="pnl-chart"></canvas>
         <div class="chart-tooltip" id="chart-tooltip"></div>
     </div>
 </div>
 
 <!-- 影子 vs 实盘对比 -->
-<div class="card" style="margin-top:16px;">
+<div class="card" style="margin-top:14px;">
     <div class="section-title"><i data-lucide="git-compare"></i> 影子 vs 实盘</div>
-    <div id="compare-summary" style="margin-bottom:10px;font-size:0.78rem;"></div>
-    <div style="height:240px;position:relative;">
+    <div id="compare-summary" style="margin-bottom:8px;font-size:0.74rem;"></div>
+    <div style="height:220px;position:relative;">
         <canvas id="compare-chart"></canvas>
         <div class="chart-tooltip" id="compare-tooltip"></div>
     </div>
-    <div style="margin-top:8px;font-size:0.68rem;color:var(--text-muted);display:flex;gap:16px;">
+    <div style="margin-top:6px;font-size:0.62rem;color:var(--text-muted);display:flex;gap:14px;">
         <span style="color:var(--yellow);">&#9679; 影子</span>
         <span style="color:var(--green);">&#9679; 实盘</span>
     </div>
 </div>
 
 <!-- 已平仓交易 -->
-<div class="card" style="margin-top:16px;">
+<div class="card" style="margin-top:14px;">
     <div class="section-title"><i data-lucide="check-circle"></i> 近期平仓</div>
     <div class="table-wrapper">
         <table>
@@ -199,31 +196,23 @@
 </div>
 {% endblock %}
 
+
 {% block scripts %}
 <script defer src="{{ url_for('static', filename='js/chart.js') }}"></script>
-<script defer src="{{ url_for('static', filename='js/positions.js') }}?v=20260521b"></script>
+<script defer src="{{ url_for('static', filename='js/positions.js') }}?v=4"></script>
 <script defer src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
 <script defer src="{{ url_for('static', filename='js/funnel.js') }}"></script>
 <script defer src="{{ url_for('static', filename='js/compare.js') }}"></script>
 <script>
-// 整段逻辑放在 DOMContentLoaded handler 里。
-// 上面的 chart.js / socket.io.min.js / binance-ws.js 等都是 defer 加载（HTML 解析完才执行），
-// 如果这里直接 const socket = io(); 会抢在 socket.io.min.js 之前跑 → ReferenceError。
-//
-// 注意：HTML 规范规定 inline <script> 上的 defer 属性是无效的（W3C: "must not be used
-// if the src attribute is absent"），所以不能用 <script defer> 来排队 inline 脚本。
-// 用 DOMContentLoaded 等所有 defer 链都跑完后再执行才是正解。
 document.addEventListener('DOMContentLoaded', function () {
 const socket = io();
 let lastDashboardData = null;
 let currentMode = 'live';
-// 前端视图当前选中的账户（仅影响前端展示，不改后台活跃账户）
 const _urlAccountId = new URLSearchParams(window.location.search).get('account_id');
 let selectedAccountId = _urlAccountId || localStorage.getItem('dashboard-selected-account') || null;
-let accountsCache = [];  // 缓存账户列表，用于渲染高亮
+let accountsCache = [];
 let pnlRefreshTimer = null;
 
-// ── 模式筛选 ──
 function initModeFilter() {
     document.querySelectorAll('#mode-filter .filter-tab').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -261,56 +250,39 @@ async function fetchExecutionMetrics() {
         if (!resp.ok) return;
         const data = await resp.json();
         renderExecutionMetrics(data);
-    } catch (e) {
-        console.warn('[执行指标] 获取失败:', e);
-    }
+    } catch (e) { console.warn('[执行指标]', e); }
 }
-
 function renderExecutionMetrics(data) {
-    const o = data.open_orders || {};
-    const c = data.close_orders || {};
-    const r = data.reconcile || {};
-    const openRate = Number(o.success_rate || 0);
-    const closeRate = Number(c.success_rate || 0);
-
+    const o = data.open_orders || {}, c = data.close_orders || {}, r = data.reconcile || {};
+    const openRate = Number(o.success_rate || 0), closeRate = Number(c.success_rate || 0);
     const elOpen = document.getElementById('exec-open-rate');
     const elClose = document.getElementById('exec-close-rate');
     const elOpenFail = document.getElementById('exec-open-failed');
     const elDiff = document.getElementById('exec-reconcile-diff');
-    if (!elOpen || !elClose || !elOpenFail || !elDiff) return;
-
+    if (!elOpen) return;
     elOpen.textContent = openRate.toFixed(1) + '%';
     elOpen.className = openRate >= 95 ? 'green' : (openRate >= 85 ? 'yellow' : 'red');
-
     elClose.textContent = closeRate.toFixed(1) + '%';
     elClose.className = closeRate >= 95 ? 'green' : (closeRate >= 85 ? 'yellow' : 'red');
-
     elOpenFail.textContent = String(o.failed || 0);
     elOpenFail.className = (o.failed || 0) > 0 ? 'red' : 'green';
-
     elDiff.textContent = String(r.diff_events || 0);
     elDiff.className = (r.diff_events || 0) > 0 ? 'yellow' : 'green';
-
     const recent = data.recent_errors || [];
     const errEl = document.getElementById('exec-recent-errors');
     if (!errEl) return;
-    if (!recent.length) {
-        errEl.textContent = '最近60分钟无执行失败事件';
-        return;
-    }
-    errEl.innerHTML = '最近失败: ' + recent.slice(0, 3).map(e => {
-        const sym = e.symbol || '--';
-        const ex = e.exchange || '--';
-        const msg = (e.error || '').slice(0, 60);
-        return `[${ex}] ${sym}: ${msg}`;
-    }).join(' | ');
+    if (!recent.length) { errEl.textContent = '最近60分钟无执行失败事件'; return; }
+    errEl.innerHTML = '最近失败: ' + recent.slice(0, 3).map(e =>
+        `[${e.exchange||'--'}] ${e.symbol||'--'}: ${(e.error||'').slice(0, 50)}`
+    ).join(' | ');
 }
+
 
 function updateDashboard(data) {
     lastDashboardData = data;
     const ts = data.timestamp ? data.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : '--';
-    const accSuffix = selectedAccountId ? ` · 查看账户 ${shortAccountLabel(selectedAccountId)}` : '';
-    document.getElementById('timestamp').textContent = `已更新: ${ts}${accSuffix}`;
+    const accSuffix = selectedAccountId ? ` · ${shortAccountLabel(selectedAccountId)}` : '';
+    document.getElementById('timestamp').textContent = `${ts}${accSuffix}`;
 
     const a = data.account;
     const todayTotal = a.today_pnl + (data.funding?.today_pnl || 0);
@@ -338,35 +310,33 @@ function updateDashboard(data) {
     const poolBarColor = usedPct > 80 ? 'var(--red)' : usedPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('pool-bar').innerHTML = `
         <div class="pool-segment" style="width:${usedPct}%;background:${poolBarColor};">${usedPct.toFixed(0)}% 已用</div>
-        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-elevated);color:var(--text-muted);">${availPct.toFixed(0)}% 可用</div>
-    `;
+        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-elevated);color:var(--text-muted);">${availPct.toFixed(0)}% 可用</div>`;
     document.getElementById('pool-details').innerHTML = `
-        <div><span class="card-sub">最大仓位</span><div style="font-weight:600;">${pool.max_position||0}U</div></div>
-        <div><span class="card-sub">做空占用</span><div style="font-weight:600;">${pool.short_used||0}U</div></div>
-        <div><span class="card-sub">做多占用</span><div style="font-weight:600;">${pool.long_used||0}U</div></div>
-        <div><span class="card-sub">剩余可用</span><div style="font-weight:600;">${pool.available||0}U</div></div>
-    `;
+        <div><span class="card-sub">最大仓位</span><div style="font-weight:700;">${pool.max_position||0}U</div></div>
+        <div><span class="card-sub">做空占用</span><div style="font-weight:700;">${pool.short_used||0}U</div></div>
+        <div><span class="card-sub">做多占用</span><div style="font-weight:700;">${pool.long_used||0}U</div></div>
+        <div><span class="card-sub">剩余可用</span><div style="font-weight:700;">${pool.available||0}U</div></div>`;
 
-    // 做空持仓（按模式筛选）
+
+    // 做空持仓
     const st = data.short_trades || {};
     const filteredOpen = filterTradesByMode(st.open || [], currentMode);
     document.getElementById('short-pnl-info').innerHTML = `今日 ${App.fmtPnl(st.today_pnl||0)} | 累计 ${App.fmtPnl(st.total_pnl||0)}`;
     PositionTable.render(filteredOpen, 'short-trades', 'short-empty', 'SHORT', data.config);
     updateModeSummary(data);
 
-    // 做多持仓（按模式筛选）
+    // 做多持仓
     const lt = data.long_trades || {};
     const filteredLongOpen = filterTradesByMode(lt.open || [], currentMode);
     document.getElementById('long-pnl-info').innerHTML = `今日 ${App.fmtPnl(lt.today_pnl||0)} | 累计 ${App.fmtPnl(lt.total_pnl||0)}`;
     PositionTable.render(filteredLongOpen, 'long-trades', 'long-empty', 'LONG', data.config);
-    // 如果没有做多持仓，隐藏整个卡片以节省空间
     const longCard = document.getElementById('long-positions-table');
     if (longCard) longCard.style.display = (filteredLongOpen.length === 0 && (lt.closed||[]).length === 0) ? 'none' : '';
 
     // 风控
     const risk = data.risk || {};
     const cfg = data.config || {};
-    const accountIdLabel = data.account_id ? `当前账户: ${data.account_id}` : '当前账户: --';
+    const accountIdLabel = data.account_id ? `当前账户: ${data.account_id}` : '';
     const dailyLoss = risk.daily_loss || 0;
     const dailyMax = Number(cfg.max_daily_loss || 30);
     const dailyPct = Math.min(dailyLoss / dailyMax * 100, 100);
@@ -379,16 +349,16 @@ function updateDashboard(data) {
     else if (dailyLoss >= dailyMax * 0.7) statusBadge = '<span class="badge badge-warn">预警</span>';
     const barColor = dailyPct > 80 ? 'var(--red)' : dailyPct > 50 ? 'var(--yellow)' : 'var(--green)';
     document.getElementById('risk-content').innerHTML = `
-        <div style="margin-bottom:14px;">${statusBadge}</div>
-        <div style="margin-bottom:8px;font-size:0.72rem;color:var(--text-muted);">${accountIdLabel}</div>
-        <div style="margin-bottom:10px;font-size:0.8rem;">日亏损: ${dailyLoss.toFixed(1)} / ${dailyMax}U
+        <div style="margin-bottom:12px;">${statusBadge}</div>
+        ${accountIdLabel ? '<div style="margin-bottom:6px;font-size:0.65rem;color:var(--text-muted);">'+accountIdLabel+'</div>' : ''}
+        <div style="margin-bottom:8px;font-size:0.76rem;">日亏损: ${dailyLoss.toFixed(1)} / ${dailyMax}U
             <div class="risk-bar"><div class="risk-bar-fill" style="width:${dailyPct}%;background:${barColor}"></div></div></div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">今日开仓: ${trades_opened} / ${maxTrades} 笔</div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">连续亏损: ${risk.consecutive_losses || 0} / 3 次</div>
-        ${paused ? '<div class="red" style="font-size:0.78rem;">暂停至: ' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}
-        ${data.risk_last_pause ? '<div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">上次暂停: ' + App.formatTime(data.risk_last_pause) + '</div>' : ''}`;
-
+        <div style="margin-bottom:6px;font-size:0.76rem;">今日开仓: ${trades_opened} / ${maxTrades} 笔</div>
+        <div style="margin-bottom:6px;font-size:0.76rem;">连续亏损: ${risk.consecutive_losses || 0} / 3 次</div>
+        ${paused ? '<div class="red" style="font-size:0.74rem;">暂停至: ' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}
+        ${data.risk_last_pause ? '<div style="font-size:0.62rem;color:var(--text-muted);margin-top:4px;">上次暂停: ' + App.formatTime(data.risk_last_pause) + '</div>' : ''}`;
     if (data.risk_history && data.risk_history.length > 0) drawSparkline('risk-sparkline', data.risk_history, 100, 24);
+
 
     // 候选池
     const candTbody = document.getElementById('candidates');
@@ -405,12 +375,12 @@ function updateDashboard(data) {
     }
     CandidateFunnel.render(data.candidates);
 
-    // 做多候选池 (Pre-Pump Sniffer)
+    // 做多候选池
     const longCandTbody = document.getElementById('long-candidates');
     const longCandEmpty = document.getElementById('long-cand-empty');
     const longCandCard = longCandTbody ? longCandTbody.closest('.card') : null;
     const longCands = data.long_candidates || [];
-    if (!longCands || longCands.length === 0) {
+    if (!longCands.length) {
         if (longCandTbody) longCandTbody.innerHTML = '';
         if (longCandEmpty) longCandEmpty.style.display = 'block';
         if (longCandCard) longCandCard.style.display = 'none';
@@ -418,19 +388,15 @@ function updateDashboard(data) {
         if (longCandEmpty) longCandEmpty.style.display = 'none';
         if (longCandCard) longCandCard.style.display = '';
         longCandTbody.innerHTML = longCands.slice(0, 12).map(c => {
-            const badge = c.triggered
-                ? '<span class="badge badge-closed">已触发</span>'
+            const badge = c.triggered ? '<span class="badge badge-closed">已触发</span>'
                 : (c.breakout_ready ? '<span class="badge badge-warn">待突破</span>' : '<span class="badge badge-open">吸筹中</span>');
-            const volRatio = (c.vol_ratio || 0).toFixed(1);
-            const details = c.anomaly_details || c.details || '--';
-            const score = c.anomaly_score || c.score || 0;
             return `<tr><td><b>${c.symbol}</b></td><td>${(c.price||0).toFixed(6)}</td>
-                <td style="font-size:0.72rem;">${details}</td>
-                <td>${score}/7</td><td>${volRatio}x</td><td>${badge}</td></tr>`;
+                <td style="font-size:0.68rem;">${c.anomaly_details || c.details || '--'}</td>
+                <td>${c.anomaly_score || c.score || 0}/7</td><td>${(c.vol_ratio||0).toFixed(1)}x</td><td>${badge}</td></tr>`;
         }).join('');
     }
 
-    // 已平仓交易（按模式筛选，合并做空+做多）
+    // 已平仓
     const closedTbody = document.getElementById('closed-trades');
     const allClosedMerged = [
         ...filterTradesByMode(st.closed || [], currentMode),
@@ -439,28 +405,18 @@ function updateDashboard(data) {
     closedTbody.innerHTML = allClosedMerged.map(t => {
         const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
         const modeTag = (t.exchange || 'shadow') === 'shadow'
-            ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.6rem;">影子</span>'
-            : '<span class="badge badge-ok" style="font-size:0.6rem;">实盘</span>';
-        const oid = t.close_order_id || '';
-        const tp1oid = t.tp1_close_order_id || '';
-        const orderInfo = (tp1oid || oid)
-            ? `<div style="margin-top:4px;font-size:0.62rem;color:var(--text-muted);">${tp1oid ? `TP1#${String(tp1oid).slice(-6)}` : ''}${tp1oid && oid ? ' | ' : ''}${oid ? `CLS#${String(oid).slice(-6)}` : ''}</div>`
-            : '';
+            ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.55rem;">影子</span>'
+            : '<span class="badge badge-ok" style="font-size:0.55rem;">实盘</span>';
         return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction === 'SHORT' ? '做空' : '做多'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
             <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
-            <td>${t.close_reason || '--'}${orderInfo}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
+            <td>${t.close_reason || '--'}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
     }).join('');
 }
 
-// SocketIO 推送：只处理与当前选中账户匹配的数据；
-// 如果选择了其他账户，就忽略推送，只用 REST 拉取（避免闪回）
+
+// SocketIO
 socket.on('update', function(data) {
-    if (selectedAccountId) {
-        // 用户已显式选择账户时，只接收该账户推送；account_id 缺失也忽略，避免被活跃账户数据覆盖。
-        if (!data.account_id || data.account_id !== selectedAccountId) {
-            return;
-        }
-    }
+    if (selectedAccountId && (!data.account_id || data.account_id !== selectedAccountId)) return;
     updateDashboard(data);
     PnlChart.update(data.pnl_chart);
     BinanceWS.lastData = data;
@@ -485,61 +441,26 @@ BinanceWS.onPriceUpdate = function(symbol, price) {
     PositionTable.updatePrice(symbol, price, lastDashboardData);
 };
 
-// 已经在外层 DOMContentLoaded handler 里，无需再嵌套监听（嵌套的话事件已触发，
-// 内层 listener 永远不会跑）。直接调用初始化函数。
-PnlChart.init('pnl-chart', 'chart-tooltip');
-CompareChart.init('compare-chart', 'compare-tooltip');
-initModeFilter();
-PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
-    if (lastDashboardData) {
-        const filtered = filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode);
-        PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
-    }
-});
-PositionTable.initSortHeaders('long-positions-table', 'long-trades', () => {
-    if (lastDashboardData) {
-        const filtered = filterTradesByMode(lastDashboardData.long_trades?.open || [], currentMode);
-        PositionTable.render(filtered, 'long-trades', 'long-empty', 'LONG', lastDashboardData.config);
-    }
-});
-// 获取多账户总览
-fetchAccountsOverview();
-fetchExecutionMetrics();
-setInterval(fetchAccountsOverview, 15000);
-setInterval(fetchExecutionMetrics, 15000);
-lucide.createIcons();
-
-// ── 账户卡片点击切换 ──
+// 账户相关
 function shortAccountLabel(id) {
     const acc = accountsCache.find(a => a.id === id);
     if (acc) return acc.name;
-    return id.length > 12 ? id.slice(0, 12) + '…' : id;
+    return id && id.length > 12 ? id.slice(0, 12) + '…' : (id || '');
 }
-
 function selectAccount(accountId) {
-    // 始终显式切换到该账户，不再通过二次点击回退到活跃账户（避免视图跳回 RN 造成误判）。
     selectedAccountId = accountId;
     localStorage.setItem('dashboard-selected-account', accountId);
     const _u = new URL(window.location.href);
     _u.searchParams.set('account_id', accountId);
     window.history.replaceState({}, '', _u.toString());
-    // 更新卡片高亮
     document.querySelectorAll('.account-card').forEach(card => {
         card.classList.toggle('selected', card.dataset.accountId === selectedAccountId);
     });
-    // 切换对比图
-    if (window.CompareChart && CompareChart.setAccount) {
-        CompareChart.setAccount(selectedAccountId);
-    }
-    // 立即拉一次数据，并开启/关闭定时刷新
+    if (window.CompareChart && CompareChart.setAccount) CompareChart.setAccount(selectedAccountId);
     refreshDashboardForSelection();
     if (pnlRefreshTimer) { clearInterval(pnlRefreshTimer); pnlRefreshTimer = null; }
-    if (selectedAccountId) {
-        // 选了指定账户：走 REST 轮询（因为 socket 推送只针对后台活跃账户）
-        pnlRefreshTimer = setInterval(refreshDashboardForSelection, 10000);
-    }
+    if (selectedAccountId) pnlRefreshTimer = setInterval(refreshDashboardForSelection, 10000);
 }
-
 async function refreshDashboardForSelection() {
     try {
         const qs = selectedAccountId ? ('?account_id=' + encodeURIComponent(selectedAccountId)) : '';
@@ -555,44 +476,29 @@ async function refreshDashboardForSelection() {
         (data.long_trades?.open || []).forEach(t => symbols.add(t.symbol));
         symbols.delete('');
         BinanceWS.updateSymbols([...symbols]);
-    } catch (e) {
-        console.warn('[账户切换] 拉取数据失败:', e);
-    }
+    } catch (e) { console.warn('[账户切换]', e); }
 }
 
-// ── 多账户总览 ──
+
 async function fetchAccountsOverview() {
     try {
         const resp = await fetch('/api/accounts/overview');
         if (!resp.ok) return;
         const data = await resp.json();
         renderAccountsOverview(data);
-    } catch (e) {
-        console.warn('[账户总览] 获取失败:', e);
-    }
+    } catch (e) { console.warn('[账户总览]', e); }
 }
-
 function renderAccountsOverview(data) {
     const container = document.getElementById('accounts-overview');
     const card = document.getElementById('accounts-overview-card');
     if (!container || !data.accounts || data.accounts.length === 0) {
-        if (card) card.style.display = 'none';
-        return;
+        if (card) card.style.display = 'none'; return;
     }
     accountsCache = data.accounts;
-    // 如果之前选的账户已被删除，自动清掉选择
     if (selectedAccountId && !accountsCache.find(a => a.id === selectedAccountId)) {
-        selectedAccountId = null;
-        localStorage.removeItem('dashboard-selected-account');
+        selectedAccountId = null; localStorage.removeItem('dashboard-selected-account');
     }
     if (card) card.style.display = '';
-
-    // 首次进入且用户没选过：默认跟随后台活跃账户
-    if (!selectedAccountId && data.active_account) {
-        // 注意：不持久化这个隐式选择，避免覆盖用户的主动选择
-        // 但要让 UI 上高亮当前活跃账户
-    }
-
     const colorClasses = ['acc-0', 'acc-1', 'acc-2'];
     container.innerHTML = data.accounts.map((acc, idx) => {
         const statusClass = acc.is_live ? 'live' : 'shadow';
@@ -600,18 +506,13 @@ function renderAccountsOverview(data) {
         const pnlClass = acc.total_pnl >= 0 ? 'green' : 'red';
         const todayClass = acc.today_pnl >= 0 ? 'green' : 'red';
         const activeClass = acc.is_active ? ' active' : '';
-        // 选中状态：用户显式选择 > 默认跟随后台活跃账户
         const effectiveSelected = selectedAccountId || data.active_account;
         const selectedClass = (acc.id === effectiveSelected) ? ' selected' : '';
         const disabledClass = (acc.trading_enabled === false) ? ' trading-off' : '';
         const disabledBadge = (acc.trading_enabled === false)
-            ? '<span class="account-card-status" style="background:var(--red-subtle);color:var(--red);margin-left:6px;"><span class="sync-dot stale" style="width:6px;height:6px;"></span> 已停用</span>'
-            : '';
+            ? '<span class="account-card-status" style="background:var(--red-subtle);color:var(--red);margin-left:6px;"><span class="sync-dot stale" style="width:6px;height:6px;"></span> 已停用</span>' : '';
         return `
-        <div class="account-card${activeClass}${selectedClass}${disabledClass}"
-             data-account-id="${acc.id}"
-             role="button" tabindex="0"
-             title="点击查看此账户的详细数据${acc.trading_enabled === false ? '（该账户交易已停用）' : ''}">
+        <div class="account-card${activeClass}${selectedClass}${disabledClass}" data-account-id="${acc.id}" role="button" tabindex="0">
             <div class="account-card-header">
                 <div>
                     <div class="account-card-name">
@@ -621,40 +522,40 @@ function renderAccountsOverview(data) {
                     <div class="account-card-id">${acc.id}</div>
                 </div>
                 <span style="display:inline-flex;align-items:center;">
-                    <span class="account-card-status ${statusClass}">
-                        <span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}
-                    </span>
+                    <span class="account-card-status ${statusClass}"><span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}</span>
                     ${disabledBadge}
                 </span>
             </div>
             <div class="account-card-metrics">
-                <div class="account-metric">
-                    <div class="account-metric-label">持仓</div>
-                    <div class="account-metric-value">${acc.open_count}</div>
-                </div>
-                <div class="account-metric">
-                    <div class="account-metric-label">今日</div>
-                    <div class="account-metric-value ${todayClass}">${acc.today_pnl >= 0 ? '+' : ''}${acc.today_pnl.toFixed(2)}U</div>
-                </div>
-                <div class="account-metric">
-                    <div class="account-metric-label">累计</div>
-                    <div class="account-metric-value ${pnlClass}">${acc.total_pnl >= 0 ? '+' : ''}${acc.total_pnl.toFixed(2)}U</div>
-                </div>
+                <div class="account-metric"><div class="account-metric-label">持仓</div><div class="account-metric-value">${acc.open_count}</div></div>
+                <div class="account-metric"><div class="account-metric-label">今日</div><div class="account-metric-value ${todayClass}">${acc.today_pnl >= 0 ? '+' : ''}${acc.today_pnl.toFixed(2)}U</div></div>
+                <div class="account-metric"><div class="account-metric-label">累计</div><div class="account-metric-value ${pnlClass}">${acc.total_pnl >= 0 ? '+' : ''}${acc.total_pnl.toFixed(2)}U</div></div>
             </div>
         </div>`;
     }).join('');
-
-    // 绑定点击/键盘事件
     container.querySelectorAll('.account-card').forEach(el => {
         const id = el.dataset.accountId;
         el.addEventListener('click', () => selectAccount(id));
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAccount(id); }
-        });
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAccount(id); } });
     });
-
     lucide.createIcons();
 }
-}); // end DOMContentLoaded handler
+
+// Init
+PnlChart.init('pnl-chart', 'chart-tooltip');
+CompareChart.init('compare-chart', 'compare-tooltip');
+initModeFilter();
+PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
+    if (lastDashboardData) PositionTable.render(filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode), 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
+});
+PositionTable.initSortHeaders('long-positions-table', 'long-trades', () => {
+    if (lastDashboardData) PositionTable.render(filterTradesByMode(lastDashboardData.long_trades?.open || [], currentMode), 'long-trades', 'long-empty', 'LONG', lastDashboardData.config);
+});
+fetchAccountsOverview();
+fetchExecutionMetrics();
+setInterval(fetchAccountsOverview, 15000);
+setInterval(fetchExecutionMetrics, 15000);
+lucide.createIcons();
+}); // end DOMContentLoaded
 </script>
 {% endblock %}
