@@ -5,179 +5,145 @@
 {% block content %}
 <div class="dashboard-grid">
   
-  <!-- Left Column: Backtest Params & Progress (span 4) -->
+  <!-- Left Column: Config & Status (span 4) -->
   <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
     
-    <!-- Parameter settings panel -->
+    <!-- Current Config -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <i data-lucide="sliders" class="purple" style="width: 16px; height: 16px;"></i> 回测算法控制台参数配置
+          <i data-lucide="sliders" class="purple" style="width: 16px; height: 16px;"></i> 当前策略参数
         </div>
       </div>
-      <div class="card-body">
-        <form id="backtest-form" style="display: flex; flex-direction: column; gap: 12px;" onsubmit="return false;">
-          
-          <div>
-            <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">1. 量化回测策略配置文件</label>
-            <select class="form-input" id="strategy-profile">
-              <option value="shadow_v3_default">Shadow Protector V3 (默认做空保护)</option>
-              <option value="shadow_v3_aggressive">Shadow Progressive (高频激进派)</option>
-              <option value="breakout_radar_spot">Breakout Spot Radar (实盘多单突破)</option>
-            </select>
+      <div class="card-body" id="config-panel">
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+            <span class="text-secondary">Daily RSI 阈值</span>
+            <span class="mono font-bold" id="cfg-daily-rsi">--</span>
           </div>
-
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">回测初始本金</label>
-              <input type="number" class="form-input mono" value="1000" id="backtest-capital">
-            </div>
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">影子保值倍数</label>
-              <input type="number" class="form-input mono" value="10" id="backtest-leverage">
-            </div>
+          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+            <span class="text-secondary">TP1 %</span>
+            <span class="mono font-bold" id="cfg-tp1">--</span>
           </div>
-
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">开始日期</label>
-              <input type="date" class="form-input mono" value="2026-01-01" id="backtest-start">
-            </div>
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">结束日期</label>
-              <input type="date" class="form-input mono" value="2026-05-24" id="backtest-end">
-            </div>
+          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+            <span class="text-secondary">TP2 %</span>
+            <span class="mono font-bold" id="cfg-tp2">--</span>
           </div>
-
-          <div>
-            <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;">筛选备选候选币种范围</label>
-            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background-color: var(--bg-elevated); max-height: 120px; overflow-y: auto; display:flex; flex-direction:column; gap:4px;">
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">PEPE/USDT</span><input type="checkbox" checked value="PEPE/USDT">
-              </label>
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">BONK/USDT</span><input type="checkbox" checked value="BONK/USDT">
-              </label>
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">WIF/USDT</span><input type="checkbox" checked value="WIF/USDT">
-              </label>
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">BOME/USDT</span><input type="checkbox" value="BOME/USDT">
-              </label>
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">DOGE/USDT</span><input type="checkbox" checked value="DOGE/USDT">
-              </label>
-              <label class="flex-between" style="font-size: 11px; cursor: pointer;">
-                <span class="mono">SHIB/USDT</span><input type="checkbox" value="SHIB/USDT">
-              </label>
-            </div>
+          <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+            <span class="text-secondary">硬止损 %</span>
+            <span class="mono font-bold" id="cfg-hard-stop">--</span>
           </div>
-
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 6px;">
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">TP1%</label>
-              <input type="number" class="form-input mono" value="5" step="0.5">
-            </div>
-            <div>
-              <label style="display:block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">TP2%</label>
-              <input type="number" class="form-input mono" value="8" step="0.5">
-            </div>
+          <div class="flex-between">
+            <span class="text-secondary">批回测币种</span>
+            <span class="mono font-bold" id="cfg-symbols">--</span>
           </div>
-
-          <button class="btn-primary" style="justify-content: center; margin-top: 10px; width: 100%;" id="start-backtest-btn">
-            <i data-lucide="play-circle" style="width: 16px; height: 16px;"></i> 启动多币秒级级联回测
-          </button>
-
-        </form>
+        </div>
       </div>
     </div>
 
-    <!-- Active Backtest Progress Indicator -->
-    <div class="card" id="backtest-progress-card" style="display: none;">
+    <!-- Batch Meta Info -->
+    <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <i data-lucide="refresh-cw" class="blue rotate-animation" style="width: 16px; height: 16px;"></i> 回测流引擎执行状态
+          <i data-lucide="info" class="blue" style="width: 16px; height: 16px;"></i> 回测运行信息
         </div>
       </div>
-      <div class="card-body">
-        <p style="font-size: 12px; margin-bottom: 8px;">PEPE/USDT 对冲阶段级联计算中: <span class="mono" id="backtest-proc-pct">60%</span></p>
-        <div class="progress-container">
-          <div class="progress-bar" style="width: 60%;" id="backtest-proc-bar"></div>
+      <div class="card-body" style="display: flex; flex-direction: column; gap: 10px;" id="meta-panel">
+        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <span class="text-secondary">运行时间</span>
+          <span class="mono" id="meta-time">--</span>
+        </div>
+        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <span class="text-secondary">回测天数</span>
+          <span class="mono" id="meta-days">--</span>
+        </div>
+        <div class="flex-between" style="border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <span class="text-secondary">总交易笔数</span>
+          <span class="mono" id="meta-trades">--</span>
+        </div>
+        <div class="flex-between">
+          <span class="text-secondary">初始资金</span>
+          <span class="mono" id="meta-capital">--</span>
         </div>
       </div>
     </div>
 
   </div>
 
-  <!-- Right Column: Comparative Plots & Multi-run Tables (span 8) -->
+  <!-- Right Column: Results (span 8) -->
   <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
     
-    <!-- Multi Cumulative equity curves chart -->
+    <!-- Cumulative Chart -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <i data-lucide="area-chart" class="purple" style="width: 16px; height: 16px;"></i> 级联回测多重对冲账户累计权益折线 (vs HODL 大盘基线)
+          <i data-lucide="area-chart" class="purple" style="width: 16px; height: 16px;"></i> 批量回测权益曲线
         </div>
       </div>
       <div class="card-body">
         <canvas id="backtest-chart-canvas" width="600" height="240" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
+        <div id="chart-empty" class="empty-state" style="display:none;">
+          <i data-lucide="bar-chart-2" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
+          <span>暂无回测曲线数据</span>
+        </div>
       </div>
     </div>
 
-    <!-- Multi-symbol Backtest Results comparison list -->
+    <!-- Per-Symbol Results Table -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <i data-lucide="table" class="blue" style="width: 16px; height: 16px;"></i> 聚合多币种回测核心产出对照报表
+          <i data-lucide="table" class="blue" style="width: 16px; height: 16px;"></i> 多币种回测结果对比
         </div>
       </div>
       <div class="card-body" style="padding: 0;">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>交易对 (Symbol)</th>
-              <th>回测时长</th>
-              <th>结束权益 (Ending Capital)</th>
-              <th>总胜率 / 交易笔</th>
-              <th>夏普 / 获利因子</th>
-              <th>策略收益比 (对比基盘)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="mono font-bold">PEPE/USDT</td>
-              <td>144 天</td>
-              <td class="mono green font-bold">2,142.18 U</td>
-              <td class="mono">65.8% / 120笔</td>
-              <td class="mono">2.84 / 3.42</td>
-              <td class="mono green font-bold">+114.2% <span style="font-size:10px; color:var(--text-muted)">(Hold_PEPE: -22%)</span></td>
-            </tr>
-            <tr>
-              <td class="mono font-bold">BONK/USDT</td>
-              <td>144 天</td>
-              <td class="mono green font-bold">1,612.40 U</td>
-              <td class="mono">62.1% / 98笔</td>
-              <td class="mono">2.12 / 2.95</td>
-              <td class="mono green font-bold">+61.2% <span style="font-size:10px; color:var(--text-muted)">(Hold_BONK: -12%)</span></td>
-            </tr>
-            <tr>
-              <td class="mono font-bold">WIF/USDT</td>
-              <td>144 天</td>
-              <td class="mono green font-bold">1,482.02 U</td>
-              <td class="mono">60.5% / 82笔</td>
-              <td class="mono">2.05 / 2.45</td>
-              <td class="mono green font-bold">+48.2% <span style="font-size:10px; color:var(--text-muted)">(Hold_WIF: +15%)</span></td>
-            </tr>
-            <tr>
-              <td class="mono font-bold">DOGE/USDT</td>
-              <td>144 天</td>
-              <td class="mono green font-bold">1,215.11 U</td>
-              <td class="mono">58.4% / 74笔</td>
-              <td class="mono">1.84 / 1.98</td>
-              <td class="mono " style="color:var(--text)">+21.5% <span style="font-size:10px; color:var(--text-muted)">(Hold_DOGE: -5%)</span></td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>交易对</th>
+                <th>交易笔数</th>
+                <th>胜率</th>
+                <th>总盈亏</th>
+                <th>最大回撤</th>
+                <th>盈亏比</th>
+                <th>夏普率</th>
+              </tr>
+            </thead>
+            <tbody id="results-tbody">
+              <tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary Totals -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="award" class="yellow" style="width: 16px; height: 16px;"></i> 汇总统计
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;" id="summary-grid">
+          <div style="text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">综合胜率</div>
+            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-win-rate">--</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">总盈亏</div>
+            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-total-pnl">--</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">总笔数</div>
+            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-total-trades">--</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">平均夏普</div>
+            <div class="mono font-bold" style="font-size: 18px; margin-top: 4px;" id="sum-avg-sharpe">--</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -186,87 +152,167 @@
 </div>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
-    
-    // Simple dynamic backtest click handler
-    const startBtn = document.getElementById("start-backtest-btn");
-    const progressCard = document.getElementById("backtest-progress-card");
-    const bar = document.getElementById("backtest-proc-bar");
-    const label = document.getElementById("backtest-proc-pct");
-    
-    if (startBtn && progressCard) {
-      startBtn.addEventListener("click", () => {
-        progressCard.style.display = "block";
-        let pct = 0;
-        startBtn.disabled = true;
-        
-        const interval = setInterval(() => {
-          pct += 15;
-          if (pct > 100) {
-            pct = 100;
-            clearInterval(interval);
-            startBtn.disabled = false;
-            setTimeout(() => { progressCard.style.display = "none"; }, 1500);
-          }
-          bar.style.width = pct + "%";
-          label.textContent = pct + "%";
-        }, 300);
+document.addEventListener("DOMContentLoaded", () => {
+
+  fetch('/api/batch-backtest')
+    .then(res => res.json())
+    .then(data => {
+      if (!data || Object.keys(data).length === 0) {
+        document.getElementById('results-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">暂无批量回测数据，请先运行 backtest.py --batch</td></tr>';
+        return;
+      }
+
+      // Current config
+      const cfg = data.current_config || {};
+      document.getElementById('cfg-daily-rsi').textContent = cfg.daily_rsi_min || '--';
+      document.getElementById('cfg-tp1').textContent = cfg.tp1_pct ? cfg.tp1_pct + '%' : '--';
+      document.getElementById('cfg-tp2').textContent = cfg.tp2_pct ? cfg.tp2_pct + '%' : '--';
+      document.getElementById('cfg-hard-stop').textContent = cfg.hard_stop_pct ? cfg.hard_stop_pct + '%' : '--';
+      const syms = cfg.batch_symbols || [];
+      document.getElementById('cfg-symbols').textContent = syms.length > 0 ? syms.length + ' 个' : '--';
+
+      // Meta
+      document.getElementById('meta-time').textContent = data.run_time || data.timestamp || '--';
+      document.getElementById('meta-days').textContent = cfg.batch_days || data.days || '--';
+
+      // Results table
+      const results = data.results || data.symbols || [];
+      const tbody = document.getElementById('results-tbody');
+      
+      if (results.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">无回测结果数据</td></tr>';
+        return;
+      }
+
+      let totalTrades = 0, totalPnl = 0, totalWins = 0, sharpeSum = 0;
+
+      let html = '';
+      results.forEach(r => {
+        const pnl = parseFloat(r.total_pnl || r.pnl || 0);
+        const wr = parseFloat(r.win_rate || 0);
+        const trades = parseInt(r.total_trades || r.trades || 0);
+        const maxDD = parseFloat(r.max_drawdown || 0);
+        const pf = parseFloat(r.profit_factor || 0);
+        const sharpe = parseFloat(r.sharpe || r.sharpe_ratio || 0);
+
+        totalTrades += trades;
+        totalPnl += pnl;
+        totalWins += Math.round(wr / 100 * trades);
+        sharpeSum += sharpe;
+
+        html += `<tr>
+          <td class="mono font-bold">${r.symbol || '--'}</td>
+          <td class="mono">${trades}</td>
+          <td class="mono ${wr >= 50 ? 'green' : 'red'}">${wr.toFixed(1)}%</td>
+          <td class="mono font-bold ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} U</td>
+          <td class="mono red">${maxDD.toFixed(2)}%</td>
+          <td class="mono">${pf > 0 ? pf.toFixed(2) : '--'}</td>
+          <td class="mono">${sharpe > 0 ? sharpe.toFixed(2) : '--'}</td>
+        </tr>`;
+      });
+      tbody.innerHTML = html;
+
+      // Meta trades
+      document.getElementById('meta-trades').textContent = totalTrades;
+      document.getElementById('meta-capital').textContent = (data.initial_capital || 1000) + ' U';
+
+      // Summary
+      const avgWR = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+      const avgSharpe = results.length > 0 ? (sharpeSum / results.length) : 0;
+
+      const wrEl = document.getElementById('sum-win-rate');
+      wrEl.textContent = avgWR.toFixed(1) + '%';
+      wrEl.className = 'mono font-bold ' + (avgWR >= 50 ? 'green' : 'red');
+
+      const pnlEl = document.getElementById('sum-total-pnl');
+      pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' U';
+      pnlEl.className = 'mono font-bold ' + (totalPnl >= 0 ? 'green' : 'red');
+
+      document.getElementById('sum-total-trades').textContent = totalTrades;
+      document.getElementById('sum-avg-sharpe').textContent = avgSharpe > 0 ? avgSharpe.toFixed(2) : '--';
+
+      // Chart
+      renderChart(data);
+    })
+    .catch(err => {
+      console.error('批量回测数据加载失败:', err);
+      document.getElementById('results-tbody').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center; padding:24px;">数据加载失败</td></tr>';
+    });
+
+  function renderChart(data) {
+    const canvas = document.getElementById("backtest-chart-canvas");
+    if (!canvas) return;
+
+    // Try to extract equity curve data
+    const equity = data.equity_curve || data.cumulative || null;
+    const results = data.results || data.symbols || [];
+
+    if (!equity && results.length === 0) {
+      canvas.style.display = 'none';
+      document.getElementById('chart-empty').style.display = 'flex';
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    const padding = 40;
+    const xRange = w - padding * 2;
+    const yRange = h - padding * 2;
+
+    let chartData = equity;
+    if (!chartData) {
+      // Generate synthetic equity from results total_pnl
+      chartData = [0];
+      results.forEach(r => {
+        chartData.push(chartData[chartData.length - 1] + parseFloat(r.total_pnl || r.pnl || 0));
       });
     }
 
-    // Render backtest chart
-    const canvas = document.getElementById("backtest-chart-canvas");
-    if (canvas) {
-      const ctx = canvas.getContext("2d");
-      const width = canvas.width;
-      const height = canvas.height;
-      const padding = 40;
-      
-      const xRange = width - padding * 2;
-      const yRange = height - padding * 2;
-      
-      // Benchmarks
-      ctx.strokeStyle = "rgba(255,193,7,0.3)";
-      ctx.lineWidth = 1;
-      
-      // Grid lines
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        const y = padding + (yRange / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(padding, y);
-        ctx.lineTo(width - padding, y);
-        ctx.stroke();
-      }
-      
-      // Draw benchmark lines (HODL - decaying)
+    if (chartData.length < 2) return;
+
+    const maxVal = Math.max(...chartData) * 1.1 || 100;
+    const minVal = Math.min(...chartData, 0) * 1.1 || -10;
+    const range = maxVal - minVal || 1;
+
+    // Grid
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padding + (yRange / 4) * i;
       ctx.beginPath();
-      ctx.moveTo(padding, height / 2);
-      ctx.bezierCurveTo(padding + 100, height/2 + 50, padding + 300, height/2 - 20, width - padding, height/2 + 40);
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.4)";
-      ctx.stroke();
-      
-      // Strategy line (Progressing up with variance)
-      ctx.beginPath();
-      ctx.moveTo(padding, height - padding - 40);
-      
-      const steps = 15;
-      const dataPoints = [1000, 1020, 980, 1150, 1120, 1310, 1280, 1450, 1420, 1690, 1650, 1850, 1810, 2142];
-      
-      dataPoints.forEach((point, index) => {
-        const x = padding + (xRange / (dataPoints.length - 1)) * index;
-        const y = height - padding - ((point - 800) / 1400) * yRange;
-        if (index === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      ctx.strokeStyle = "#a855f7";
-      ctx.lineWidth = 2.5;
+      ctx.moveTo(padding, y);
+      ctx.lineTo(w - padding, y);
       ctx.stroke();
     }
-  });
+
+    // Line
+    ctx.beginPath();
+    chartData.forEach((val, idx) => {
+      const x = padding + (xRange / (chartData.length - 1)) * idx;
+      const y = h - padding - ((val - minVal) / range) * yRange;
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#a855f7";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Fill
+    ctx.lineTo(padding + xRange, h - padding);
+    ctx.lineTo(padding, h - padding);
+    ctx.closePath();
+    const gradient = ctx.createLinearGradient(0, padding, 0, h - padding);
+    gradient.addColorStop(0, "rgba(168, 85, 247, 0.12)");
+    gradient.addColorStop(1, "rgba(168, 85, 247, 0.0)");
+    ctx.fillStyle = gradient;
+    ctx.fill();
+  }
+});
 </script>
 {% endblock %}
