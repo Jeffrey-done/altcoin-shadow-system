@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-多交易所管理模块 v1.0
-统一封装 Binance 和 OKX 的数据接口，提供：
+多交易所管理模块 v2.0
+统一封装 Binance / OKX / Gate.io 的数据接口，提供：
   - K线/Ticker 数据获取
   - OI（持仓量）变化率
   - 资金费率
   - 合约品种列表
-  - 费率交叉验证（两所费率都异常 = 信号更强）
+  - 费率交叉验证（多所费率都异常 = 信号更强）
 
 设计原则：
   - Binance 为主交易所（下单 + 主数据源）
   - OKX 为辅助交易所（交叉验证 + 补充品种）
+  - Gate.io 为第三交易所（扩展品种覆盖 + 备用执行）
   - 单个交易所故障不影响系统运行（优雅降级）
 """
 
@@ -31,6 +32,7 @@ logger = setup_logger("exchange_manager")
 
 _binance_instance: Optional[ccxt.binance] = None
 _okx_instance: Optional[ccxt.okx] = None
+_gate_instance: Optional[ccxt.gate] = None
 
 
 # H10: ccxt HTTP 超时（毫秒）。所有走 ccxt 的 fetch_*/create_order 调用
@@ -93,7 +95,9 @@ def make_exchange(
         return ccxt.binance(cfg)
     if name == 'okx':
         return ccxt.okx(cfg)
-    raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx'）")
+    if name == 'gate':
+        return ccxt.gate(cfg)
+    raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx' / 'gate'）")
 
 
 def get_binance(authenticated: bool = False) -> ccxt.binance:
@@ -182,6 +186,103 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
         )
     except Exception as e:
         logger.warning(f"OKX 认证实例创建失败: {e}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Gate.io 交易所实例
+# ══════════════════════════════════════════════════════════════════
+
+# Gate.io 配置（从 config 读取，兼容未升级的 config_legacy.py）
+GATE_ENABLED = getattr(config, 'GATE_ENABLED', False)
+GATE_LIVE_MODE = getattr(config, 'GATE_LIVE_MODE', False)
+GATE_DEFAULT_LEVERAGE = getattr(config, 'GATE_DEFAULT_LEVERAGE', 10)
+
+
+def get_gate(authenticated: bool = False) -> Optional[ccxt.gate]:
+    """
+    获取 Gate.io 交易所实例。
+
+    Gate.io 特点：
+      - 品种覆盖广（比 Binance 多 200+ 小币种合约）
+      - Maker 费率低 (0.015%)
+      - API Rate Limit 相对宽松 (900 req/min)
+      - 支持 USDT 永续合约 (linear swap)
+
+    如果 Gate.io 未启用或连接失败，返回 None（优雅降级）。
+    """
+    global _gate_instance
+    if not GATE_ENABLED:
+        return None
+
+    if not authenticated:
+        if _gate_instance is None:
+            try:
+                _gate_instance = make_exchange(
+                    'gate',
+                    default_type='swap',
+                    extra_options={'defaultSettle': 'usdt'},
+                )
+            except Exception as e:
+                logger.warning(f"Gate.io 初始化失败: {e}")
+                return None
+        return _gate_instance
+
+    # 认证版本
+    try:
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('gate')
+        api_key = creds.get('api_key', '')
+        secret = creds.get('secret', '')
+    except Exception as e:
+        logger.debug(f"admin_secrets Gate.io 不可用，fallback 到环境变量: {e}")
+        import os
+        api_key = os.environ.get('GATE_API_KEY', '')
+        secret = os.environ.get('GATE_SECRET', '')
+
+    if not api_key or not secret:
+        logger.warning("Gate.io API 凭证未配置")
+        return None
+
+    try:
+        return make_exchange(
+            'gate',
+            api_key=api_key,
+            secret=secret,
+            default_type='swap',
+            extra_options={'defaultSettle': 'usdt'},
+        )
+    except Exception as e:
+        logger.warning(f"Gate.io 认证实例创建失败: {e}")
+        return None
+
+
+def gate_has_swap(symbol: str) -> bool:
+    """检查 Gate.io 是否有该币种的永续合约"""
+    gate = get_gate()
+    if not gate:
+        return False
+    try:
+        gate.load_markets()
+        # Gate.io swap symbol 格式: BTC/USDT:USDT
+        gate_symbol = f"{symbol}:USDT" if ':' not in symbol else symbol
+        return gate_symbol in gate.markets
+    except Exception:
+        return False
+
+
+def get_gate_funding_rate(symbol: str) -> Optional[float]:
+    """获取 Gate.io 当前资金费率（%/8h）"""
+    gate = get_gate()
+    if not gate:
+        return None
+    try:
+        gate_symbol = f"{symbol}:USDT" if ':' not in symbol else symbol
+        info = gate.fetch_funding_rate(gate_symbol)
+        rate = float(info.get('fundingRate', 0)) * 100  # 转为百分比
+        return rate
+    except Exception as e:
+        logger.debug(f"Gate.io 费率获取失败 ({symbol}): {e}")
         return None
 
 

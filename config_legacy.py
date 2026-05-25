@@ -46,7 +46,7 @@ LIVE_MODE = False              # False=影子交易（纸上模拟） True=真�
 #  扫描过滤
 # ══════════════════════════════════════════════════════════════════
 VOL_MIN = 500_000              # 24h 成交量下限（USDT）
-PRICE_MAX = 1.0                # 价格上限（只做小币 <1U）
+PRICE_MAX = 50.0                # 价格上限（扩展至中盘币 <50U，覆盖更多品种）
 PCT_24H_MIN = 10               # 24h 涨幅最低要求（%）
 
 # ══════════════════════════════════════════════════════════════════
@@ -231,6 +231,7 @@ BACKTEST_FEE_PCT = 0.04        # taker 手续费（每边 %）
 #  批量回测
 # ══════════════════════════════════════════════════════════════════
 BATCH_BACKTEST_SYMBOLS = [
+    # 小盘 Meme 币（原始品种宇宙）
     'PEPE/USDT',
     'DOGE/USDT',
     'SHIB/USDT',
@@ -239,7 +240,19 @@ BATCH_BACKTEST_SYMBOLS = [
     'WIF/USDT',
     'PEOPLE/USDT',
     'ORDI/USDT',
-    # 回测优化移除：1000SATS（2年亏334U）、LUNC（亏128U）
+    # 中盘币（$1~$50，扩展品种宇宙 — Phase 6）
+    'FET/USDT',
+    'RNDR/USDT',
+    'INJ/USDT',
+    'SEI/USDT',
+    'SUI/USDT',
+    'APT/USDT',
+    'ARB/USDT',
+    'OP/USDT',
+    'NEAR/USDT',
+    'FIL/USDT',
+    'RUNE/USDT',
+    'TIA/USDT',
 ]
 BATCH_BACKTEST_DAYS = 90       # 批量回测默认天数
 BATCH_CORRELATION_THRESHOLD = 0.7  # 相关性阈值（高于此值的币对避免同时开仓）
@@ -293,3 +306,20 @@ WS_DISCONNECT_ALERT_MINUTES = 5  # WebSocket断线超过N分钟告警
 FUNDING_ARB_MIN_RATE = -0.03          # Binance 极端负费率阈值（%/8h）
 OKX_FUNDING_ARB_MIN_RATE = -0.02      # OKX 极端负费率阈值
 OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10   # 两所费率差异显著阈值（%）
+
+# ══════════════════════════════════════════════════════════════════
+#  Gate.io 交易所配置
+# ══════════════════════════════════════════════════════════════════
+GATE_ENABLED = True                    # 是否启用 Gate.io 作为辅助/备用交易所
+GATE_LIVE_MODE = False                 # True=通过 Gate.io API 真实下单
+GATE_DEFAULT_LEVERAGE = 10             # Gate.io 默认杠杆倍数
+# Gate.io 优势：
+#   - 品种覆盖广（比 Binance 多 200+ 小币种永续合约）
+#   - Maker 费率低 (0.015% vs Binance 0.02%)
+#   - API Rate Limit 宽松 (900 req/min vs Binance ~600)
+#   - 适合做 Binance 没有的小币种策略
+# Gate.io 用途：
+#   1. 扩展品种宇宙（Binance 没上的小币在 Gate 做）
+#   2. 费率交叉验证第三方数据源
+#   3. Binance 限流/维护时备用执行场所
+#   4. 跨所价差套利探索

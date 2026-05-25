@@ -8,7 +8,7 @@ short_overbought:
   # 扫描过滤
   scan:
     vol_min: 500000
-    price_max: 1.0
+    price_max: 50.0            # 扩展至中盘币 ($1~$50)
     pct_24h_min: 10
 
   # RSI 参数

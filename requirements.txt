@@ -42,3 +42,14 @@ redis>=5.0.0                # Redis Pub/Sub 事件总线
 
 # 异步引擎
 aiohttp>=3.9.0              # 异步 HTTP 客户端（并发 API 调用）
+
+# ══════════════════════════════════════════════════════════════════
+#  Phase 6 新增：ML + 性能优化
+# ══════════════════════════════════════════════════════════════════
+
+# ML 模型（可选，不装则 fallback 到线性评分）
+xgboost>=2.0.0              # XGBoost 信号预测模型
+scikit-learn>=1.4.0         # 模型评估指标（accuracy/AUC/F1）
+
+# 性能优化（可选，编译后热路径提速 5~20x）
+# cython>=3.0.0             # 取消注释后 pip install，然后 cd optimization && cythonize -i _fast_math.pyx
