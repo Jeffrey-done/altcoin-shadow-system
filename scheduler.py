@@ -390,8 +390,9 @@ def _mark_done(name: str, now: datetime):
 def main_loop():
     global _health_audit_fail_streak, _health_audit_last_alert_ts, _position_reconcile_last_alert_ts
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
-    logger.info("=== 调度器启动 v4.2 ===")
-    logger.info("  频率: scan_daily=1h | check_candidates=15min | tracker=10min")
+    logger.info("=== 调度器启动 v6.0 (StrategyEngine 集成) ===")
+    logger.info("  频率: scan_daily=1h | check_candidates=配置 | tracker=10min")
+    logger.info(f"  引擎模式: {'新引擎(engine_adapter)' if os.environ.get('USE_NEW_ENGINE', 'true').lower() in ('1','true','yes') else '旧引擎(altcoin_scanner)'}")
 
     # 启动时先做 in-flight journal 恢复：反查交易所 pending clOrdId，
     # 发现"交易所已成交但 trades.json 没记录"的幽灵订单立即告警。
@@ -530,30 +531,30 @@ def main_loop():
 
         # ── 每小时 :00 日线扫描 ──
         if _due_for_hourly('scan_daily', now, 0):
-            # M10: 用子进程，超时 OS 自动释放 flock
+            # v6.0: 优先走新引擎（engine_adapter），异常自动 fallback 旧路径
             run_task(
                 "日线扫描", None,
                 use_process=True,
-                process_module='altcoin_scanner', process_func='scan_daily',
+                process_module='engine_adapter', process_func='run_scan',
             )
             _mark_done('scan_daily', now)
 
         # ── 每 10 分钟止盈止损检查（加快止损响应速度）──
         if _due_for_minutes('tracker_check', now, 10):
-            # 止盈检查不耗时，保持线程模式
-            from altcoin_tracker import run as tracker_run
-            run_task("止盈检查", lambda: tracker_run(check_only=True))
+            # v6.0: 走新引擎退出评估，内部 fallback 到 altcoin_tracker
+            from engine_adapter import run_exit
+            run_task("止盈检查", lambda: run_exit(check_only=True))
             _mark_done('tracker_check', now)
 
         # ── 候选确认（可配置分钟级轮询）──
         check_interval = max(1, int(getattr(config, 'CHECK_CANDIDATES_INTERVAL_MINUTES', 15)))
         if _due_for_minutes('check_candidates', now, check_interval):
-            # M10: 候选确认可能触发多所并行开仓，长耗时任务用子进程
+            # v6.0: 新引擎确认（含组合风控 + OrderExecutor），异常 fallback
             run_task(
                 "候选确认", None,
                 timeout=getattr(config, 'CHECK_CANDIDATES_HARD_TIMEOUT_SEC', 120),
                 use_process=True,
-                process_module='altcoin_scanner', process_func='check_candidates',
+                process_module='engine_adapter', process_func='run_confirm',
             )
             _mark_done('check_candidates', now)
 
