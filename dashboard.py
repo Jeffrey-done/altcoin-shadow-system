@@ -187,6 +187,33 @@ class Unauthorized(Exception):
 #  Data Reading
 # ══════════════════════════════════════════════════════════════════
 
+def _get_long_candidates() -> list:
+    """
+    获取做多策略（Pre-Pump Sniffer）的候选列表。
+    尝试从 DB 或候选文件中读取 strategy='prepump_sniffer' 的候选，
+    如果不存在则返回空列表。
+    """
+    try:
+        from db.compat import _is_db_ready
+        if _is_db_ready():
+            from db.repositories import CandidateRepo
+            # 如果 CandidateRepo 支持按策略过滤
+            all_cands = CandidateRepo.get_active(exclude_triggered=True)
+            return [c for c in all_cands if c.get('strategy') == 'prepump_sniffer']
+    except Exception:
+        pass
+
+    # Fallback: 尝试读取独立的做多候选文件（如果存在）
+    long_candidates_file = os.path.join(SCRIPT_DIR, 'long_candidates.json')
+    if os.path.exists(long_candidates_file):
+        try:
+            return load_json(long_candidates_file, [])
+        except Exception:
+            pass
+
+    return []
+
+
 def _load_risk_v1_view(account_id: str) -> dict:
     """
     把 risk_state.json (v2 多账户结构) 转成单账户 v1 平铺视图，
@@ -367,6 +394,7 @@ def get_dashboard_data(account_id: str = None) -> dict:
             'total_pnl': round(total_pnl_long, 2),
         },
         'candidates': candidates,
+        'long_candidates': _get_long_candidates(),
         'risk': risk_state,
         'pnl_chart': pnl_chart_data,
         'pool': pool_allocation,
