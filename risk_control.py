@@ -435,9 +435,9 @@ def try_open_trade(stake: float = None, strategy: str = 'short',
         state = _state_from_data(data, account_id)
         dirty = False
         if state.paused_until:
-            now_ts = time.time()
-            if now_ts < state.paused_until:
-                remaining = state.paused_until - now_ts
+            pause_end = parse_iso(state.paused_until)
+            if utcnow() < pause_end:
+                remaining = (pause_end - utcnow()).total_seconds()
                 reason = f"账户暂停中（剩余{remaining:.0f}s）"
                 return False, reason
             else:

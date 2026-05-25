@@ -320,6 +320,16 @@ GATE_DEFAULT_LEVERAGE = 10             # Gate.io 默认杠杆倍数
 # 旧代码通过 config.LEVERAGE 等全局变量访问仍然正常工作（向后兼容），
 # 新代码通过 get_exchange_account_config('binance') 获取某个交易所的完整配置。
 #
+# ⚠️ 数据源优先级说明（L-6 修复）：
+#   本字典是"代码层硬编码默认值"（最低优先级兜底）。
+#   实际生效值的合并顺序（高→低）：
+#     1. runtime_config.json _exchanges 段（admin panel 实时修改）
+#     2. admin_secrets.json 中的 per-exchange settings
+#     3. config/system.yaml 的 exchanges 段（项目级用户配置）
+#     4. 本字典 EXCHANGE_ACCOUNTS（代码层默认值）
+#   如需修改默认值，请优先修改 config/system.yaml 而非本文件。
+#   本文件仅在 system.yaml 不存在或字段缺失时作为兜底。
+#
 # 设计理念：
 #   - 用户可能在 Binance 放 100U 跑 10x，在 OKX 放 200U 跑 5x
 #   - 每个交易所的风控应该独立（Binance 止损不影响 OKX 开仓）

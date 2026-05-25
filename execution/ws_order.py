@@ -502,7 +502,7 @@ class WSOrderEngine:
         query_string = urllib.parse.urlencode(
             {k: v for k, v in sorted(params.items()) if k != 'signature'}
         )
-        return hmac.new(
+        return hmac.HMAC(
             self.config.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256,

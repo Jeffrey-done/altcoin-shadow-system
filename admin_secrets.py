@@ -676,6 +676,19 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
         d['accounts'][acc_id]['exchanges'] = exchanges
         save(d)
 
+    # H-3 修复：凭证更新后清除对应的认证实例缓存，
+    # 强制下次调用时使用新凭证创建新实例
+    try:
+        from exchange_manager import invalidate_authenticated_cache
+        invalidate_authenticated_cache(exchange=exchange, account_id=acc_id)
+    except Exception:
+        pass  # exchange_manager 未加载时（测试环境）不阻塞
+    try:
+        from live_executor import invalidate_live_exchange_cache
+        invalidate_live_exchange_cache(exchange_name=exchange, account_id=acc_id)
+    except Exception:
+        pass
+
 
 def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) -> None:
     """清空某交易所的所有凭证"""
@@ -690,6 +703,18 @@ def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) 
             del exchanges[exchange]
             d['accounts'][acc_id]['exchanges'] = exchanges
             save(d)
+
+    # H-3 修复：凭证清除后也需要清除认证实例缓存
+    try:
+        from exchange_manager import invalidate_authenticated_cache
+        invalidate_authenticated_cache(exchange=exchange, account_id=acc_id)
+    except Exception:
+        pass
+    try:
+        from live_executor import invalidate_live_exchange_cache
+        invalidate_live_exchange_cache(exchange_name=exchange, account_id=acc_id)
+    except Exception:
+        pass
 
 
 def get_all_trading_accounts() -> list:
