@@ -296,9 +296,31 @@ select { cursor: pointer; }
       <div class="form-row"><label>API 密钥</label><input type="password" id="okx-api_key" placeholder="留空则保持不变"></div>
       <div class="form-row"><label>API 私钥</label><input type="password" id="okx-secret" placeholder="留空则保持不变"></div>
       <div class="form-row"><label>口令短语</label><input type="password" id="okx-passphrase" placeholder="留空则保持不变"></div>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;margin-bottom:28px;">
         <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 OKX</button>
         <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
+      </div>
+
+      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> Gate.io</h4>
+      <div id="gate-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
+      <div class="form-row"><label>API 密钥</label><input type="password" id="gate-api_key" placeholder="留空则保持不变"></div>
+      <div class="form-row"><label>API 私钥</label><input type="password" id="gate-secret" placeholder="留空则保持不变"></div>
+      <div style="display:flex;gap:8px;margin-bottom:18px;">
+        <button class="btn btn-primary btn-sm" onclick="saveCredentials('gate')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 Gate.io</button>
+        <button class="btn btn-danger btn-sm" onclick="clearCredentials('gate')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
+      </div>
+
+      <!-- Gate.io 实时状态 -->
+      <div id="gate-live-panel" style="display:none;margin-top:14px;padding:18px 20px;border-radius:var(--radius-md);background:var(--bg-elevated);border:1px solid var(--border-subtle);">
+        <div style="font-size:0.78rem;font-weight:600;color:var(--accent);margin-bottom:12px;display:flex;align-items:center;gap:6px;">
+          <i data-lucide="landmark" style="width:14px;height:14px;"></i> Gate.io 实时状态
+          <button class="btn btn-ghost btn-sm" onclick="refreshGateStatus()" style="margin-left:auto;padding:4px 10px;"><i data-lucide="refresh-cw" style="width:11px;height:11px;"></i></button>
+        </div>
+        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">总资产</label><span id="gate-balance-total" style="font-weight:700;">--</span></div>
+        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">可用</label><span id="gate-balance-free" style="font-weight:700;">--</span></div>
+        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">占用</label><span id="gate-balance-used" style="font-weight:700;">--</span></div>
+        <div id="gate-positions" style="margin-top:10px;font-size:0.72rem;color:var(--text-secondary);"></div>
+        <div id="gate-error" style="margin-top:6px;font-size:0.72rem;color:var(--yellow);display:none;"></div>
       </div>
     </div>
   </div>
@@ -1296,7 +1318,53 @@ function autoRefreshTaskMetrics() {
 // Account switcher event
 document.getElementById('account-switcher').addEventListener('change', function() { switchAccount(this.value); });
 
+// ── Gate.io 实时状态 ──────────────────────────────────────
+async function refreshGateStatus() {
+  try {
+    const resp = await fetch('/api/gate-account');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const panel = document.getElementById('gate-live-panel');
+    const statusEl = document.getElementById('gate-status');
+    const errEl = document.getElementById('gate-error');
+
+    if (data.credentials) {
+      if (statusEl) statusEl.innerHTML = '<span class="dot dot-green"></span> 已配置';
+      panel.style.display = 'block';
+      const b = data.balance || {};
+      document.getElementById('gate-balance-total').textContent = b.total !== undefined ? b.total + 'U' : '--';
+      document.getElementById('gate-balance-free').textContent = b.free !== undefined ? b.free + 'U' : '--';
+      document.getElementById('gate-balance-used').textContent = b.used !== undefined ? b.used + 'U' : '--';
+
+      const posEl = document.getElementById('gate-positions');
+      const positions = data.positions || [];
+      if (positions.length > 0) {
+        posEl.innerHTML = '<b>持仓:</b> ' + positions.map(p =>
+          `${p.symbol} ${p.side} ${p.contracts}张 ${p.unrealizedPnl >= 0 ? '+' : ''}${p.unrealizedPnl}U`
+        ).join(' | ');
+      } else if (data.status === 'active') {
+        posEl.textContent = '暂无持仓';
+      } else {
+        posEl.textContent = '';
+      }
+
+      if (data.balance_error) {
+        errEl.textContent = '查询异常: ' + data.balance_error;
+        errEl.style.display = 'block';
+      } else {
+        errEl.style.display = 'none';
+      }
+    } else {
+      if (statusEl) statusEl.innerHTML = '<span class="dot dot-red"></span> 未配置';
+      panel.style.display = 'none';
+    }
+  } catch (e) {
+    console.warn('[Gate] 状态刷新失败:', e);
+  }
+}
+
 // Init
 loadState();
+setTimeout(refreshGateStatus, 1500);
 </script>
 {% endblock %}
