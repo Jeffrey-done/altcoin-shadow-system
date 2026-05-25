@@ -232,7 +232,7 @@ class SmartOrderEngine:
 
         # 自动选择算法
         if algo is None:
-            algo = self._select_algo(symbol, notional_usdt, exchange_name)
+            algo = self._select_algo(symbol, notional_usdt, exchange_name, side)
 
         result = SmartOrderResult(
             status=SmartOrderStatus.EXECUTING,
@@ -531,7 +531,7 @@ class SmartOrderEngine:
     # ── 辅助方法 ─────────────────────────────────────────────────
 
     def _select_algo(self, symbol: str, notional_usdt: float,
-                     exchange_name: str) -> AlgoType:
+                     exchange_name: str, side: OrderSide = OrderSide.SELL) -> AlgoType:
         """根据仓位大小和深度自动选择算法"""
         if notional_usdt <= self.config.auto_threshold_usdt:
             return AlgoType.MARKET
@@ -544,7 +544,10 @@ class SmartOrderEngine:
             if asks and bids:
                 mid = (asks[0][0] + bids[0][0]) / 2
                 target_amount_est = notional_usdt / mid if mid > 0 else 0
-                top5_depth = sum(l[1] for l in (asks if True else bids)[:5])
+                # M-4 修复：根据实际交易方向检查对手方深度
+                # 买入(做多开仓)吃 asks，卖出(做空开仓)吃 bids
+                opposite_levels = bids if side == OrderSide.SELL else asks
+                top5_depth = sum(l[1] for l in opposite_levels[:5])
                 if top5_depth > 0 and target_amount_est / top5_depth > 0.1:
                     # 我的单量 > 前5档深度的 10% → 用 Adaptive
                     return AlgoType.ADAPTIVE

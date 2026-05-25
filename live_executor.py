@@ -93,6 +93,21 @@ _exchange_cache: dict = {}
 _exchange_cache_lock = threading.Lock()
 
 
+def invalidate_live_exchange_cache(exchange_name: str = None, account_id: str = None):
+    """清除 live_executor 的交易所实例缓存。凭证变更时由 admin_secrets 调用。"""
+    with _exchange_cache_lock:
+        if exchange_name is None and account_id is None:
+            _exchange_cache.clear()
+            return
+        keys_to_remove = [
+            k for k in _exchange_cache
+            if (exchange_name is None or k[0] == exchange_name)
+            and (account_id is None or k[1] == account_id or k[1] == '')
+        ]
+        for k in keys_to_remove:
+            del _exchange_cache[k]
+
+
 def get_live_exchange(account_id: Optional[str] = None):
     """创建已认证的 Binance 合约交易所实例（缓存结果）
 

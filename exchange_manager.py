@@ -18,6 +18,8 @@
 
 from typing import Optional, Dict
 
+import threading
+
 import ccxt
 import requests
 
@@ -38,6 +40,7 @@ _gate_instance: Optional[ccxt.gate] = None
 
 # 认证实例缓存：key = (exchange_name, account_id)
 _authenticated_instances: Dict[tuple, ccxt.Exchange] = {}
+_auth_cache_lock = threading.Lock()
 
 
 # H10: ccxt HTTP 超时（毫秒）。所有走 ccxt 的 fetch_*/create_order 调用
@@ -123,8 +126,9 @@ def get_binance(authenticated: bool = False, account_id: str = None) -> ccxt.bin
 
     # 认证版本：按 account_id 缓存
     cache_key = ('binance', account_id or '_active')
-    if cache_key in _authenticated_instances:
-        return _authenticated_instances[cache_key]
+    with _auth_cache_lock:
+        if cache_key in _authenticated_instances:
+            return _authenticated_instances[cache_key]
 
     try:
         from admin_secrets import get_exchange_credentials
@@ -146,7 +150,8 @@ def get_binance(authenticated: bool = False, account_id: str = None) -> ccxt.bin
         secret=secret,
         default_type='future',
     )
-    _authenticated_instances[cache_key] = instance
+    with _auth_cache_lock:
+        _authenticated_instances[cache_key] = instance
     return instance
 
 
@@ -174,8 +179,9 @@ def get_okx(authenticated: bool = False, account_id: str = None) -> Optional[ccx
 
     # 认证版本：按 account_id 缓存
     cache_key = ('okx', account_id or '_active')
-    if cache_key in _authenticated_instances:
-        return _authenticated_instances[cache_key]
+    with _auth_cache_lock:
+        if cache_key in _authenticated_instances:
+            return _authenticated_instances[cache_key]
 
     try:
         from admin_secrets import get_exchange_credentials
@@ -200,7 +206,8 @@ def get_okx(authenticated: bool = False, account_id: str = None) -> Optional[ccx
             secret=secret,
             passphrase=passphrase,
         )
-        _authenticated_instances[cache_key] = instance
+        with _auth_cache_lock:
+            _authenticated_instances[cache_key] = instance
         return instance
     except Exception as e:
         logger.warning(f"OKX 认证实例创建失败: {e}")
@@ -246,8 +253,9 @@ def get_gate(authenticated: bool = False, account_id: str = None) -> Optional[cc
 
     # 认证版本：按 account_id 缓存
     cache_key = ('gate', account_id or '_active')
-    if cache_key in _authenticated_instances:
-        return _authenticated_instances[cache_key]
+    with _auth_cache_lock:
+        if cache_key in _authenticated_instances:
+            return _authenticated_instances[cache_key]
 
     try:
         from admin_secrets import get_exchange_credentials
@@ -272,7 +280,8 @@ def get_gate(authenticated: bool = False, account_id: str = None) -> Optional[cc
             default_type='swap',
             extra_options={'defaultSettle': 'usdt'},
         )
-        _authenticated_instances[cache_key] = instance
+        with _auth_cache_lock:
+            _authenticated_instances[cache_key] = instance
         return instance
     except Exception as e:
         logger.warning(f"Gate.io 认证实例创建失败: {e}")
@@ -354,20 +363,22 @@ def invalidate_authenticated_cache(exchange: str = None, account_id: str = None)
     """
     global _authenticated_instances
     if exchange is None and account_id is None:
-        _authenticated_instances.clear()
+        with _auth_cache_lock:
+            _authenticated_instances.clear()
         return
 
     keys_to_remove = []
-    for key in _authenticated_instances:
-        exch, acc = key
-        if exchange and exch != exchange.lower():
-            continue
-        if account_id and acc != account_id:
-            continue
-        keys_to_remove.append(key)
+    with _auth_cache_lock:
+        for key in _authenticated_instances:
+            exch, acc = key
+            if exchange and exch != exchange.lower():
+                continue
+            if account_id and acc != account_id:
+                continue
+            keys_to_remove.append(key)
 
-    for key in keys_to_remove:
-        del _authenticated_instances[key]
+        for key in keys_to_remove:
+            del _authenticated_instances[key]
 
 
 def gate_has_swap(symbol: str) -> bool:

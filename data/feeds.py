@@ -201,14 +201,17 @@ class BacktestDataFeed(DataFeed):
         subset = df.iloc[start:end]
 
         # 转换为 [[ts, open, high, low, close, volume], ...]
-        result = []
-        for _, row in subset.iterrows():
-            result.append([
-                row.get('timestamp', 0),
-                row['open'], row['high'], row['low'], row['close'],
-                row.get('volume', 0),
-            ])
-        return result
+        # L-2 性能优化：使用向量化操作替代逐行 iterrows（提速 10~50x）
+        cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        available_cols = [c for c in cols if c in subset.columns]
+        # 确保输出顺序为 [ts, o, h, l, c, v]，缺失列填 0
+        out = pd.DataFrame(index=subset.index)
+        for c in cols:
+            if c in subset.columns:
+                out[c] = subset[c]
+            else:
+                out[c] = 0
+        return out[cols].values.tolist()
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         df = self._datasets.get(symbol)
