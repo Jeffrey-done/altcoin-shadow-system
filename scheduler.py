@@ -737,6 +737,14 @@ def main_loop():
                 logger.debug(f"health_audit 连续失败计数更新异常: {_e}")
 
             _mark_done('health_audit_all', now)
+        # ── 每 2 小时 :30 宏观数据采集（multi-signal + CMM）──
+        if _due_for_interval('macro_collection', now, 2, 30):
+            def _run_macro():
+                from macro.ms_runner import run_macro_collection
+                run_macro_collection()
+            run_task("宏观数据采集", _run_macro, timeout=300)
+            _mark_done('macro_collection', now)
+
         # ── 每 6 小时 :45 健康检查 ──
         if _due_for_interval('health_check', now, 6, 45):
             from health_check import run_health_check
