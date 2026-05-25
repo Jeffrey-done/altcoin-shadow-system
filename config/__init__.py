@@ -6,20 +6,39 @@ YAML 分层配置管理
   1. 环境变量（DATABASE_URL 等）
   2. runtime_config.json（admin panel 动态修改）
   3. config/*.yaml（项目级默认值）
-  4. 代码内置默认值（config.py）
+  4. 代码内置默认值（config_legacy.py）
 
 集成说明:
+  - 所有旧代码 `import config` 仍然正常工作（本包 re-export 全部常量）
   - 策略模块通过 get_strategy_config('short_overbought') 获取参数
   - 风控模块通过 get_risk_config(account_id) 获取参数
   - 系统配置通过 get_system_config() 获取
-  - apply_yaml_to_config() 可将 YAML 值覆盖到老 config.py 模块（向后兼容）
+  - apply_yaml_to_config() 可将 YAML 值覆盖到本模块的全局变量
 """
 
 import os
+import sys
 import logging
 from typing import Any, Dict, Optional
 
 import yaml
+
+# ══════════════════════════════════════════════════════════════════
+#  关键：从 config_legacy.py 导入全部常量，保证向后兼容
+#  所有旧代码 `import config; config.LEVERAGE` 仍然正常工作
+# ══════════════════════════════════════════════════════════════════
+_SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_legacy_path = os.path.join(_SCRIPT_DIR, 'config_legacy.py')
+
+if os.path.exists(_legacy_path):
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location('config_legacy', _legacy_path)
+    _legacy_module = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_legacy_module)
+    # 将所有公开属性注入本模块
+    for _name in dir(_legacy_module):
+        if not _name.startswith('_'):
+            globals()[_name] = getattr(_legacy_module, _name)
 
 logger = logging.getLogger("config.yaml_loader")
 
@@ -208,7 +227,8 @@ def apply_yaml_to_config():
     这是一个过渡方案——最终目标是所有模块直接读 YAML，
     但在过渡期间通过注入的方式保证旧代码也能拿到 YAML 值。
     """
-    import config as cfg_module
+    import sys
+    cfg_module = sys.modules[__name__]  # 即 config 包本身
 
     yaml_cfg = load_all(force_reload=True)
     applied = 0

@@ -394,6 +394,13 @@ def main_loop():
     logger.info("  频率: scan_daily=1h | check_candidates=配置 | tracker=10min")
     logger.info(f"  引擎模式: {'新引擎(engine_adapter)' if os.environ.get('USE_NEW_ENGINE', 'true').lower() in ('1','true','yes') else '旧引擎(altcoin_scanner)'}")
 
+    # ── 初始化事件系统 + YAML 配置注入 ──
+    try:
+        from event_integration import init_event_system
+        init_event_system('scheduler')
+    except Exception as e:
+        logger.warning(f"事件系统初始化失败（不影响核心业务）: {e}")
+
     # 启动时先做 in-flight journal 恢复：反查交易所 pending clOrdId，
     # 发现"交易所已成交但 trades.json 没记录"的幽灵订单立即告警。
     try:
