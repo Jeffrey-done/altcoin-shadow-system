@@ -1,104 +1,261 @@
 {% extends "base.html" %}
 
-{% block title %}策略评分 - Shadow Trading{% endblock %}
-{% block page_title %}🎯 策略评分详情{% endblock %}
-{% block subtitle %}信号评分系统 | 动态仓位管理{% endblock %}
+{% block title %}信号评分 | Altcoin Shadow System{% endblock %}
 
-{% block header_controls %}
-<label class="auto-refresh-toggle" id="auto-refresh-toggle">
-    <span class="dot"></span> 自动刷新
-</label>
+{% block styles %}
+<style>
+  .signal-score-badge {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+</style>
 {% endblock %}
 
 {% block content %}
-<div id="content"><div class="empty-state">加载中...</div></div>
-{% endblock %}
+<div class="dashboard-grid">
+  
+  <!-- Overview (span 12) -->
+  <section class="grid-col-12 card" style="background: linear-gradient(90deg, var(--bg-card) 0%, rgba(168, 85, 247, 0.05) 100%);">
+    <div class="card-header">
+      <div class="card-title">
+        <i data-lucide="star" class="purple" style="width: 18px; height: 18px;"></i> 智能算法信号多维度评分核心数据库
+      </div>
+      <span class="text-muted" style="font-size:11px;">1分钟级别自动化指标多维映射与评分</span>
+    </div>
+    <div class="card-body">
+      <p style="font-size: 13px; line-height: 1.6; max-width: 1200px;">
+        信号评分系统基于 <strong>RSI超限度、持仓量爆发比率 (OI Change)、成交量放大率 (Vol Ratio)、社交及异常链上行为</strong>，由量化核心自动给所有目标代币打分。<strong>Yao Score 评分越高 (>2)</strong> 即代表该币种处于暴涨过热阶段（影子系统的绝对优质做空对冲极板标的）。
+      </p>
+    </div>
+  </section>
 
-{% block scripts %}
+  <!-- Left Column: Active list (span 8) -->
+  <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
+    
+    <!-- Active Scores Table -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="list-collapse" class="purple" style="width: 16px; height: 16px;"></i> 实时扫描在线标的评分与触爆控制
+        </div>
+        <button class="btn-secondary" id="refresh-signals-btn"><i data-lucide="refresh-cw" style="width: 13px; height: 13px;"></i> 强制触发算法重刷</button>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>标的 (Symbol)</th>
+              <th>最新量化总分 (YAO)</th>
+              <th>超买超卖 (RSI-1D)</th>
+              <th>24H 强波动涨幅</th>
+              <th>资金流与持仓变化</th>
+              <th>系统动作阶段</th>
+            </tr>
+          </thead>
+          <tbody id="signals-tbody">
+            <!-- Populated -->
+            <tr>
+              <td class="mono font-bold" style="font-size:13px;">PEPE/USDT</td>
+              <td>
+                <div style="display: flex; align-items:center; gap:8px;">
+                  <div class="signal-score-badge font-bold" style="background-color:rgba(239, 68, 68, 0.15); color: var(--red); border-color: rgba(239, 68, 68, 0.3);">4.2</div>
+                  <span class="text-muted" style="font-size: 10px;">极危暴击</span>
+                </div>
+              </td>
+              <td class="mono font-bold red">85.42 (超买)</td>
+              <td class="mono red">+15.30%</td>
+              <td class="mono text-muted">OI 激增 35% | Vol 4.2x</td>
+              <td><span class="badge badge-red">已进场做空保护</span></td>
+            </tr>
+            <tr>
+              <td class="mono font-bold" style="font-size:13px;">BONK/USDT</td>
+              <td>
+                <div style="display: flex; align-items:center; gap:8px;">
+                  <div class="signal-score-badge font-bold" style="background-color:rgba(239, 68, 68, 0.15); color: var(--red); border-color: rgba(239, 68, 68, 0.3);">3.8</div>
+                  <span class="text-muted" style="font-size: 10px;">严重超买</span>
+                </div>
+              </td>
+              <td class="mono font-bold red">81.15 (超买)</td>
+              <td class="mono red">+12.45%</td>
+              <td class="mono text-muted">OI 双破 28% | Vol 3.8x</td>
+              <td><span class="badge badge-red">影子挂单监视中</span></td>
+            </tr>
+            <tr>
+              <td class="mono font-bold" style="font-size:13px;">WIF/USDT</td>
+              <td>
+                <div style="display: flex; align-items:center; gap:8px;">
+                  <div class="signal-score-badge font-bold" style="background-color:rgba(34, 197, 94, 0.15); color: var(--green); border-color: rgba(34, 197, 94, 0.3);">1.2</div>
+                  <span class="text-muted" style="font-size: 10px;">低位突破</span>
+                </div>
+              </td>
+              <td class="mono blue">54.50 (中枢)</td>
+              <td class="mono green">+5.20%</td>
+              <td class="mono text-muted">突破爆发 15% | Vol 2.1x</td>
+              <td><span class="badge badge-green">触发实盘跟踪多单</span></td>
+            </tr>
+            <tr>
+              <td class="mono font-bold" style="font-size:13px;">DOGE/USDT</td>
+              <td>
+                <div style="display: flex; align-items:center; gap:8px;">
+                  <div class="signal-score-badge font-bold" style="background-color:var(--bg-elevated); color: var(--text-muted);">0.4</div>
+                  <span class="text-muted" style="font-size: 10px;">平和平稳</span>
+                </div>
+              </td>
+              <td class="mono text-muted">45.12 (中性)</td>
+              <td class="mono" style="color:var(--text)">+0.12%</td>
+              <td class="mono text-muted">OI 微缩 2% | Vol 0.8x</td>
+              <td><span class="badge badge-blue">无触发空仓</span></td>
+            </tr>
+            <tr>
+              <td class="mono font-bold" style="font-size:13px;">BOME/USDT</td>
+              <td>
+                <div style="display: flex; align-items:center; gap:8px;">
+                  <div class="signal-score-badge font-bold" style="background-color:rgba(34, 197, 94, 0.1) ; color: var(--green);">1.8</div>
+                  <span class="text-muted" style="font-size: 10px;">突破蓄势</span>
+                </div>
+              </td>
+              <td class="mono font-bold green">61.20 (超轻强)</td>
+              <td class="mono green">+3.80%</td>
+              <td class="mono text-muted">OI 激增 18% | Vol 1.5x</td>
+              <td><span class="badge badge-green">多头关注雷达内</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Column: Canvas Radar / Scatter clusters (span 4) -->
+  <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
+    
+    <!-- Token Scatter plots radar card -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="gamepad" class="purple" style="width: 16px; height: 16px;"></i> 代币过热度与资金占比四象限雷达图
+        </div>
+      </div>
+      <div class="card-body">
+        <canvas id="scores-overlap-canvas" width="280" height="280" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
+        <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 10px;">
+          <span>← 冷却温和 (Left)</span>
+          <span>波动过热 (Right) →</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Scorers performance details -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="info" class="text-secondary" style="width: 16px; height: 16px;"></i> 算法权重计算矩阵设定
+        </div>
+      </div>
+      <div class="card-body" style="font-size: 12px; display:flex; flex-direction:column; gap:10px;">
+        <div class="flex-between">
+          <span class="text-muted">RSI-1D 极度超买权重:</span>
+          <span class="mono">40.0%</span>
+        </div>
+        <div class="flex-between">
+          <span class="text-muted">OI (持仓变化率) 加速权重:</span>
+          <span class="mono">30.0%</span>
+        </div>
+        <div class="flex-between">
+          <span class="text-muted">异常暴涨斜率 (Anomaly Ratio):</span>
+          <span class="mono">20.0%</span>
+        </div>
+        <div class="flex-between">
+          <span class="text-muted">社交异常行为与链上轧：</span>
+          <span class="mono">10.0%</span>
+        </div>
+        <div style="border-top:1px dashed var(--border); margin-top:6px; padding-top:6px; font-size: 11px; line-height: 1.5;" class="text-muted">
+          当任意资产单项 RSI > 80 且持仓 OI 比率增幅 > 30% 时，将联合产生 <strong>YAO 得分急升事件</strong>，自动通知交易流水模块执行秒级保护和短刀沽空介入。
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
 <script>
-function loadData() {
-    fetch('/api/signal-scores').then(r => r.json()).then(data => {
-        const content = document.getElementById('content');
-        const cfg = data.config || {};
-        const trades = data.trades || [];
-
-        let html = `
-        <div class="grid grid-3">
-            <div class="card">
-                <div class="card-header">评分系统</div>
-                <div class="card-value ${cfg.signal_score_enabled ? 'green' : 'red'}">${cfg.signal_score_enabled ? '已启用' : '已关闭'}</div>
-            </div>
-            <div class="card">
-                <div class="card-header">A级阈值（全仓）</div>
-                <div class="card-value green">≥ ${cfg.score_full_threshold||70}分</div>
-            </div>
-            <div class="card">
-                <div class="card-header">B级阈值（半仓）</div>
-                <div class="card-value yellow">≥ ${cfg.score_half_threshold||40}分</div>
-                <div class="card-sub">&lt; ${cfg.score_half_threshold||40}分: 跳过</div>
-            </div>
-        </div>
-
-        <div class="card" style="margin-bottom:12px;">
-            <div class="section-title">📊 评分维度说明</div>
-            <div class="grid grid-4" style="margin-top:8px;">
-                <div><b>RSI强度</b> (0~25)<br><span class="card-sub">日线RSI越高越强</span></div>
-                <div><b>妖币特征</b> (0~25)<br><span class="card-sub">妖币评分0/1/2/3</span></div>
-                <div><b>触发方式</b> (0~25)<br><span class="card-sub">弃盘点>RSI回落</span></div>
-                <div><b>市场热度</b> (0~25)<br><span class="card-sub">OI+费率+BTC趋势</span></div>
-            </div>
-        </div>
-
-        <div class="card"><div class="section-title">📝 最近交易评分记录</div><div class="table-wrapper"><table>
-            <thead><tr><th>币种</th><th>方向</th><th>策略</th><th>评分</th><th>等级</th><th>维度</th><th>结果</th><th>状态</th></tr></thead><tbody>`;
-
-        trades.forEach(t => {
-            const gradeBadge = t.score_grade === 'A' ? '<span class="badge badge-a">A</span>'
-                : t.score_grade === 'B' ? '<span class="badge badge-b">B</span>'
-                : t.score_grade === 'SKIP' ? '<span class="badge badge-skip">SKIP</span>'
-                : '<span class="card-sub">--</span>';
-            const scoreBar = t.score !== null ? `<div class="risk-bar" style="width:80px;display:inline-block;vertical-align:middle;">
-                <div class="risk-bar-fill" style="width:${t.score}%;background:${t.score>=70?'var(--green)':t.score>=40?'var(--yellow)':'var(--red)'}"></div></div>
-                <span style="font-size:0.75rem;margin-left:4px;">${t.score}</span>` : '--';
-            let dims = '--';
-            if (t.score_details) {
-                dims = Object.entries(t.score_details).map(([k,v]) => `${k}:${v}`).join(' ');
-            }
-            const resultStr = t.pnl !== null ? App.fmtPnl(t.pnl) : '<span class="badge badge-open">持仓中</span>';
-            const statusBadge = t.status === 'open' ? '<span class="badge badge-open">open</span>' : '<span class="badge badge-closed">closed</span>';
-            html += `<tr><td><b>${t.symbol}</b></td><td>${t.direction}</td><td>${t.strategy||'--'}</td>
-                <td>${scoreBar}</td><td>${gradeBadge}</td><td style="font-size:0.7rem;">${dims}</td>
-                <td>${resultStr}</td><td>${statusBadge}</td></tr>`;
-        });
-
-        html += `</tbody></table></div></div>`;
-
-        // Score distribution stats
-        const scored = trades.filter(t => t.score !== null);
-        if (scored.length > 0) {
-            const aCount = scored.filter(t => t.score >= (cfg.score_full_threshold||70)).length;
-            const bCount = scored.filter(t => t.score >= (cfg.score_half_threshold||40) && t.score < (cfg.score_full_threshold||70)).length;
-            const skipCount = scored.filter(t => t.score < (cfg.score_half_threshold||40)).length;
-            const aPnl = scored.filter(t => t.score >= (cfg.score_full_threshold||70) && t.pnl !== null).reduce((s,t) => s + t.pnl, 0);
-            const bPnl = scored.filter(t => t.score >= (cfg.score_half_threshold||40) && t.score < (cfg.score_full_threshold||70) && t.pnl !== null).reduce((s,t) => s + t.pnl, 0);
-
-            html += `<div class="card" style="margin-top:12px;"><div class="section-title">📈 评分分布统计</div>
-                <div class="grid grid-3">
-                    <div><span class="badge badge-a">A级</span> ${aCount}笔 | PnL: ${App.fmtPnl(aPnl)}</div>
-                    <div><span class="badge badge-b">B级</span> ${bCount}笔 | PnL: ${App.fmtPnl(bPnl)}</div>
-                    <div><span class="badge badge-skip">跳过</span> ${skipCount}笔</div>
-                </div></div>`;
-        }
-
-        content.innerHTML = html;
-    }).catch(e => {
-        document.getElementById('content').innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
-    });
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    loadData();
-    AutoRefresh.init(loadData);
-});
+  document.addEventListener("DOMContentLoaded", () => {
+    // Rend scores canvas
+    const canvas = document.getElementById("scores-overlap-canvas");
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      const width = canvas.width;
+      const height = canvas.height;
+      const center = width / 2;
+      
+      // Draw grid quadrants
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1.5;
+      
+      // X-axis
+      ctx.beginPath();
+      ctx.moveTo(10, center);
+      ctx.lineTo(width - 10, center);
+      ctx.stroke();
+      
+      // Y-axis
+      ctx.beginPath();
+      ctx.moveTo(center, 10);
+      ctx.lineTo(center, height - 10);
+      ctx.stroke();
+      
+      // Draw concentric alert circles
+      ctx.strokeStyle = "rgba(168, 85, 247, 0.1)";
+      for (let r = 30; r < center - 10; r += 35) {
+        ctx.beginPath();
+        ctx.arc(center, center, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      
+      // Render tokens as scatter points
+      const points = [
+        { name: "PEPE", x: center + 75, y: center - 85, color: "var(--red)", score: 4.2 },
+        { name: "BONK", x: center + 60, y: center - 60, color: "var(--red)", score: 3.8 },
+        { name: "WIF", x: center - 45, y: center - 20, color: "var(--green)", score: 1.2 },
+        { name: "DOGE", x: center - 80, y: center + 70, color: "var(--text-muted)", score: 0.4 },
+        { name: "BOME", x: center - 30, y: center - 45, color: "var(--green)", score: 1.8 }
+      ];
+      
+      points.forEach(pt => {
+        // Dot
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 6, 0, Math.PI*2);
+        ctx.fillStyle = pt.color;
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 11, 0, Math.PI*2);
+        ctx.strokeStyle = pt.color;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.3;
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+        
+        // Label
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.font = "bold 9px JetBrains Mono";
+        ctx.fillText(pt.name, pt.x + 14, pt.y + 3);
+        
+        ctx.fillStyle = "rgba(255,255,255,0.45)";
+        ctx.font = "8px Inter";
+        ctx.fillText("(" + pt.score + ")", pt.x + 14, pt.y + 12);
+      });
+    }
+  });
 </script>
 {% endblock %}

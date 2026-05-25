@@ -1,660 +1,828 @@
 {% extends "base.html" %}
 
-{% block title %}影子交易系统{% endblock %}
-{% block page_icon %}<span class="live-dot"></span>{% endblock %}
-{% block page_title %}影子交易{% endblock %}
-{% block subtitle %}<span id="timestamp">连接中...</span>{% endblock %}
-
-{% block header_controls %}
-<span id="connection-status" style="font-size:0.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:4px;">
-    <i data-lucide="wifi-off" style="width:14px;height:14px;"></i>
-</span>
-{% endblock %}
-
-{% block head_extra %}
-{# Socket.IO 客户端从同源加载，避免外网 CDN 在某些网络下卡住整页加载（30s 超时 → 长时间白屏） #}
-<script defer src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
-{% endblock %}
+{% block title %}仪盘表 | Altcoin Shadow System{% endblock %}
 
 {% block content %}
-<!-- 多账户总览（全局视图） -->
-<div class="card" style="margin-bottom:16px;" id="accounts-overview-card">
-    <div class="section-title">
-        <i data-lucide="users"></i> 账户总览
-        <span class="sync-status" id="sync-status"><span class="sync-dot"></span> 实时</span>
+<div class="dashboard-grid">
+  
+  <!-- ROW 1: Multi-Account Overview Cards (span 12) -->
+  <section class="grid-col-12 card" style="padding: 12px; background-color: transparent; border: none; box-shadow: none; margin-bottom: -4px;">
+    <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 8px; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px;">
+      <i data-lucide="users" style="width: 14px; height: 14px;"></i> 多账户实时概览 (点击进行切换)
     </div>
-    <div class="account-overview" id="accounts-overview">
-        <!-- JS 动态填充 -->
+    <div class="account-selector-grid" id="accounts-overview-grid">
+      <!-- Injected by API /api/accounts/overview -->
+      <div class="empty-state" style="padding: 10px; width: 100%;">
+        <span>正在加载多账户概览...</span>
+      </div>
     </div>
-</div>
+  </section>
 
-<!-- 核心指标 -->
-<div class="grid grid-4">
-    <div class="card metric-card">
-        <div class="metric-icon green"><i data-lucide="trending-up"></i></div>
-        <div class="metric-label">今日盈亏</div>
-        <div class="metric-value" id="today-pnl">--</div>
-        <div class="metric-sub">全部策略</div>
-        <div id="today-trend"></div>
-    </div>
-    <div class="card metric-card">
-        <div class="metric-icon blue"><i data-lucide="bar-chart-3"></i></div>
-        <div class="metric-label">累计盈亏</div>
-        <div class="metric-value" id="total-pnl">--</div>
-        <div class="metric-sub"><span id="total-trades">0</span> 笔交易 <span id="roi-label"></span></div>
-    </div>
-    <div class="card metric-card">
-        <div class="metric-icon purple"><i data-lucide="wallet"></i></div>
-        <div class="metric-label">账户余额</div>
-        <div class="metric-value" id="balance">--</div>
-        <div class="metric-sub" id="leverage-info">--</div>
-    </div>
-    <div class="card metric-card">
-        <div class="metric-icon green"><i data-lucide="percent"></i></div>
-        <div class="metric-label">胜率</div>
-        <div class="metric-value" id="win-rate">--</div>
-        <div class="metric-sub">盈利笔数 / 总笔数</div>
-    </div>
-</div>
-
-<!-- 执行与对账指标 -->
-<div class="card" style="margin-bottom:16px;border:1px solid rgba(34,197,94,.35);">
-    <div class="section-title"><i data-lucide="activity"></i> 执行与对账</div>
-    <div class="grid grid-4" id="exec-metrics">
-        <div><span class="card-sub">开仓成功率</span><div style="font-weight:600;" id="exec-open-rate">--</div></div>
-        <div><span class="card-sub">平仓成功率</span><div style="font-weight:600;" id="exec-close-rate">--</div></div>
-        <div><span class="card-sub">开仓失败数</span><div style="font-weight:600;" id="exec-open-failed">--</div></div>
-        <div><span class="card-sub">对账差异事件</span><div style="font-weight:600;" id="exec-reconcile-diff">--</div></div>
-    </div>
-    <div id="exec-recent-errors" style="margin-top:8px;font-size:0.72rem;color:var(--text-muted);"></div>
-</div>
-
-<!-- 仓位使用 -->
-<div class="card" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="pie-chart"></i> 仓位占用</div>
-    <div class="pool-bar" id="pool-bar"></div>
-    <div class="grid grid-4" id="pool-details" style="margin-top:10px;"></div>
-</div>
-
-<!-- 交易模式筛选 -->
-<div class="card" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="filter"></i> 交易模式</div>
-    <div class="filter-tabs" id="mode-filter">
-        <button class="filter-tab" data-mode="all">全部</button>
-        <button class="filter-tab" data-mode="shadow">影子</button>
-        <button class="filter-tab active" data-mode="live">实盘</button>
-    </div>
-    <div id="mode-summary" style="margin-top:10px;font-size:0.75rem;color:var(--text-muted);"></div>
-</div>
-
-
-
-<!-- 做空持仓 -->
-<div class="card" id="short-positions-table" data-direction="SHORT" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="arrow-down-circle"></i> 做空持仓 <span class="card-sub" id="short-pnl-info"></span></div>
-    <div class="table-wrapper">
-        <table>
-            <thead><tr>
-                <th>币种</th><th>入场价</th><th>现价</th>
-                <th class="sortable" data-sort="pnl_pct">盈亏%</th>
-                <th class="sortable" data-sort="pnl_u">盈亏U</th>
-                <th class="sortable" data-sort="hold_time">持仓</th>
-                <th>状态</th>
-            </tr></thead>
-            <tbody id="short-trades"></tbody>
-        </table>
-    </div>
-    <div class="card-sub" id="short-empty" style="padding:16px;text-align:center;display:none;">暂无做空持仓</div>
-</div>
-
-<!-- 做多持仓 (Pre-Pump Sniffer) -->
-<div class="card" id="long-positions-table" data-direction="LONG" style="margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="arrow-up-circle"></i> 做多持仓 <span class="card-sub" id="long-pnl-info"></span></div>
-    <div class="table-wrapper">
-        <table>
-            <thead><tr>
-                <th>币种</th><th>入场价</th><th>现价</th>
-                <th class="sortable" data-sort="pnl_pct">盈亏%</th>
-                <th class="sortable" data-sort="pnl_u">盈亏U</th>
-                <th class="sortable" data-sort="hold_time">持仓</th>
-                <th>状态</th>
-            </tr></thead>
-            <tbody id="long-trades"></tbody>
-        </table>
-    </div>
-    <div class="card-sub" id="long-empty" style="padding:16px;text-align:center;display:none;">暂无做多持仓</div>
-</div>
-
-<div class="grid grid-2">
-    <!-- 风控 -->
-    <div class="card">
-        <div class="section-title"><i data-lucide="shield"></i> 风险控制 <span class="sparkline-container"><canvas id="risk-sparkline" width="100" height="24"></canvas></span></div>
-        <div id="risk-content"></div>
-    </div>
-    <!-- 候选池（做空） -->
-    <div class="card">
-        <div class="section-title"><i data-lucide="scan"></i> 做空候选池</div>
-        <div id="funnel-container"></div>
-        <div class="table-wrapper">
-            <table>
-                <thead><tr><th>币种</th><th>RSI(日)</th><th>24h涨幅</th><th>OI</th><th>评分</th><th>状态</th></tr></thead>
-                <tbody id="candidates"></tbody>
-            </table>
+  <!-- Left Side: Main Trading Panels (span 8) -->
+  <div class="grid-col-8" style="display: flex; flex-direction: column; gap: 16px;">
+    
+    <!-- 4 Core Metric cards -->
+    <div class="stat-card-grid">
+      <div class="stat-card">
+        <div class="stat-label">
+          <i data-lucide="wallet" class="purple" style="width: 13px; height: 13px;"></i> 当前账户净值
         </div>
-        <div class="card-sub" id="cand-empty" style="padding:16px;text-align:center;display:none;">暂无候选</div>
+        <div class="stat-value" id="stat-balance">--.--- USDT</div>
+        <div class="stat-sub text-muted">
+          账户初始资金: <span id="stat-initial-balance" class="mono">--.-</span> USDT
+        </div>
+      </div>
+      
+      <div class="stat-card">
+        <div class="stat-label">
+          <i data-lucide="activity" class="blue" style="width: 13px; height: 13px;"></i> 杠杆倍率
+        </div>
+        <div class="stat-value" id="stat-leverage">--x</div>
+        <div class="stat-sub text-muted">
+          今日已开笔数: <span id="stat-daily-opened" class="mono" style="color:var(--text)">--</span>
+        </div>
+      </div>
+      
+      <div class="stat-card">
+        <div class="stat-label">
+          <i data-lucide="bar-chart-3" style="width: 13px; height: 13px;"></i> 今日收益率/PnL
+        </div>
+        <div class="stat-value" id="stat-today-pnl">--.---</div>
+        <div class="stat-sub" id="stat-today-pnl-trend">--</div>
+      </div>
+      
+      <div class="stat-card">
+        <div class="stat-label">
+          <i data-lucide="award" class="yellow" style="width: 13px; height: 13px;"></i> 累计盈亏 / 胜率
+        </div>
+        <div class="stat-value" id="stat-total-pnl">--.---</div>
+        <div class="stat-sub" id="stat-win-rate">
+          胜率: --% | 笔数: --
+        </div>
+      </div>
     </div>
-</div>
 
-<!-- 做多候选池 (Pre-Pump Sniffer) -->
-<div class="card" style="margin-top:16px;margin-bottom:16px;">
-    <div class="section-title"><i data-lucide="radar"></i> 做多嗅探池 <span class="card-sub">Pre-Pump Sniffer</span></div>
-    <div class="table-wrapper">
-        <table>
-            <thead><tr><th>币种</th><th>现价</th><th>异常维度</th><th>评分</th><th>成交量倍数</th><th>状态</th></tr></thead>
-            <tbody id="long-candidates"></tbody>
-        </table>
+    <!-- Active Positions / Tab & Filtration Controls -->
+    <div class="card">
+      <div class="card-header" style="padding: 8px 16px;">
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div class="card-title">
+            <i data-lucide="clipboard-list" class="purple" style="width: 16px; height: 16px;"></i> 影子/实盘持仓终端
+          </div>
+          <div class="btn-toggle-group" id="positions-filter-tabs">
+            <button class="btn-toggle active" data-filter="all">全部持仓</button>
+            <button class="btn-toggle" data-filter="shadow">仅看做空(影子)</button>
+            <button class="btn-toggle" data-filter="live">仅看做多(实盘)</button>
+          </div>
+        </div>
+        <span class="badge badge-purple" id="positions-count-badge">0 当前仓位</span>
+      </div>
+      
+      <div class="card-body" style="padding: 0;">
+        <!-- 做空持仓表 (Short Positions) -->
+        <div style="padding: 12px; border-bottom: 1px solid var(--border);" id="short-positions-container">
+          <div style="font-size: 11px; font-weight:700; color:var(--red); display:flex; align-items:center; gap:6px; margin-bottom:8px;" class="mono">
+            <span style="display:inline-block; width: 6px; height:6px; border-radius:50%; background-color: var(--red);"></span> SHORT POSITIONS (SHADOW SYSTEM RUNNING)
+          </div>
+          <div class="table-responsive">
+            <table class="table" id="short-positions-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="symbol">币种</th>
+                  <th class="sortable" data-sort="pnl_pct">杠杆盈亏</th>
+                  <th class="sortable" data-sort="current_price">买入/现价</th>
+                  <th>当前等效本金</th>
+                  <th>止盈 (TP1/TP2) 进度</th>
+                  <th>止损触发位 (SL)</th>
+                  <th>保护单 / AI ID</th>
+                </tr>
+              </thead>
+              <tbody id="short-positions-tbody">
+                <!-- PositionTable rendered here -->
+              </tbody>
+            </table>
+            <div id="short-positions-empty" class="empty-state">
+              <i data-lucide="inbox" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
+              <span>暂无做空持仓 (空头保护中)</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 做多持仓表 (Long Positions - Hidden if empty style dynamically) -->
+        <div style="padding: 12px;" id="long-positions-container">
+          <div style="font-size: 11px; font-weight:700; color:var(--green); display:flex; align-items:center; gap:6px; margin-bottom:8px;" class="mono">
+            <span style="display:inline-block; width: 6px; height:6px; border-radius:50%; background-color: var(--green);"></span> LONG POSITIONS (SPOT REAL-MARKET TRACKING)
+          </div>
+          <div class="table-responsive">
+            <table class="table" id="long-positions-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="symbol">币种</th>
+                  <th class="sortable" data-sort="pnl_pct">杠杆盈亏</th>
+                  <th class="sortable" data-sort="current_price">买入/现价</th>
+                  <th>当前等效本金</th>
+                  <th>止盈 (TP1/TP2) 进度</th>
+                  <th>止损触发位 (SL)</th>
+                  <th>保护单 / AI ID</th>
+                </tr>
+              </thead>
+              <tbody id="long-positions-tbody">
+                <!-- PositionTable rendered here -->
+              </tbody>
+            </table>
+            <div id="long-positions-empty" class="empty-state">
+              <i data-lucide="inbox" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
+              <span>暂无做多持仓 (多头未进场)</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="card-sub" id="long-cand-empty" style="padding:16px;text-align:center;display:none;">暂无做多嗅探信号</div>
-</div>
-</div>
 
-<!-- 盈亏曲线 -->
-<div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="activity"></i> 盈亏走势</div>
-    <div class="chart-controls">
-        <button class="chart-range-btn" data-range="7d">近7天</button>
-        <button class="chart-range-btn" data-range="30d">近30天</button>
-        <button class="chart-range-btn active" data-range="all">全部</button>
-        <span style="margin-left:auto;font-size:0.68rem;color:var(--text-muted);">累计 &bull; 每日</span>
+    <!-- PnL Charts Section -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="line-chart" class="purple" style="width: 16px; height: 16px;"></i> PnL 历史走势曲线
+        </div>
+        <div class="btn-toggle-group" id="pnl-timerange-toggle">
+          <button class="btn-toggle active" id="pnl-tf-7d">7天</button>
+          <button class="btn-toggle" id="pnl-tf-30d">30天</button>
+          <button class="btn-toggle" id="pnl-tf-all">全部历史</button>
+        </div>
+      </div>
+      <div class="card-body col-gap-16" style="display: flex; gap: 16px; flex-wrap: wrap;">
+        
+        <!-- Main PnL chart (Canvas basis) -->
+        <div class="chart-container-relative" style="flex: 1; min-width: 320px;">
+          <div style="font-size: 11px; color: var(--text-muted); font-weight:600; margin-bottom: 6px; text-transform:uppercase;">每日及累计收益趋势</div>
+          <canvas id="pnl-chart-canvas" width="480" height="240" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
+          <div id="pnl-chart-tooltip" class="chart-tooltip"></div>
+        </div>
+        
+        <!-- Shadow vs Real-world Comparison PnL chart -->
+        <div class="chart-container-relative" style="flex: 1; min-width: 320px;">
+          <div style="font-size: 11px; color: var(--text-muted); font-weight:600; margin-bottom: 6px; text-transform:uppercase;">影子 vs 实盘对照走势</div>
+          <canvas id="compare-chart-canvas" width="480" height="240" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background-color: var(--bg-elevated);"></canvas>
+          <div id="compare-chart-tooltip" class="chart-tooltip"></div>
+        </div>
+        
+      </div>
     </div>
-    <div style="height:240px;position:relative;">
-        <canvas id="pnl-chart"></canvas>
-        <div class="chart-tooltip" id="chart-tooltip"></div>
-    </div>
-</div>
 
-<!-- 影子 vs 实盘对比 -->
-<div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="git-compare"></i> 影子 vs 实盘</div>
-    <div id="compare-summary" style="margin-bottom:10px;font-size:0.78rem;"></div>
-    <div style="height:240px;position:relative;">
-        <canvas id="compare-chart"></canvas>
-        <div class="chart-tooltip" id="compare-tooltip"></div>
+    <!-- Recent Completed / Closed Positions list -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="history" class="text-secondary" style="width: 16px; height: 16px;"></i> 近期平仓历史 (已实现对冲盈亏)
+        </div>
+        <span class="text-muted" style="font-size: 11px;">合并排序展示最近平仓清单</span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>币种/方向</th>
+                <th>仓位本金</th>
+                <th>杠杆</th>
+                <th>买入 -> 卖出价</th>
+                <th>实现盈亏 (%)</th>
+                <th>保护机制终态</th>
+                <th>平仓时间</th>
+              </tr>
+            </thead>
+            <tbody id="closed-positions-tbody">
+              <!-- Dynamically injected -->
+            </tbody>
+          </table>
+          <div id="closed-positions-empty" class="empty-state">
+            <i data-lucide="history" style="width: 24px; height: 24px;" class="empty-state-icon"></i>
+            <span>暂无平仓历史记录</span>
+          </div>
+        </div>
+      </div>
     </div>
-    <div style="margin-top:8px;font-size:0.68rem;color:var(--text-muted);display:flex;gap:16px;">
-        <span style="color:var(--yellow);">&#9679; 影子</span>
-        <span style="color:var(--green);">&#9679; 实盘</span>
-    </div>
-</div>
 
-<!-- 已平仓交易 -->
-<div class="card" style="margin-top:16px;">
-    <div class="section-title"><i data-lucide="check-circle"></i> 近期平仓</div>
-    <div class="table-wrapper">
-        <table>
-            <thead><tr><th>币种</th><th>方向</th><th>入场价</th><th>平仓价</th><th>盈亏</th><th>原因</th><th>时间</th></tr></thead>
-            <tbody id="closed-trades"></tbody>
-        </table>
+  </div>
+
+  <!-- Right Side: Analytics, candidates pool (span 4) -->
+  <div class="grid-col-4" style="display: flex; flex-direction: column; gap: 16px;">
+    
+    <!-- Max Cap Stack Utilization Status -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="pie-chart" class="purple" style="width: 16px; height: 16px;"></i> 资金与持仓限额占用
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="flex-between" style="font-weight: 500; font-size: 13px; margin-bottom: 6px;">
+          <span>当前总占用额度 (<span id="pool-used-amount">--</span> U)</span>
+          <span class="mono" style="font-weight:700;"><span id="pool-used-pct">--</span>%</span>
+        </div>
+        
+        <div class="progress-container" style="height: 10px; margin-bottom: 12px; border-radius: 5px;">
+          <div class="progress-bar" id="pool-pct-bar" style="width: 0%; transform-origin: left; transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1); background: linear-gradient(90deg, var(--blue) 0%, var(--purple) 100%);"></div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+          <div style="background-color: var(--bg-elevated); padding: 8px; border-radius: 6px;">
+            <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">做空已占额度</div>
+            <div class="mono" style="font-size: 13px; font-weight:700; color: var(--red); margin-top:2px;" id="pool-short">-- USDT</div>
+          </div>
+          <div style="background-color: var(--bg-elevated); padding: 8px; border-radius: 6px;">
+            <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">做多已占额度</div>
+            <div class="mono" style="font-size: 13px; font-weight:700; color: var(--green); margin-top:2px;" id="pool-long">-- USDT</div>
+          </div>
+        </div>
+
+        <div class="flex-between" style="font-size: 11px; color: var(--text-muted); margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px;">
+          <span>系统持仓限额上限:</span>
+          <span class="mono" id="pool-max">-- USDT</span>
+        </div>
+        <div class="flex-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+          <span>可用空闭闲余资金:</span>
+          <span class="mono" id="pool-available">-- USDT</span>
+        </div>
+        <div class="flex-between" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+          <span>Compound 复合等效仓位:</span>
+          <span class="mono" id="pool-compound" style="color:var(--text)">-- USDT</span>
+        </div>
+      </div>
     </div>
+
+    <!-- Active Risk Monitors with History Sparkline Line -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="shield-check" class="yellow" style="width: 16px; height: 16px;"></i> 风控引擎防线监视器
+        </div>
+        <div id="risk-paused-status">
+          <span class="badge badge-green">风控运行中</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <!-- Daily Loss Progress -->
+        <div style="margin-bottom: 12px;">
+          <div class="flex-between" style="font-size: 11px; margin-bottom: 4px;">
+            <span class="text-secondary">当日已损净亏 (Max: <span id="risk-max-loss">--</span> U)</span>
+            <span class="mono" id="risk-daily-loss" style="font-weight: 700;">--.--- U</span>
+          </div>
+          <div class="progress-container" style="height: 6px; border-radius: 3px;">
+            <div class="progress-bar" id="risk-loss-pct-bar" style="width: 0%; background-color: var(--red);"></div>
+          </div>
+        </div>
+
+        <div class="flex-between" style="font-size: 11px; margin-bottom: 12px;">
+          <span class="text-secondary">系统连续止损触爆次数 (Consecutive):</span>
+          <span class="badge badge-red" id="risk-consecutive-losses">-- / 3</span>
+        </div>
+
+        <!-- Sparkline visualization with self-canvas -->
+        <div style="border-top: 1px dashed var(--border); padding-top: 10px;">
+          <div class="flex-between" style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
+            <span>当日风控活跃度趋势 (Sparkline)</span>
+            <span class="mono" style="font-size: 10px;">近7周期采样</span>
+          </div>
+          <canvas id="risk-sparkline-canvas" width="280" height="40" style="display: block; width: 100%; border: 1px solid var(--border); border-radius: 4px; background-color: var(--bg-elevated);"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Execution and Reconciliation successes rate (15s poll) -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="check-square" class="blue" style="width: 16px; height: 16px;"></i> 执行与充提轧差轧核
+        </div>
+        <span class="text-muted" style="font-size: 10px;">(15s 轮询监测)</span>
+      </div>
+      <div class="card-body">
+        <div class="execution-summary" style="margin-bottom: 12px;">
+          <div class="execution-circle" style="border: 2px solid var(--success); border-radius: 50%; width: 42px; height: 42px;">
+            <span class="mono" style="font-weight: 700; color: var(--success); font-size: 11px;" id="execution-rate">100%</span>
+          </div>
+          <div>
+            <div style="font-size: 12px; font-weight: 600;">交易及算法对接执行链</div>
+            <div style="font-size: 11px; color: var(--text-muted);">
+              对接执行率保持卓越 成功对账数: <span id="execution-success" class="mono" style="color:var(--text);">--</span>
+            </div>
+          </div>
+        </div>
+        
+        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">异常失败记录 / 对冲差异:</div>
+        <div style="background-color: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; max-height: 80px; overflow-y: auto;" id="execution-failed-list">
+          <!-- Populated dynamically -->
+          <div class="text-muted text-center" style="font-size: 10px; text-align: center; padding: 8px 0;">
+            <i data-lucide="check" style="width: 12px; height:12px; color: var(--success); display:inline-block; vertical-align: middle; margin-right:4px;"></i> 轧核极速 暂无异常套期轧差
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Short Candidates pool with funnel chart -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <i data-lucide="funnel" class="red" style="width: 16px; height: 16px;"></i> 做空候选监控池 & 漏斗
+        </div>
+        <span class="badge badge-red" id="candidates-count">0 symbols</span>
+      </div>
+      <div class="card-body">
+        
+        <!-- Interactive Funnel rendering container -->
+        <div id="funnel-container" class="funnel-visualization">
+          <!-- Funnel bars rendered by funnel.js -->
+        </div>
+
+        <div class="table-responsive">
+          <table class="table" style="font-size: 11px;">
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>RSI(1D)</th>
+                <th>24H涨幅</th>
+                <th>OI 变化</th>
+                <th>YAO得分</th>
+              </tr>
+            </thead>
+            <tbody id="candidates-tbody">
+              <!-- Rendered by funnel.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sniffer Candlesticks Pool (Long Candidates) -->
+    <div class="card" id="long-candidates-card" style="display: none;">
+      <div class="card-header" style="border-color: rgba(34, 197, 94, 0.15)">
+        <div class="card-title" style="color: var(--green);">
+          <i data-lucide="radar" class="green" style="width: 16px; height: 16px;"></i> 做多嗅探及突破雷达
+        </div>
+        <span class="badge badge-green" id="long-candidates-count">0 symbols</span>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table" style="font-size: 11px;">
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>市价</th>
+                <th>异常得分</th>
+                <th>VOL比</th>
+                <th>指标事件</th>
+              </tr>
+            </thead>
+            <tbody id="long-candidates-tbody">
+              <!-- Injected dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script defer src="{{ url_for('static', filename='js/chart.js') }}"></script>
-<script defer src="{{ url_for('static', filename='js/positions.js') }}?v=20260521b"></script>
-<script defer src="{{ url_for('static', filename='js/binance-ws.js') }}"></script>
-<script defer src="{{ url_for('static', filename='js/funnel.js') }}"></script>
-<script defer src="{{ url_for('static', filename='js/compare.js') }}"></script>
+<script src="{{ url_for('static', filename='js/positions.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+<script src="{{ url_for('static', filename='js/chart.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+<script src="{{ url_for('static', filename='js/compare.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+<script src="{{ url_for('static', filename='js/funnel.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+<script src="{{ url_for('static', filename='js/binance-ws.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+
 <script>
-// 整段逻辑放在 DOMContentLoaded handler 里。
-// 上面的 chart.js / socket.io.min.js / binance-ws.js 等都是 defer 加载（HTML 解析完才执行），
-// 如果这里直接 const socket = io(); 会抢在 socket.io.min.js 之前跑 → ReferenceError。
-//
-// 注意：HTML 规范规定 inline <script> 上的 defer 属性是无效的（W3C: "must not be used
-// if the src attribute is absent"），所以不能用 <script defer> 来排队 inline 脚本。
-// 用 DOMContentLoaded 等所有 defer 链都跑完后再执行才是正解。
-document.addEventListener('DOMContentLoaded', function () {
-const socket = io();
-let lastDashboardData = null;
-let currentMode = 'live';
-// 前端视图当前选中的账户（仅影响前端展示，不改后台活跃账户）
-const _urlAccountId = new URLSearchParams(window.location.search).get('account_id');
-let selectedAccountId = _urlAccountId || localStorage.getItem('dashboard-selected-account') || null;
-let accountsCache = [];  // 缓存账户列表，用于渲染高亮
-let pnlRefreshTimer = null;
+  document.addEventListener("DOMContentLoaded", () => {
+    console.log("Altcoin Shadow System Dashboard connecting telemetry...");
 
-// ── 模式筛选 ──
-function initModeFilter() {
-    document.querySelectorAll('#mode-filter .filter-tab').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('#mode-filter .filter-tab').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentMode = btn.dataset.mode;
-            if (lastDashboardData) updateDashboard(lastDashboardData);
-        });
-    });
-}
-function filterTradesByMode(trades, mode) {
-    if (mode === 'all') return trades;
-    if (mode === 'shadow') return trades.filter(t => (t.exchange || 'shadow') === 'shadow');
-    if (mode === 'live') return trades.filter(t => (t.exchange || 'shadow') !== 'shadow');
-    return trades;
-}
-function updateModeSummary(data) {
-    const allTrades = [...(data.short_trades?.open || []), ...(data.short_trades?.closed || []),
-                       ...(data.long_trades?.open || []), ...(data.long_trades?.closed || [])];
-    const shadowCount = allTrades.filter(t => (t.exchange || 'shadow') === 'shadow').length;
-    const liveCount = allTrades.filter(t => (t.exchange || 'shadow') !== 'shadow').length;
-    const el = document.getElementById('mode-summary');
-    if (!el) return;
-    if (currentMode === 'all') el.innerHTML = `显示全部 | 影子: ${shadowCount} 笔 | 实盘: ${liveCount} 笔`;
-    else if (currentMode === 'shadow') el.innerHTML = `仅影子交易（${shadowCount} 笔）`;
-    else el.innerHTML = `仅实盘交易（${liveCount} 笔）`;
-}
-
-
-async function fetchExecutionMetrics() {
-    try {
-        const qs = selectedAccountId ? ('?account_id=' + encodeURIComponent(selectedAccountId)) : '';
-        const windowQs = (qs ? qs + '&' : '?') + 'minutes=60';
-        const resp = await fetch('/api/metrics/execution' + windowQs);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        renderExecutionMetrics(data);
-    } catch (e) {
-        console.warn('[执行指标] 获取失败:', e);
-    }
-}
-
-function renderExecutionMetrics(data) {
-    const o = data.open_orders || {};
-    const c = data.close_orders || {};
-    const r = data.reconcile || {};
-    const openRate = Number(o.success_rate || 0);
-    const closeRate = Number(c.success_rate || 0);
-
-    const elOpen = document.getElementById('exec-open-rate');
-    const elClose = document.getElementById('exec-close-rate');
-    const elOpenFail = document.getElementById('exec-open-failed');
-    const elDiff = document.getElementById('exec-reconcile-diff');
-    if (!elOpen || !elClose || !elOpenFail || !elDiff) return;
-
-    elOpen.textContent = openRate.toFixed(1) + '%';
-    elOpen.className = openRate >= 95 ? 'green' : (openRate >= 85 ? 'yellow' : 'red');
-
-    elClose.textContent = closeRate.toFixed(1) + '%';
-    elClose.className = closeRate >= 95 ? 'green' : (closeRate >= 85 ? 'yellow' : 'red');
-
-    elOpenFail.textContent = String(o.failed || 0);
-    elOpenFail.className = (o.failed || 0) > 0 ? 'red' : 'green';
-
-    elDiff.textContent = String(r.diff_events || 0);
-    elDiff.className = (r.diff_events || 0) > 0 ? 'yellow' : 'green';
-
-    const recent = data.recent_errors || [];
-    const errEl = document.getElementById('exec-recent-errors');
-    if (!errEl) return;
-    if (!recent.length) {
-        errEl.textContent = '最近60分钟无执行失败事件';
-        return;
-    }
-    errEl.innerHTML = '最近失败: ' + recent.slice(0, 3).map(e => {
-        const sym = e.symbol || '--';
-        const ex = e.exchange || '--';
-        const msg = (e.error || '').slice(0, 60);
-        return `[${ex}] ${sym}: ${msg}`;
-    }).join(' | ');
-}
-
-function updateDashboard(data) {
-    lastDashboardData = data;
-    const ts = data.timestamp ? data.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : '--';
-    const accSuffix = selectedAccountId ? ` · 查看账户 ${shortAccountLabel(selectedAccountId)}` : '';
-    document.getElementById('timestamp').textContent = `已更新: ${ts}${accSuffix}`;
-
-    const a = data.account;
-    const todayTotal = a.today_pnl + (data.funding?.today_pnl || 0);
-    document.getElementById('today-pnl').innerHTML = App.fmtPnl(todayTotal);
-    document.getElementById('today-pnl').className = 'metric-value ' + App.pnlColor(todayTotal);
-    document.getElementById('today-trend').innerHTML = App.trendLabel(todayTotal, data.yesterday_pnl);
-
-    const totalAll = a.total_pnl + (data.funding?.total_pnl || 0);
-    document.getElementById('total-pnl').innerHTML = App.fmtPnl(totalAll);
-    document.getElementById('total-pnl').className = 'metric-value ' + App.pnlColor(totalAll);
-    document.getElementById('total-trades').textContent = a.total_trades;
-    document.getElementById('roi-label').innerHTML = App.roiLabel(totalAll, a.initial_balance);
-
-    document.getElementById('balance').innerHTML = `${a.balance}U`;
-    document.getElementById('balance').className = 'metric-value ' + (a.balance >= a.initial_balance ? 'green' : 'red');
-    document.getElementById('leverage-info').textContent = `${a.leverage}x | 复利: ${data.pool?.compound_stake || '--'}U`;
-
-    document.getElementById('win-rate').textContent = a.win_rate + '%';
-    document.getElementById('win-rate').className = 'metric-value ' + (a.win_rate >= 50 ? 'green' : 'yellow');
-
-    // 仓位占用
-    const pool = data.pool || {};
-    const usedPct = pool.used_pct || 0;
-    const availPct = Math.max(0, 100 - usedPct);
-    const poolBarColor = usedPct > 80 ? 'var(--red)' : usedPct > 50 ? 'var(--yellow)' : 'var(--green)';
-    document.getElementById('pool-bar').innerHTML = `
-        <div class="pool-segment" style="width:${usedPct}%;background:${poolBarColor};">${usedPct.toFixed(0)}% 已用</div>
-        <div class="pool-segment" style="width:${availPct}%;background:var(--bg-elevated);color:var(--text-muted);">${availPct.toFixed(0)}% 可用</div>
-    `;
-    document.getElementById('pool-details').innerHTML = `
-        <div><span class="card-sub">最大仓位</span><div style="font-weight:600;">${pool.max_position||0}U</div></div>
-        <div><span class="card-sub">做空占用</span><div style="font-weight:600;">${pool.short_used||0}U</div></div>
-        <div><span class="card-sub">做多占用</span><div style="font-weight:600;">${pool.long_used||0}U</div></div>
-        <div><span class="card-sub">剩余可用</span><div style="font-weight:600;">${pool.available||0}U</div></div>
-    `;
-
-    // 做空持仓（按模式筛选）
-    const st = data.short_trades || {};
-    const filteredOpen = filterTradesByMode(st.open || [], currentMode);
-    document.getElementById('short-pnl-info').innerHTML = `今日 ${App.fmtPnl(st.today_pnl||0)} | 累计 ${App.fmtPnl(st.total_pnl||0)}`;
-    PositionTable.render(filteredOpen, 'short-trades', 'short-empty', 'SHORT', data.config);
-    updateModeSummary(data);
-
-    // 做多持仓（按模式筛选）
-    const lt = data.long_trades || {};
-    const filteredLongOpen = filterTradesByMode(lt.open || [], currentMode);
-    document.getElementById('long-pnl-info').innerHTML = `今日 ${App.fmtPnl(lt.today_pnl||0)} | 累计 ${App.fmtPnl(lt.total_pnl||0)}`;
-    PositionTable.render(filteredLongOpen, 'long-trades', 'long-empty', 'LONG', data.config);
-    // 如果没有做多持仓，隐藏整个卡片以节省空间
-    const longCard = document.getElementById('long-positions-table');
-    if (longCard) longCard.style.display = (filteredLongOpen.length === 0 && (lt.closed||[]).length === 0) ? 'none' : '';
-
-    // 风控
-    const risk = data.risk || {};
-    const cfg = data.config || {};
-    const accountIdLabel = data.account_id ? `当前账户: ${data.account_id}` : '当前账户: --';
-    const dailyLoss = risk.daily_loss || 0;
-    const dailyMax = Number(cfg.max_daily_loss || 30);
-    const dailyPct = Math.min(dailyLoss / dailyMax * 100, 100);
-    const trades_opened = risk.daily_trades_opened || 0;
-    const maxTrades = cfg.max_daily_trades || 2;
-    const paused = risk.paused_until ? true : false;
-    let statusBadge = '<span class="badge badge-ok">正常</span>';
-    if (paused) statusBadge = '<span class="badge badge-stop">已暂停</span>';
-    else if (dailyLoss >= dailyMax) statusBadge = '<span class="badge badge-stop">已停止</span>';
-    else if (dailyLoss >= dailyMax * 0.7) statusBadge = '<span class="badge badge-warn">预警</span>';
-    const barColor = dailyPct > 80 ? 'var(--red)' : dailyPct > 50 ? 'var(--yellow)' : 'var(--green)';
-    document.getElementById('risk-content').innerHTML = `
-        <div style="margin-bottom:14px;">${statusBadge}</div>
-        <div style="margin-bottom:8px;font-size:0.72rem;color:var(--text-muted);">${accountIdLabel}</div>
-        <div style="margin-bottom:10px;font-size:0.8rem;">日亏损: ${dailyLoss.toFixed(1)} / ${dailyMax}U
-            <div class="risk-bar"><div class="risk-bar-fill" style="width:${dailyPct}%;background:${barColor}"></div></div></div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">今日开仓: ${trades_opened} / ${maxTrades} 笔</div>
-        <div style="margin-bottom:8px;font-size:0.8rem;">连续亏损: ${risk.consecutive_losses || 0} / 3 次</div>
-        ${paused ? '<div class="red" style="font-size:0.78rem;">暂停至: ' + (risk.paused_until||'').slice(0,16) + ' UTC</div>' : ''}
-        ${data.risk_last_pause ? '<div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">上次暂停: ' + App.formatTime(data.risk_last_pause) + '</div>' : ''}`;
-
-    if (data.risk_history && data.risk_history.length > 0) drawSparkline('risk-sparkline', data.risk_history, 100, 24);
-
-    // 候选池
-    const candTbody = document.getElementById('candidates');
-    const candEmpty = document.getElementById('cand-empty');
-    if (!data.candidates || data.candidates.length === 0) {
-        candTbody.innerHTML = ''; candEmpty.style.display = 'block';
-    } else {
-        candEmpty.style.display = 'none';
-        candTbody.innerHTML = data.candidates.slice(0, 12).map(c => {
-            const badge = c.triggered ? '<span class="badge badge-closed">已触发</span>' : '<span class="badge badge-open">等待中</span>';
-            return `<tr><td><b>${c.symbol}</b></td><td>${c.rsi_1d}</td><td>${App.fmtPct(c.pct24h)}</td>
-                <td>${(c.oi_change||0).toFixed(0)}%</td><td>${c.yao_score}/3</td><td>${badge}</td></tr>`;
-        }).join('');
-    }
-    CandidateFunnel.render(data.candidates);
-
-    // 做多候选池 (Pre-Pump Sniffer)
-    const longCandTbody = document.getElementById('long-candidates');
-    const longCandEmpty = document.getElementById('long-cand-empty');
-    const longCandCard = longCandTbody ? longCandTbody.closest('.card') : null;
-    const longCands = data.long_candidates || [];
-    if (!longCands || longCands.length === 0) {
-        if (longCandTbody) longCandTbody.innerHTML = '';
-        if (longCandEmpty) longCandEmpty.style.display = 'block';
-        if (longCandCard) longCandCard.style.display = 'none';
-    } else {
-        if (longCandEmpty) longCandEmpty.style.display = 'none';
-        if (longCandCard) longCandCard.style.display = '';
-        longCandTbody.innerHTML = longCands.slice(0, 12).map(c => {
-            const badge = c.triggered
-                ? '<span class="badge badge-closed">已触发</span>'
-                : (c.breakout_ready ? '<span class="badge badge-warn">待突破</span>' : '<span class="badge badge-open">吸筹中</span>');
-            const volRatio = (c.vol_ratio || 0).toFixed(1);
-            const details = c.anomaly_details || c.details || '--';
-            const score = c.anomaly_score || c.score || 0;
-            return `<tr><td><b>${c.symbol}</b></td><td>${(c.price||0).toFixed(6)}</td>
-                <td style="font-size:0.72rem;">${details}</td>
-                <td>${score}/7</td><td>${volRatio}x</td><td>${badge}</td></tr>`;
-        }).join('');
+    let currentFilter = 'all';
+    let currentAccountID = 'acc_main';
+    
+    // 1. Initialize PnL trend layouts
+    if (window.PnlChart) {
+      PnlChart.init('pnl-chart-canvas', 'pnl-chart-tooltip');
     }
 
-    // 已平仓交易（按模式筛选，合并做空+做多）
-    const closedTbody = document.getElementById('closed-trades');
-    const allClosedMerged = [
-        ...filterTradesByMode(st.closed || [], currentMode),
-        ...filterTradesByMode(lt.closed || [], currentMode),
-    ].sort((a,b) => (b.closed_at||'').localeCompare(a.closed_at||'')).slice(0,15);
-    closedTbody.innerHTML = allClosedMerged.map(t => {
-        const pnl = (t.tp1_locked_pnl || 0) + (t.pnl || 0);
-        const modeTag = (t.exchange || 'shadow') === 'shadow'
-            ? '<span class="badge" style="background:var(--bg-elevated);font-size:0.6rem;">影子</span>'
-            : '<span class="badge badge-ok" style="font-size:0.6rem;">实盘</span>';
-        const oid = t.close_order_id || '';
-        const tp1oid = t.tp1_close_order_id || '';
-        const orderInfo = (tp1oid || oid)
-            ? `<div style="margin-top:4px;font-size:0.62rem;color:var(--text-muted);">${tp1oid ? `TP1#${String(tp1oid).slice(-6)}` : ''}${tp1oid && oid ? ' | ' : ''}${oid ? `CLS#${String(oid).slice(-6)}` : ''}</div>`
-            : '';
-        return `<tr><td><b>${t.symbol}</b> ${modeTag}</td><td>${t.direction === 'SHORT' ? '做空' : '做多'}</td><td>${(t.entry_price||0).toFixed(6)}</td>
-            <td>${(t.current_price||0).toFixed(6)}</td><td><b>${App.fmtPnl(pnl)}</b></td>
-            <td>${t.close_reason || '--'}${orderInfo}</td><td>${App.formatTime(t.closed_at)}</td></tr>`;
-    }).join('');
-}
+    if (window.CompareChart) {
+      CompareChart.init('compare-chart-canvas', 'compare-chart-tooltip');
+    }
 
-// SocketIO 推送：只处理与当前选中账户匹配的数据；
-// 如果选择了其他账户，就忽略推送，只用 REST 拉取（避免闪回）
-socket.on('update', function(data) {
-    if (selectedAccountId) {
-        // 用户已显式选择账户时，只接收该账户推送；account_id 缺失也忽略，避免被活跃账户数据覆盖。
-        if (!data.account_id || data.account_id !== selectedAccountId) {
-            return;
+    // Initialize Sortable Headers once
+    if (window.PositionTable) {
+      PositionTable.initSortHeaders('short-positions-container', 'short-positions-tbody', () => refreshTblRenders());
+      PositionTable.initSortHeaders('long-positions-container', 'long-positions-tbody', () => refreshTblRenders());
+    }
+
+    // Cache local reference of active datasets
+    let currentPayload = null;
+
+    // 2. Setup Socket.IO subscription
+    const socket = io();
+    
+    socket.on('update', (data) => {
+      if (!data) return;
+      currentPayload = data;
+      currentAccountID = data.account_id;
+
+      // Update Header connected clock / indicator
+      const clockEl = document.getElementById('connection-status');
+      if (clockEl) {
+        const h = String(new Date().getHours()).padStart(2, '0');
+        const m = String(new Date().getMinutes()).padStart(2, '0');
+        const s = String(new Date().getSeconds()).padStart(2, '0');
+        clockEl.innerHTML = `
+          <span style="display:inline-block; width:6px; height:6px; border-radius:50%; background-color: var(--success);"></span>
+          <span>LIVE - ${h}:${m}:${s} (TICK RECEIVED)</span>
+        `;
+      }
+
+      // 2.1 Update Core metrics Cards
+      const balanceEl = document.getElementById('stat-balance');
+      const initBalanceEl = document.getElementById('stat-initial-balance');
+      const leverageEl = document.getElementById('stat-leverage');
+      const openedEl = document.getElementById('stat-daily-opened');
+      const todayPnlEl = document.getElementById('stat-today-pnl');
+      const todayPnlTrend = document.getElementById('stat-today-pnl-trend');
+      const totalPnlEl = document.getElementById('stat-total-pnl');
+      const winRateEl = document.getElementById('stat-win-rate');
+
+      if (balanceEl) balanceEl.textContent = parseFloat(data.account.balance).toFixed(2) + ' USDT';
+      if (initBalanceEl) initBalanceEl.textContent = parseFloat(data.account.initial_balance).toFixed(1);
+      if (leverageEl) leverageEl.textContent = data.account.leverage + 'x';
+      if (openedEl) openedEl.textContent = data.risk.daily_trades_opened || 0;
+
+      if (todayPnlEl) {
+        todayPnlEl.innerHTML = window.App.fmtPnl(data.account.today_pnl);
+      }
+      if (todayPnlTrend) {
+        todayPnlTrend.innerHTML = window.App.trendLabel(data.account.today_pnl, data.yesterday_pnl);
+      }
+      if (totalPnlEl) {
+        totalPnlEl.innerHTML = window.App.fmtPnl(data.account.total_pnl);
+      }
+      if (winRateEl) {
+        winRateEl.innerHTML = `胜率: <span class="green font-bold">${data.account.win_rate.toFixed(1)}%</span> | 笔数: <span class="mono">${data.account.total_trades}</span>`;
+      }
+
+      // 2.2 Update Pool Utilization status
+      const poolUsedAmt = document.getElementById('pool-used-amount');
+      const poolUsedPct = document.getElementById('pool-used-pct');
+      const poolBar = document.getElementById('pool-pct-bar');
+      const poolShort = document.getElementById('pool-short');
+      const poolLong = document.getElementById('pool-long');
+      const poolMax = document.getElementById('pool-max');
+      const poolAvail = document.getElementById('pool-available');
+      const poolComp = document.getElementById('pool-compound');
+
+      if (poolUsedAmt) poolUsedAmt.textContent = parseFloat(data.pool.total_used).toFixed(1);
+      if (poolUsedPct) poolUsedPct.textContent = parseFloat(data.pool.used_pct).toFixed(0);
+      if (poolBar) poolBar.style.width = data.pool.used_pct + '%';
+      if (poolShort) poolShort.textContent = parseFloat(data.pool.short_used).toFixed(1) + ' USDT';
+      if (poolLong) poolLong.textContent = parseFloat(data.pool.long_used).toFixed(1) + ' USDT';
+      if (poolMax) poolMax.textContent = parseFloat(data.pool.max_position).toFixed(1) + ' USDT';
+      if (poolAvail) poolAvail.textContent = parseFloat(data.pool.available).toFixed(1) + ' USDT';
+      if (poolComp) poolComp.textContent = parseFloat(data.pool.compound_stake).toFixed(1) + ' USDT';
+
+      // 2.3 Update Wind-Risk defence Status
+      const riskMax = document.getElementById('risk-max-loss');
+      const riskLoss = document.getElementById('risk-daily-loss');
+      const riskBar = document.getElementById('risk-loss-pct-bar');
+      const riskConsec = document.getElementById('risk-consecutive-losses');
+      const riskStatus = document.getElementById('risk-paused-status');
+
+      if (riskMax) riskMax.textContent = data.config.max_daily_loss;
+      if (riskLoss) riskLoss.textContent = parseFloat(data.risk.daily_loss || 0).toFixed(2) + ' U';
+      
+      const lossPct = Math.min(100, (parseFloat(data.risk.daily_loss || 0) / parseFloat(data.config.max_daily_loss || 30)) * 100);
+      if (riskBar) riskBar.style.width = lossPct + '%';
+      
+      if (riskConsec) riskConsec.textContent = `${data.risk.consecutive_losses || 0} / 3`;
+
+      if (riskStatus) {
+        if (data.risk.paused_until) {
+          riskStatus.innerHTML = `<span class="badge badge-red">! 风控限制，锁盘至 ${window.App.formatTime(data.risk.paused_until)}</span>`;
+        } else {
+          riskStatus.innerHTML = `<span class="badge badge-green">风控雷达运行中</span>`;
         }
-    }
-    updateDashboard(data);
-    PnlChart.update(data.pnl_chart);
-    BinanceWS.lastData = data;
-    const symbols = new Set();
-    (data.short_trades?.open || []).forEach(t => symbols.add(t.symbol));
-    (data.long_trades?.open || []).forEach(t => symbols.add(t.symbol));
-    symbols.delete('');
-    BinanceWS.updateSymbols([...symbols]);
-});
-socket.on('connect', () => {
-    document.getElementById('timestamp').textContent = '已连接，等待数据...';
-    document.getElementById('connection-status').innerHTML = '<i data-lucide="wifi" style="width:14px;height:14px;color:var(--green);"></i>';
-    lucide.createIcons();
-});
-socket.on('disconnect', () => {
-    document.getElementById('timestamp').textContent = '已断开，正在重连...';
-    document.getElementById('connection-status').innerHTML = '<i data-lucide="wifi-off" style="width:14px;height:14px;color:var(--red);"></i>';
-    lucide.createIcons();
-});
+      }
 
-BinanceWS.onPriceUpdate = function(symbol, price) {
-    PositionTable.updatePrice(symbol, price, lastDashboardData);
-};
+      // Draw local risk sparkline
+      if (window.drawSparkline && data.risk_history) {
+        drawSparkline('risk-sparkline-canvas', data.risk_history, 280, 40);
+      }
 
-// 已经在外层 DOMContentLoaded handler 里，无需再嵌套监听（嵌套的话事件已触发，
-// 内层 listener 永远不会跑）。直接调用初始化函数。
-PnlChart.init('pnl-chart', 'chart-tooltip');
-CompareChart.init('compare-chart', 'compare-tooltip');
-initModeFilter();
-PositionTable.initSortHeaders('short-positions-table', 'short-trades', () => {
-    if (lastDashboardData) {
-        const filtered = filterTradesByMode(lastDashboardData.short_trades?.open || [], currentMode);
-        PositionTable.render(filtered, 'short-trades', 'short-empty', 'SHORT', lastDashboardData.config);
-    }
-});
-PositionTable.initSortHeaders('long-positions-table', 'long-trades', () => {
-    if (lastDashboardData) {
-        const filtered = filterTradesByMode(lastDashboardData.long_trades?.open || [], currentMode);
-        PositionTable.render(filtered, 'long-trades', 'long-empty', 'LONG', lastDashboardData.config);
-    }
-});
-// 获取多账户总览
-fetchAccountsOverview();
-fetchExecutionMetrics();
-setInterval(fetchAccountsOverview, 15000);
-setInterval(fetchExecutionMetrics, 15000);
-lucide.createIcons();
+      // 2.4 Render Positions tables with current sorting criteria
+      refreshTblRenders();
 
-// ── 账户卡片点击切换 ──
-function shortAccountLabel(id) {
-    const acc = accountsCache.find(a => a.id === id);
-    if (acc) return acc.name;
-    return id.length > 12 ? id.slice(0, 12) + '…' : id;
-}
+      // 2.5 Candidates list & Funnel visualization
+      if (window.CandidateFunnel) {
+        CandidateFunnel.render(data.candidates);
+      }
 
-function selectAccount(accountId) {
-    // 始终显式切换到该账户，不再通过二次点击回退到活跃账户（避免视图跳回 RN 造成误判）。
-    selectedAccountId = accountId;
-    localStorage.setItem('dashboard-selected-account', accountId);
-    const _u = new URL(window.location.href);
-    _u.searchParams.set('account_id', accountId);
-    window.history.replaceState({}, '', _u.toString());
-    // 更新卡片高亮
-    document.querySelectorAll('.account-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.accountId === selectedAccountId);
-    });
-    // 切换对比图
-    if (window.CompareChart && CompareChart.setAccount) {
-        CompareChart.setAccount(selectedAccountId);
-    }
-    // 立即拉一次数据，并开启/关闭定时刷新
-    refreshDashboardForSelection();
-    if (pnlRefreshTimer) { clearInterval(pnlRefreshTimer); pnlRefreshTimer = null; }
-    if (selectedAccountId) {
-        // 选了指定账户：走 REST 轮询（因为 socket 推送只针对后台活跃账户）
-        pnlRefreshTimer = setInterval(refreshDashboardForSelection, 10000);
-    }
-}
+      // 2.6 Sniffer list (Long candidates radar)
+      renderSnifferRadar(data.long_candidates);
 
-async function refreshDashboardForSelection() {
-    try {
-        const qs = selectedAccountId ? ('?account_id=' + encodeURIComponent(selectedAccountId)) : '';
-        const resp = await fetch('/api/data' + qs);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        updateDashboard(data);
-        fetchExecutionMetrics();
+      // 2.7 Recent Closed completed trades lists (Merged & sorted)
+      renderClosedTrades(data.short_trades.closed, data.long_trades.closed);
+
+      // 2.8 Standard update of PnL history charts
+      if (window.PnlChart) {
         PnlChart.update(data.pnl_chart);
-        BinanceWS.lastData = data;
-        const symbols = new Set();
-        (data.short_trades?.open || []).forEach(t => symbols.add(t.symbol));
-        (data.long_trades?.open || []).forEach(t => symbols.add(t.symbol));
-        symbols.delete('');
-        BinanceWS.updateSymbols([...symbols]);
-    } catch (e) {
-        console.warn('[账户切换] 拉取数据失败:', e);
-    }
-}
+      }
 
-// ── 多账户总览 ──
-async function fetchAccountsOverview() {
-    try {
-        const resp = await fetch('/api/accounts/overview');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        renderAccountsOverview(data);
-    } catch (e) {
-        console.warn('[账户总览] 获取失败:', e);
-    }
-}
+      // 2.9 Wire WebSocket streaming feed symbols
+      wireBinanceWS(data.short_trades.open, data.long_trades.open);
 
-function renderAccountsOverview(data) {
-    const container = document.getElementById('accounts-overview');
-    const card = document.getElementById('accounts-overview-card');
-    if (!container || !data.accounts || data.accounts.length === 0) {
+      // Load swappable accounts overview
+      loadAccountsOverview();
+    });
+
+    // Positions renderer trigger
+    function refreshTblRenders() {
+      if (!currentPayload) return;
+      
+      if (window.PositionTable) {
+        PositionTable.render(currentPayload.short_trades.open, 'short-positions-tbody', 'short-positions-empty', 'SHORT', currentPayload.config);
+        PositionTable.render(currentPayload.long_trades.open, 'long-positions-tbody', 'long-positions-empty', 'LONG', currentPayload.config);
+      }
+
+      // Filter container elements
+      const shortCont = document.getElementById('short-positions-container');
+      const longCont = document.getElementById('long-positions-container');
+      
+      const sOpenLength = currentPayload.short_trades.open ? currentPayload.short_trades.open.length : 0;
+      const lOpenLength = currentPayload.long_trades.open ? currentPayload.long_trades.open.length : 0;
+
+      const badgeCount = document.getElementById('positions-count-badge');
+      if (badgeCount) {
+        badgeCount.textContent = `${sOpenLength + lOpenLength} 个活跃仓位`;
+      }
+
+      // Hide or show tables visually depending on tabs filter state
+      if (currentFilter === 'shadow') {
+        if (shortCont) shortCont.style.display = 'block';
+        if (longCont) longCont.style.display = 'none';
+      } else if (currentFilter === 'live') {
+        if (shortCont) shortCont.style.display = 'none';
+        if (longCont) longCont.style.display = 'block';
+      } else {
+        // 'all' option
+        if (shortCont) shortCont.style.display = 'block';
+        // Long positions card hides completely only if no open long positions and filter is 'all'
+        if (longCont) {
+          if (lOpenLength === 0) {
+            longCont.style.display = 'none';
+          } else {
+            longCont.style.display = 'block';
+          }
+        }
+      }
+    }
+
+    // Long candidates list renderer
+    function renderSnifferRadar(longCandidates) {
+      const card = document.getElementById('long-candidates-card');
+      const tbody = document.getElementById('long-candidates-tbody');
+      const badge = document.getElementById('long-candidates-count');
+      
+      const list = longCandidates || [];
+
+      if (badge) badge.textContent = list.length + ' 个品种';
+
+      if (list.length === 0) {
         if (card) card.style.display = 'none';
         return;
-    }
-    accountsCache = data.accounts;
-    // 如果之前选的账户已被删除，自动清掉选择
-    if (selectedAccountId && !accountsCache.find(a => a.id === selectedAccountId)) {
-        selectedAccountId = null;
-        localStorage.removeItem('dashboard-selected-account');
-    }
-    if (card) card.style.display = '';
+      }
 
-    // 首次进入且用户没选过：默认跟随后台活跃账户
-    if (!selectedAccountId && data.active_account) {
-        // 注意：不持久化这个隐式选择，避免覆盖用户的主动选择
-        // 但要让 UI 上高亮当前活跃账户
+      if (card) card.style.display = 'block';
+      if (!tbody) return;
+
+      let html = '';
+      list.forEach(item => {
+        html += `
+          <tr>
+            <td class="font-bold mono">${item.symbol}</td>
+            <td class="mono font-bold">${parseFloat(item.price).toFixed(4)}</td>
+            <td class="mono"><span style="color:var(--yellow); font-weight:700;">Score: ${item.anomaly_score}</span></td>
+            <td class="mono text-muted">${parseFloat(item.vol_ratio).toFixed(1)}x Vol</td>
+            <td>
+              <span class="badge ${item.breakout_ready ? 'badge-purple' : 'badge-green'}">
+                ${item.anomaly_details || '突破雷达震感'}
+              </span>
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
     }
 
-    const colorClasses = ['acc-0', 'acc-1', 'acc-2'];
-    container.innerHTML = data.accounts.map((acc, idx) => {
-        const statusClass = acc.is_live ? 'live' : 'shadow';
-        const statusText = acc.is_live ? '实盘' : '影子';
-        const pnlClass = acc.total_pnl >= 0 ? 'green' : 'red';
-        const todayClass = acc.today_pnl >= 0 ? 'green' : 'red';
-        const activeClass = acc.is_active ? ' active' : '';
-        // 选中状态：用户显式选择 > 默认跟随后台活跃账户
-        const effectiveSelected = selectedAccountId || data.active_account;
-        const selectedClass = (acc.id === effectiveSelected) ? ' selected' : '';
-        const disabledClass = (acc.trading_enabled === false) ? ' trading-off' : '';
-        const disabledBadge = (acc.trading_enabled === false)
-            ? '<span class="account-card-status" style="background:var(--red-subtle);color:var(--red);margin-left:6px;"><span class="sync-dot stale" style="width:6px;height:6px;"></span> 已停用</span>'
-            : '';
-        return `
-        <div class="account-card${activeClass}${selectedClass}${disabledClass}"
-             data-account-id="${acc.id}"
-             role="button" tabindex="0"
-             title="点击查看此账户的详细数据${acc.trading_enabled === false ? '（该账户交易已停用）' : ''}">
-            <div class="account-card-header">
+    // Closed completed trades list helper
+    function renderClosedTrades(shorts, longs) {
+      const tbody = document.getElementById('closed-positions-tbody');
+      const emptyEl = document.getElementById('closed-positions-empty');
+      if (!tbody) return;
+
+      const merged = (shorts || []).concat(longs || []);
+      if (merged.length === 0) {
+        tbody.innerHTML = '';
+        if (emptyEl) emptyEl.style.display = 'flex';
+        return;
+      }
+
+      if (emptyEl) emptyEl.style.display = 'none';
+
+      // Sort by closed_at descending
+      merged.sort((a, b) => new Date(b.closed_at) - new Date(a.closed_at));
+
+      let html = '';
+      merged.slice(0, 8).forEach(item => {
+        const pnlCls = item.pnl >= 0 ? 'green' : 'red';
+        const pnlSign = item.pnl >= 0 ? '+' : '';
+        const isShort = item.direction === 'SHORT';
+
+        html += `
+          <tr>
+            <td class="font-bold mono">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <i data-lucide="${isShort ? 'arrow-down-left' : 'arrow-up-right'}" class="${isShort ? 'red' : 'green'}" style="width:12px; height:12px;"></i>
                 <div>
-                    <div class="account-card-name">
-                        <span class="account-badge ${colorClasses[idx % 3]}">${acc.name.charAt(0)}</span>
-                        ${acc.name}
-                    </div>
-                    <div class="account-card-id">${acc.id}</div>
+                  <span>${item.symbol}</span>
+                  <div style="font-size:9px;" class="badge ${isShort ? 'badge-red' : 'badge-green'}">${item.direction}</div>
                 </div>
-                <span style="display:inline-flex;align-items:center;">
-                    <span class="account-card-status ${statusClass}">
-                        <span class="sync-dot" style="width:6px;height:6px;"></span> ${statusText}
-                    </span>
-                    ${disabledBadge}
-                </span>
-            </div>
-            <div class="account-card-metrics">
-                <div class="account-metric">
-                    <div class="account-metric-label">持仓</div>
-                    <div class="account-metric-value">${acc.open_count}</div>
-                </div>
-                <div class="account-metric">
-                    <div class="account-metric-label">今日</div>
-                    <div class="account-metric-value ${todayClass}">${acc.today_pnl >= 0 ? '+' : ''}${acc.today_pnl.toFixed(2)}U</div>
-                </div>
-                <div class="account-metric">
-                    <div class="account-metric-label">累计</div>
-                    <div class="account-metric-value ${pnlClass}">${acc.total_pnl >= 0 ? '+' : ''}${acc.total_pnl.toFixed(2)}U</div>
-                </div>
-            </div>
-        </div>`;
-    }).join('');
+              </div>
+            </td>
+            <td class="mono">${item.stake} U</td>
+            <td class="mono">${item.leverage}x</td>
+            <td class="mono text-muted">
+              ${parseFloat(item.entry_price).toFixed(6)} → ${parseFloat(item.exit_price).toFixed(6)}
+            </td>
+            <td class="mono">
+              <div class="${pnlCls} font-bold">${pnlSign}${parseFloat(item.pnl).toFixed(2)} U</div>
+              <div style="font-size:10px;" class="text-muted">(${pnlSign}${parseFloat(item.pnl_pct).toFixed(1)}%)</div>
+            </td>
+            <td>
+              <span class="badge badge-purple">${item.protect_stage || '已回补了结'}</span>
+            </td>
+            <td class="mono text-muted" style="font-size:11px;">
+              ${window.App.formatTime(item.closed_at)}
+            </td>
+          </tr>
+        `;
+      });
 
-    // 绑定点击/键盘事件
-    container.querySelectorAll('.account-card').forEach(el => {
-        const id = el.dataset.accountId;
-        el.addEventListener('click', () => selectAccount(id));
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAccount(id); }
+      tbody.innerHTML = html;
+      if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+      }
+    }
+
+    // Setup active symbols mapping on Binance Websocket
+    function wireBinanceWS(shorts, longs) {
+      if (!window.BinanceWS) return;
+
+      const symbols = [];
+      const tradeLookup = {};
+
+      if (shorts) {
+        shorts.forEach(t => {
+          symbols.push(t.symbol);
+          tradeLookup[t.symbol] = t;
         });
+      }
+      if (longs) {
+        longs.forEach(t => {
+          if (!symbols.includes(t.symbol)) {
+            symbols.push(t.symbol);
+          }
+          tradeLookup[t.symbol] = t;
+        });
+      }
+
+      // Inject lookup reference cache
+      BinanceWS.lastData = tradeLookup;
+
+      // Define standard onPriceUpdate callback of ws pipeline
+      BinanceWS.onPriceUpdate = function(symbol, price) {
+        if (window.PositionTable) {
+          PositionTable.updatePrice(symbol, price, BinanceWS.lastData);
+        }
+      };
+
+      // Push subscriptions if symbols changed
+      const currentWSJson = JSON.stringify(BinanceWS.activeSymbols.sort());
+      const nextWSJson = JSON.stringify(symbols.sort());
+
+      if (currentWSJson !== nextWSJson) {
+        BinanceWS.updateSymbols(symbols);
+      }
+    }
+
+    // 3. Load swappable accounts overview
+    function loadAccountsOverview() {
+      fetch('/api/accounts/overview')
+        .then(res => res.json())
+        .then(data => {
+          // Backend returns {accounts: [...], active_account, total_accounts}
+          const list = data.accounts || data || [];
+          const grid = document.getElementById('accounts-overview-grid');
+          if (!grid) return;
+
+          if (list.length === 0) {
+            grid.innerHTML = '<div class="empty-state" style="padding: 10px; width: 100%;"><span>暂无多账户数据</span></div>';
+            return;
+          }
+
+          let html = '';
+          list.forEach(acc => {
+            const actClass = acc.is_active ? 'active' : '';
+            const pnlColor = acc.today_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            const sign = acc.today_pnl >= 0 ? '+' : '';
+
+            html += `
+              <div class="account-selector-card ${actClass}" onclick="switchActiveAccount('${acc.id}')">
+                <div class="flex-between" style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">
+                  <span>${acc.name}</span>
+                  <span class="badge ${acc.is_active ? 'badge-purple' : 'badge-blue'}">${acc.is_active ? 'ACTIVE' : 'STANDBY'}</span>
+                </div>
+                <div class="mono" style="font-size:18px; font-weight:700; margin-top:6px; color:var(--text)">${parseFloat(acc.total_pnl || 0).toFixed(2)} USDT</div>
+                <div style="font-size:11px; margin-top:4px;" class="text-secondary">
+                  今日收益: <span style="font-weight:700; color:${pnlColor};" class="mono">${sign}${(acc.today_pnl || 0).toFixed(2)} U</span>
+                  | 持仓: <span class="mono">${acc.open_count || 0}</span>
+                </div>
+              </div>
+            `;
+          });
+          grid.innerHTML = html;
+        })
+        .catch(err => console.error("Error fetching accounts overview:", err));
+    }
+
+    // Define window level account switcher helper
+    window.switchActiveAccount = function(accountId) {
+      if (accountId === currentAccountID) return;
+      currentAccountID = accountId;
+      
+      // Backend supports account_id query param on /api/data
+      fetch(`/api/data?account_id=${accountId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data) {
+            console.log("Account context swapped to:", accountId);
+            currentPayload = data;
+            
+            // Set account context on Compare Chart
+            if (window.CompareChart) {
+              CompareChart.setAccount(accountId);
+            }
+
+            // Update UI with new account data (simulate an 'update' event)
+            const updateEvent = new CustomEvent('dashboard-update', { detail: data });
+            document.dispatchEvent(updateEvent);
+            
+            // Trigger the same update logic as socket 'update' event
+            socket.emit('update', data);
+          }
+        })
+        .catch(err => console.error("Error switching account:", err));
+    };
+
+    // 4. Set up Positions Filtration Tabs clicks
+    const filterTabs = document.querySelectorAll('#positions-filter-tabs .btn-toggle');
+    filterTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        filterTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        
+        currentFilter = tab.getAttribute('data-filter');
+        refreshTblRenders();
+      });
     });
 
-    lucide.createIcons();
-}
-}); // end DOMContentLoaded handler
+    // 5. Polling for Execution成功率 metrics every 15s
+    function pollExecutionMetrics() {
+      fetch('/api/metrics/execution')
+        .then(res => res.json())
+        .then(metrics => {
+          const rateEl = document.getElementById('execution-rate');
+          const successEl = document.getElementById('execution-success');
+          
+          // Backend returns nested structure: {open_orders: {success_rate, filled}, close_orders: {...}}
+          const openRate = metrics.open_orders ? metrics.open_orders.success_rate : (metrics.success_rate || 100);
+          const totalFilled = metrics.open_orders ? metrics.open_orders.filled : (metrics.total_executed || 0);
+          
+          if (rateEl) rateEl.innerHTML = `${openRate}%`;
+          if (successEl) successEl.innerHTML = totalFilled;
+        })
+        .catch(err => console.error("Error polling execution metrics:", err));
+    }
+    
+    // Trigger on boot and then 15s interval
+    pollExecutionMetrics();
+    setInterval(pollExecutionMetrics, 15000);
+  });
 </script>
 {% endblock %}
