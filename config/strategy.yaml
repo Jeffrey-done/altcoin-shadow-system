@@ -63,3 +63,36 @@ short_overbought:
   position:
     default_stake: 30
     leverage: 10
+
+
+# ══════════════════════════════════════════════════════════════════
+#  宏观信号整合（multi-signal + Crypto-Market-Monitor）
+# ══════════════════════════════════════════════════════════════════
+macro:
+  enabled: true                        # 是否启用宏观信号过滤
+
+  # multi-signal 配置
+  ms_signal_path: ''                   # 留空则自动搜索常见路径
+  ms_stale_minutes: 120                # MS 数据超过此时间视为过期
+
+  # Crypto-Market-Monitor 配置
+  cmm_enabled: true                    # 是否启用 CMM 决策
+  cmm_output_path: ''                  # CMM 输出文件路径（留空则尝试直接调用）
+  cmm_stale_minutes: 30                # CMM 数据超过此时间视为过期
+
+  # 环境判断阈值
+  thresholds:
+    bullish_ms_score: 30               # MS ≥ 此值视为看多环境
+    extreme_bullish_ms_score: 60       # MS ≥ 此值视为极度看多（暂停做空）
+    bearish_ms_score: -30              # MS ≤ 此值视为看空环境（做空增强）
+    extreme_bearish_ms_score: -60      # MS ≤ 此值视为极度看空
+
+  # 仓位调节
+  bullish_stake_multiplier: 0.5        # 看多环境下做空仓位乘数
+  bearish_stake_multiplier: 1.2        # 看空环境下做空仓位乘数
+  bearish_score_bonus: 5               # 看空环境下信号加分
+  extreme_bearish_score_bonus: 10      # 极度看空环境下信号加分
+  smart_money_bonus: 5                 # Smart Money 看空时额外加分
+
+  # 缓存
+  cache_ttl_sec: 60                    # 宏观信号缓存时间

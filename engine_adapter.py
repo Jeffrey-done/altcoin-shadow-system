@@ -171,15 +171,24 @@ def run_confirm():
             logger.info("[新引擎] 候选池为空，跳过")
             return
 
-        # BTC 趋势过滤
-        btc_ticker = feed.get_ticker('BTC/USDT')
-        btc_pct = btc_ticker.get('percentage', 0) or 0
-        import config as cfg
-        if getattr(cfg, 'BTC_FILTER_ENABLED', True):
-            threshold = getattr(cfg, 'BTC_CRASH_THRESHOLD', -5.0)
-            if btc_pct <= threshold:
-                logger.warning(f"[新引擎] BTC 24h={btc_pct:.1f}% <= {threshold}%，暂停做空")
-                return
+        # ── 宏观信号过滤（替代原 BTC 趋势过滤）──
+        from macro.filter import check_macro_filter, get_macro_summary
+        macro_result = check_macro_filter()
+
+        if not macro_result.allowed:
+            logger.warning(f"[新引擎] 宏观过滤暂停做空: {macro_result.reason}")
+            from common import send_tg
+            send_tg(f"🚫 <b>宏观过滤：暂停做空</b>\n\n{macro_result.reason}")
+            return
+
+        # 宏观信号的仓位乘数和评分 bonus 会在下面信号循环中应用
+        _macro_stake_mult = macro_result.stake_multiplier
+        _macro_score_bonus = macro_result.score_bonus
+        if _macro_stake_mult != 1.0 or _macro_score_bonus != 0:
+            logger.info(
+                f"[新引擎] 宏观调节生效: stake×{_macro_stake_mult:.1f} "
+                f"score{_macro_score_bonus:+d} | {macro_result.reason}"
+            )
 
         # 策略确认
         signals = engine.run_confirm_cycle(candidates, feed)
@@ -219,6 +228,18 @@ def run_confirm():
                         f"  📊 Kelly 调整 {signal.symbol}: {signal.stake}U → {suggested}U"
                     )
                     signal.stake = suggested
+
+            # 3.5 宏观信号调节（仓位乘数 + 评分加减分）
+            if _macro_stake_mult != 1.0:
+                old_stake = signal.stake
+                signal.stake = round(signal.stake * _macro_stake_mult)
+                if signal.stake != old_stake:
+                    logger.info(
+                        f"  📡 宏观仓位调节 {signal.symbol}: "
+                        f"{old_stake}U → {signal.stake}U (×{_macro_stake_mult:.1f})"
+                    )
+            if _macro_score_bonus != 0:
+                signal.score = max(0, min(100, signal.score + _macro_score_bonus))
 
             # 4. 冷却期检查
             from risk_control import is_in_cooldown
