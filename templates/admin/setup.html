@@ -1,53 +1,213 @@
 {% extends "admin/_base.html" %}
 {% block title %}初始设置{% endblock %}
 {% block content %}
-<div class="card">
-  <div style="text-align:center;margin-bottom:28px;">
-    <div style="width:56px;height:56px;border-radius:var(--radius-lg);background:var(--purple-subtle);display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
-      <i data-lucide="key-round" style="width:28px;height:28px;color:var(--purple);"></i>
+<div class="auth-card animate-fade-in" style="max-width:520px;">
+
+  {# ── Top Header ── #}
+  <div class="auth-header">
+    <div>
+      <div class="auth-brand">
+        <i data-lucide="sparkles" style="width:14px;height:14px;"></i>
+        <span>QUANT TRADING SYSTEM</span>
+      </div>
+      <h1 style="font-size:1.15rem;font-weight:700;letter-spacing:-0.02em;margin-top:6px;color:var(--text-primary);">
+        首次管理员安全初始化设定
+      </h1>
     </div>
-    <h2 style="margin-bottom:4px;">首次设置</h2>
-    <p class="muted" style="font-size:0.78rem;">设置管理员密码并绑定动态验证器</p>
+    <span style="font-size:0.65rem;padding:4px 10px;border-radius:var(--radius-sm);background:var(--emerald-950);color:var(--accent);text-transform:uppercase;font-weight:700;border:1px solid rgba(16,185,129,0.3);">
+      Setup L1
+    </span>
   </div>
 
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
-
-  <form method="post" autocomplete="off">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-
-    <div style="margin-bottom:16px;">
-      <label for="password">管理员密码（至少12位）</label>
-      <input type="password" id="password" name="password" required minlength="12"
-             autocomplete="new-password" placeholder="请输入强密码">
+  {# ── 3-Step Progress Bar ── #}
+  <div class="setup-progress">
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span class="step-indicator active">1</span>
+      <span class="step-label active">超级账户密码</span>
     </div>
-
-    <div style="margin-bottom:16px;">
-      <label for="password_confirm">确认密码</label>
-      <input type="password" id="password_confirm" name="password_confirm" required minlength="12"
-             autocomplete="new-password" placeholder="再次输入密码">
+    <span class="step-chevron">&rsaquo;</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span class="step-indicator">2</span>
+      <span class="step-label">绑定 TOTP 令牌</span>
     </div>
+    <span class="step-chevron">&rsaquo;</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span class="step-indicator">3</span>
+      <span class="step-label">安全确认验证</span>
+    </div>
+  </div>
 
-    <div style="margin-bottom:20px;padding:16px;background:var(--bg-elevated);border-radius:var(--radius-md);text-align:center;">
-      <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:10px;">请用 Google Authenticator / Authy 扫描：</p>
-      <div style="background:white;display:inline-block;padding:12px;border-radius:var(--radius-sm);">
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={{ otpauth_url | urlencode }}" 
-             width="180" height="180" alt="TOTP QR" style="display:block;">
+  {# ── Body ── #}
+  <div class="auth-body">
+    {% if error %}
+    <div class="msg-error">
+      <i data-lucide="shield-alert" style="width:16px;height:16px;color:var(--red);flex-shrink:0;margin-top:2px;"></i>
+      <div>
+        <span style="font-weight:600;display:block;">初始化阻断:</span>
+        <p style="color:#fca5a5;opacity:0.9;">{{ error }}</p>
       </div>
-      <p style="font-size:0.68rem;color:var(--text-muted);margin-top:10px;word-break:break-all;">
-        手动输入密钥： <code style="color:var(--accent);">{{ totp_secret }}</code>
-      </p>
     </div>
+    {% endif %}
 
-    <div style="margin-bottom:24px;">
-      <label for="totp">验证动态验证码</label>
-      <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
-             inputmode="numeric" required placeholder="输入6位验证码以确认绑定">
+    {% if success %}
+    <div class="msg-success">
+      <i data-lucide="check" style="width:16px;height:16px;color:var(--green);flex-shrink:0;margin-top:2px;"></i>
+      <div>
+        <span style="font-weight:600;display:block;">成功:</span>
+        <p>{{ success }}</p>
+      </div>
     </div>
+    {% endif %}
 
-    <button type="submit" class="btn-primary" style="width:100%;padding:14px;">
-      <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
-      完成设置
-    </button>
-  </form>
+    <form method="post" autocomplete="off" id="setup-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      {# ══ STEP 1: Password ══ #}
+      <div id="setup-step-1">
+        <p style="font-size:0.78rem;color:var(--text-secondary);line-height:1.7;margin-bottom:18px;">
+          本程序用于配置系统的管理员密码。密码具有最高策略控制、API 密钥凭证清写权限，请务必妥善保管。
+        </p>
+
+        <div style="margin-bottom:16px;">
+          <label for="password">密码 / ACCESS PASSWORD</label>
+          <div style="position:relative;">
+            <i data-lucide="key-round" style="width:16px;height:16px;color:var(--text-muted);position:absolute;left:14px;top:13px;"></i>
+            <input type="password" id="password" name="password" required minlength="12"
+                   autocomplete="new-password"
+                   placeholder="请输入管理员超级口令 (至少12位)"
+                   style="padding-left:40px;">
+          </div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <label for="password_confirm">确认密码 / RE-ENTER PASSWORD</label>
+          <div style="position:relative;">
+            <i data-lucide="key-round" style="width:16px;height:16px;color:var(--text-muted);position:absolute;left:14px;top:13px;"></i>
+            <input type="password" id="password_confirm" name="password_confirm" required minlength="12"
+                   autocomplete="new-password"
+                   placeholder="再次输入上述口令核对"
+                   style="padding-left:40px;">
+          </div>
+        </div>
+
+        <button type="button" class="btn-primary" style="width:100%;padding:12px;" onclick="goToStep(2)">
+          继续绑定安全双因素认证 TOTP
+          <i data-lucide="chevron-right" style="width:14px;height:14px;"></i>
+        </button>
+      </div>
+
+      {# ══ STEP 2: QR Code Scan ══ #}
+      <div id="setup-step-2" style="display:none;">
+        <p style="font-size:0.78rem;color:var(--text-secondary);line-height:1.7;margin-bottom:16px;text-align:center;">
+          双因素认证 (MFA / 2FA) 提供强大的账户入侵防范保护。请在手机中打开
+          <strong style="color:var(--text-primary);">Google Authenticator</strong> 或
+          <strong style="color:var(--text-primary);">Microsoft Authenticator</strong>，扫描下方二维码。
+        </p>
+
+        <div style="display:flex;flex-direction:column;align-items:center;background:var(--bg-body);padding:24px;border-radius:var(--radius-lg);border:1px solid var(--border-subtle);margin-bottom:16px;">
+          <div style="background:white;padding:14px;border-radius:var(--radius-lg);border:2px solid var(--accent);box-shadow:var(--shadow-sm);">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&color=020617&bgcolor=f8fafc&data={{ otpauth_url | urlencode }}"
+                 width="180" height="180" alt="TOTP QR" style="display:block;">
+          </div>
+          <div style="margin-top:16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:10px 16px;width:100%;text-align:center;">
+            <span style="font-size:0.65rem;color:var(--text-muted);display:block;text-transform:uppercase;font-weight:700;margin-bottom:4px;">手动输入密钥:</span>
+            <span style="color:var(--accent);font-size:0.85rem;letter-spacing:0.12em;font-weight:600;font-family:monospace;user-select:all;">{{ totp_secret }}</span>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:flex-start;gap:8px;padding:12px;background:var(--yellow-subtle);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-md);margin-bottom:18px;">
+          <i data-lucide="smartphone" style="width:16px;height:16px;color:var(--yellow);flex-shrink:0;margin-top:2px;"></i>
+          <span style="font-size:0.72rem;color:#fde68a;line-height:1.6;">
+            <strong>安全警示：</strong>TOTP 密钥仅在此步骤展示，一经初始化将通过底层加密技术封装并对所有人保密，后台不会返回明文。
+          </span>
+        </div>
+
+        <button type="button" class="btn-primary" style="width:100%;padding:12px;" onclick="goToStep(3)">
+          已在手机中添加成功，进入验证
+          <i data-lucide="chevron-right" style="width:14px;height:14px;"></i>
+        </button>
+      </div>
+
+      {# ══ STEP 3: TOTP Verification ══ #}
+      <div id="setup-step-3" style="display:none;">
+        <p style="font-size:0.78rem;color:var(--text-secondary);line-height:1.7;margin-bottom:18px;text-align:center;">
+          请输入已绑定的身份验证器自动更新的 <strong style="color:var(--text-primary);">6 位动态数字口令</strong> 进行有效性验证。
+        </p>
+
+        <div style="margin-bottom:20px;">
+          <label for="totp" style="text-align:center;display:block;">手机 6 位动态验证码 / SIX-DIGIT TOTP CODE</label>
+          <div style="display:flex;justify-content:center;">
+            <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6"
+                   inputmode="numeric" required
+                   placeholder="000000"
+                   class="totp-input">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px;">
+          <button type="button" class="btn-ghost" style="flex:1;padding:12px;" onclick="goToStep(2)">
+            回看二维码
+          </button>
+          <button type="submit" class="btn-primary" style="flex:2;padding:12px;">
+            <i data-lucide="check-circle" style="width:14px;height:14px;"></i>
+            确认验证并完成首次设定
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
 </div>
+
+<script>
+(function() {
+  let currentStep = 1;
+
+  window.goToStep = function(step) {
+    // Basic client-side validation before advancing
+    if (step === 2) {
+      const pw = document.getElementById('password').value;
+      const pc = document.getElementById('password_confirm').value;
+      if (pw.length < 12) {
+        alert('密码强度过低：长度必须大于或等于 12 位！');
+        return;
+      }
+      if (pw !== pc) {
+        alert('两次输入的密码不一致，请重新检查！');
+        return;
+      }
+    }
+
+    // Hide all steps
+    for (let i = 1; i <= 3; i++) {
+      document.getElementById('setup-step-' + i).style.display = 'none';
+    }
+    // Show target step
+    document.getElementById('setup-step-' + step).style.display = 'block';
+    currentStep = step;
+
+    // Update progress indicators
+    const indicators = document.querySelectorAll('.step-indicator');
+    const labels = document.querySelectorAll('.step-label');
+    indicators.forEach(function(ind, idx) {
+      ind.classList.remove('active', 'done');
+      labels[idx].classList.remove('active');
+      if (idx + 1 < step) {
+        ind.classList.add('done');
+        ind.innerHTML = '<i data-lucide="check" style="width:10px;height:10px;"></i>';
+      } else if (idx + 1 === step) {
+        ind.classList.add('active');
+        labels[idx].classList.add('active');
+      } else {
+        ind.textContent = idx + 1;
+      }
+    });
+    lucide.createIcons();
+
+    // Auto-focus TOTP on step 3
+    if (step === 3) {
+      setTimeout(function() { document.getElementById('totp').focus(); }, 100);
+    }
+  };
+})();
+</script>
 {% endblock %}
