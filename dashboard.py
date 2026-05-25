@@ -1253,6 +1253,34 @@ if __name__ == '__main__':
         if idx + 1 < len(sys.argv):
             port = int(sys.argv[idx + 1])
 
+    # 初始化事件系统（EventBus + YAML 配置注入）
+    try:
+        from event_integration import init_event_system
+        init_event_system('dashboard')
+
+        # 订阅事件 → SocketIO 实时推送（减少 10s JSON 轮询依赖）
+        from event_bus import get_event_bus, Event
+
+        def _event_to_socketio(event: Event):
+            """将 EventBus 事件转发为 SocketIO emit"""
+            try:
+                socketio.emit('event_bus', {
+                    'channel': event.channel,
+                    'data': event.data,
+                    'timestamp': event.timestamp,
+                }, namespace='/')
+            except Exception:
+                pass
+
+        bus = get_event_bus()
+        bus.subscribe('trade.*', _event_to_socketio, subscriber_id='dashboard_trade')
+        bus.subscribe('risk.*', _event_to_socketio, subscriber_id='dashboard_risk')
+        bus.subscribe('signal.*', _event_to_socketio, subscriber_id='dashboard_signal')
+        bus.subscribe('market.*', _event_to_socketio, subscriber_id='dashboard_market')
+    except Exception as _e:
+        import logging as _dlog
+        _dlog.getLogger("dashboard").warning(f"事件系统初始化失败: {_e}")
+
     print(f"🚀 Dashboard v4.1 启动: http://localhost:{port}")
     print("   架构: Flask + Jinja2 Templates + Modular Static Files")
     print("   页面: 主面板 | 周报 | 批量回测 | 单币回测 | 策略评分")

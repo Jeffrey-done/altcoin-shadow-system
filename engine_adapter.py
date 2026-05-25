@@ -341,15 +341,45 @@ def run_exit(check_only: bool = True):
 
         logger.info(f"[新引擎] 退出检查: {len(exit_signals)} 个信号触发")
 
-        # 执行平仓（走旧的 altcoin_tracker 逻辑，因为涉及 TP1 半仓等复杂状态管理）
-        # 这里只通知旧模块"该平仓了"，具体执行由 tracker 负责
+        # 执行平仓：调用 altcoin_tracker 的 evaluate_trade 完成完整状态管理
+        # （含 TP1 半仓、保本止损更新、JSON 落盘、交易所真实平仓）
         for exit_sig in exit_signals:
             logger.info(
                 f"  📤 退出信号: trade={exit_sig.trade_id} | "
                 f"reason={exit_sig.reason.value} | ratio={exit_sig.close_ratio}"
             )
-            # TODO: 后续完全切换到新执行层后，直接调 executor.execute_close()
-            # 当前阶段仍委托给 altcoin_tracker 的 evaluate_trade 做最终平仓
+            # 通过 altcoin_tracker 的标准流程执行平仓
+            try:
+                from altcoin_tracker import evaluate_trade
+                from common import TRADES_FILE, LockedJsonFile
+                from models import Trade
+
+                with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save):
+                    trades = [Trade.from_dict(t) for t in trades_raw]
+                    target = next((t for t in trades if t.id == exit_sig.trade_id), None)
+                    if target and target.status == 'open':
+                        # 用当前价格触发 evaluate_trade
+                        ticker = _get_data_feed().get_ticker(target.symbol)
+                        current_price = ticker.get('last', 0)
+                        if current_price > 0:
+                            result = evaluate_trade(target, current_price)
+                            if result.closed or result.updated:
+                                save([t.to_dict() for t in trades])
+                                # 发布事件
+                                if result.closed:
+                                    try:
+                                        from event_integration import on_trade_closed
+                                        on_trade_closed(
+                                            trade_id=target.id,
+                                            symbol=target.symbol,
+                                            pnl=result.pnl_usd,
+                                            close_type=exit_sig.reason.value,
+                                            exchange=target.exchange,
+                                        )
+                                    except Exception:
+                                        pass
+            except Exception as ex:
+                logger.warning(f"  退出执行异常 ({exit_sig.trade_id}): {ex}")
 
         elapsed = time.monotonic() - t0
         logger.info(f"[新引擎] 退出检查完成 | 耗时 {elapsed:.2f}s")

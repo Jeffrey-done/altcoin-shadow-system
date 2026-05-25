@@ -373,6 +373,19 @@ def check_main_trades(symbol: str, price: float):
             f"⚡ 实时平仓: {sym} | {direction} | "
             f"原因={close_reason} | PnL={pnl_usd:+.2f}U"
         )
+        # 发布平仓事件到 EventBus
+        try:
+            from event_integration import on_trade_closed
+            on_trade_closed(
+                trade_id=f"{sym}_{direction}",
+                symbol=sym,
+                pnl=pnl_usd,
+                close_type=close_reason,
+                close_reason=close_reason,
+                exchange='binance',
+            )
+        except Exception:
+            pass
     # M-1: TP1 半仓 stake 释放（不影响 daily_loss / consecutive_losses）
     for _ppnl, _pstake, _pacc in pending_risk_partials:
         # NF-4: 同上
@@ -669,6 +682,13 @@ def main():
     logger.info(f"   模式: {'WebSocket' if websocket else '轮询(5秒)'}")
     logger.info("   监控: 做空交易")
     logger.info("=" * 50)
+
+    # 初始化事件系统（EventBus + YAML 配置注入）
+    try:
+        from event_integration import init_event_system
+        init_event_system('realtime_monitor')
+    except Exception as e:
+        logger.warning(f"事件系统初始化失败（不影响核心业务）: {e}")
 
     # 先做一次快照，否则首次 WebSocket 连接时拿不到 symbols
     refresh_snapshot()
