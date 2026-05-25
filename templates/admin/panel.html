@@ -282,46 +282,70 @@ select { cursor: pointer; }
       <div class="card-title"><i data-lucide="key-round"></i> 交易所 API 凭证</div>
       <div class="warn-banner">凭证按账户独立加密存储。留空的字段不会被修改。</div>
 
-      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> Binance</h4>
-      <div id="bn-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
-      <div class="form-row"><label>API 密钥</label><input type="password" id="bn-api_key" placeholder="留空则保持不变"></div>
-      <div class="form-row"><label>API 私钥</label><input type="password" id="bn-secret" placeholder="留空则保持不变"></div>
-      <div style="display:flex;gap:8px;margin-bottom:28px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 Binance</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
-      </div>
+      <!-- 凭证卡片网格 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;">
 
-      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> OKX</h4>
-      <div id="okx-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
-      <div class="form-row"><label>API 密钥</label><input type="password" id="okx-api_key" placeholder="留空则保持不变"></div>
-      <div class="form-row"><label>API 私钥</label><input type="password" id="okx-secret" placeholder="留空则保持不变"></div>
-      <div class="form-row"><label>口令短语</label><input type="password" id="okx-passphrase" placeholder="留空则保持不变"></div>
-      <div style="display:flex;gap:8px;margin-bottom:28px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 OKX</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
-      </div>
-
-      <h4 style="margin:18px 0 10px;font-size:0.82rem;color:var(--yellow);display:flex;align-items:center;gap:6px;"><i data-lucide="circle-dot" style="width:14px;height:14px;"></i> Gate.io</h4>
-      <div id="gate-status" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px;"></div>
-      <div class="form-row"><label>API 密钥</label><input type="password" id="gate-api_key" placeholder="留空则保持不变"></div>
-      <div class="form-row"><label>API 私钥</label><input type="password" id="gate-secret" placeholder="留空则保持不变"></div>
-      <div style="display:flex;gap:8px;margin-bottom:18px;">
-        <button class="btn btn-primary btn-sm" onclick="saveCredentials('gate')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存 Gate.io</button>
-        <button class="btn btn-danger btn-sm" onclick="clearCredentials('gate')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
-      </div>
-
-      <!-- Gate.io 实时状态 -->
-      <div id="gate-live-panel" style="display:none;margin-top:14px;padding:18px 20px;border-radius:var(--radius-md);background:var(--bg-elevated);border:1px solid var(--border-subtle);">
-        <div style="font-size:0.78rem;font-weight:600;color:var(--accent);margin-bottom:12px;display:flex;align-items:center;gap:6px;">
-          <i data-lucide="landmark" style="width:14px;height:14px;"></i> Gate.io 实时状态
-          <button class="btn btn-ghost btn-sm" onclick="refreshGateStatus()" style="margin-left:auto;padding:4px 10px;"><i data-lucide="refresh-cw" style="width:11px;height:11px;"></i></button>
+        <!-- Binance 卡片 -->
+        <div class="card" style="margin-bottom:0;border-color:rgba(210,153,34,0.2);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="width:32px;height:32px;border-radius:var(--radius-sm);background:var(--yellow-subtle);display:flex;align-items:center;justify-content:center;"><i data-lucide="circle-dot" style="width:16px;height:16px;color:var(--yellow);"></i></div>
+              <div><div style="font-weight:700;font-size:0.85rem;">Binance</div><div id="bn-status" style="font-size:0.65rem;color:var(--text-muted);"></div></div>
+            </div>
+          </div>
+          <div class="form-row"><label>API 密钥</label><input type="password" id="bn-api_key" placeholder="留空则保持不变"></div>
+          <div class="form-row"><label>API 私钥</label><input type="password" id="bn-secret" placeholder="留空则保持不变"></div>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <button class="btn btn-primary btn-sm" onclick="saveCredentials('binance')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存</button>
+            <button class="btn btn-danger btn-sm" onclick="clearCredentials('binance')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
+          </div>
         </div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">总资产</label><span id="gate-balance-total" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">可用</label><span id="gate-balance-free" style="font-weight:700;">--</span></div>
-        <div class="form-row" style="margin-bottom:6px;"><label style="color:var(--text-primary);">占用</label><span id="gate-balance-used" style="font-weight:700;">--</span></div>
-        <div id="gate-positions" style="margin-top:10px;font-size:0.72rem;color:var(--text-secondary);"></div>
-        <div id="gate-error" style="margin-top:6px;font-size:0.72rem;color:var(--yellow);display:none;"></div>
-      </div>
+
+        <!-- OKX 卡片 -->
+        <div class="card" style="margin-bottom:0;border-color:rgba(210,153,34,0.2);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="width:32px;height:32px;border-radius:var(--radius-sm);background:var(--yellow-subtle);display:flex;align-items:center;justify-content:center;"><i data-lucide="circle-dot" style="width:16px;height:16px;color:var(--yellow);"></i></div>
+              <div><div style="font-weight:700;font-size:0.85rem;">OKX</div><div id="okx-status" style="font-size:0.65rem;color:var(--text-muted);"></div></div>
+            </div>
+          </div>
+          <div class="form-row"><label>API 密钥</label><input type="password" id="okx-api_key" placeholder="留空则保持不变"></div>
+          <div class="form-row"><label>API 私钥</label><input type="password" id="okx-secret" placeholder="留空则保持不变"></div>
+          <div class="form-row"><label>口令短语</label><input type="password" id="okx-passphrase" placeholder="留空则保持不变"></div>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <button class="btn btn-primary btn-sm" onclick="saveCredentials('okx')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存</button>
+            <button class="btn btn-danger btn-sm" onclick="clearCredentials('okx')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
+          </div>
+        </div>
+
+        <!-- Gate.io 卡片 -->
+        <div class="card" style="margin-bottom:0;border-color:rgba(210,153,34,0.2);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="width:32px;height:32px;border-radius:var(--radius-sm);background:var(--yellow-subtle);display:flex;align-items:center;justify-content:center;"><i data-lucide="landmark" style="width:16px;height:16px;color:var(--yellow);"></i></div>
+              <div><div style="font-weight:700;font-size:0.85rem;">Gate.io</div><div id="gate-status" style="font-size:0.65rem;color:var(--text-muted);"></div></div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="refreshGateStatus()" title="刷新余额"><i data-lucide="refresh-cw" style="width:11px;height:11px;"></i></button>
+          </div>
+          <div class="form-row"><label>API 密钥</label><input type="password" id="gate-api_key" placeholder="留空则保持不变"></div>
+          <div class="form-row"><label>API 私钥</label><input type="password" id="gate-secret" placeholder="留空则保持不变"></div>
+          <div style="display:flex;gap:8px;margin-top:4px;margin-bottom:12px;">
+            <button class="btn btn-primary btn-sm" onclick="saveCredentials('gate')"><i data-lucide="save" style="width:12px;height:12px;"></i> 保存</button>
+            <button class="btn btn-danger btn-sm" onclick="clearCredentials('gate')"><i data-lucide="x-circle" style="width:12px;height:12px;"></i> 清除</button>
+          </div>
+          <!-- Gate 实时余额（内联） -->
+          <div id="gate-live-panel" style="display:none;padding:12px 14px;border-radius:var(--radius-sm);background:var(--bg-elevated);border:1px solid var(--border-subtle);font-size:0.72rem;">
+            <div style="display:flex;gap:14px;flex-wrap:wrap;">
+              <span>总资产: <b id="gate-balance-total">--</b></span>
+              <span>可用: <b id="gate-balance-free">--</b></span>
+              <span>占用: <b id="gate-balance-used">--</b></span>
+            </div>
+            <div id="gate-positions" style="margin-top:6px;color:var(--text-secondary);"></div>
+            <div id="gate-error" style="margin-top:4px;color:var(--yellow);display:none;"></div>
+          </div>
+        </div>
+
+      </div><!-- end grid -->
     </div>
   </div>
 
