@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-管理员密钥存储 v2.0 — 多账户安全凭证存储
+管理员密钥存储 v3.0 — 多账户安全凭证 + 每交易所独立账户配置
 
 设计目标：
   1. API key / TOTP secret / 密码 hash 存在独立文件，权限 0600
@@ -8,10 +8,11 @@
   3. live_executor 读凭证时优先找本文件，回退到 .env，方便迁移
   4. 所有写入都是原子 + 自动设权限，避免半写状态
   5. v2: 多账户管理 — 每个账户独立的 exchange 凭证，统一管理员登录
+  6. v3: 每交易所独立账户 — 每个交易所拥有自己的资金池、杠杆、仓位、风控参数
 
-文件结构（admin_secrets.json v2）：
+文件结构（admin_secrets.json v3）：
 {
-  "_version": 2,
+  "_version": 3,
   "admin": {
     "password_hash": "pbkdf2_sha256$600000$<salt>$<hash>",
     "totp_secret": "<base32 string>",
@@ -23,8 +24,34 @@
       "name": "主账户",
       "created_at": "2026-05-13T12:34:56+00:00",
       "exchanges": {
-        "binance": { "api_key": "...", "secret": "...", "updated_at": "..." },
-        "okx": { "api_key": "...", "secret": "...", "passphrase": "...", "updated_at": "..." }
+        "binance": {
+          "api_key": "...",
+          "secret": "...",
+          "updated_at": "...",
+          "settings": {
+            "account_balance": 100,
+            "leverage": 10,
+            "default_stake": 30,
+            "live_mode": false,
+            "slippage_alert_pct": 1.0,
+            "risk": { "max_daily_loss": 30, "max_daily_trades": 3, ... },
+            "compound": { "enabled": true, "step": 50, ... },
+            "tp_sl": { "tp1_multiplier": 0.95, ... }
+          }
+        },
+        "okx": {
+          "api_key": "...",
+          "secret": "...",
+          "passphrase": "...",
+          "updated_at": "...",
+          "settings": { ... }
+        },
+        "gate": {
+          "api_key": "...",
+          "secret": "...",
+          "updated_at": "...",
+          "settings": { ... }
+        }
       }
     }
   },
@@ -69,17 +96,56 @@ PBKDF2_SALT_BYTES = 16
 
 
 # ══════════════════════════════════════════════════════════════════
-#  基础读写 + v1→v2 迁移
+#  基础读写 + v1→v2→v3 迁移
 # ══════════════════════════════════════════════════════════════════
 
-def _empty_v2() -> dict:
-    """返回空的 v2 骨架"""
+# 支持的交易所列表
+SUPPORTED_EXCHANGES = ('binance', 'okx', 'gate')
+
+
+def _default_exchange_settings() -> dict:
+    """返回每个交易所账户的默认 settings 结构"""
     return {
-        '_version': 2,
+        'account_balance': 100,
+        'leverage': 10,
+        'default_stake': 30,
+        'live_mode': False,
+        'slippage_alert_pct': 1.0,
+        'risk': {
+            'max_daily_loss': 30,
+            'max_daily_trades': 3,
+            'consecutive_loss_pause': 3,
+            'max_position_pct': 0.5,
+            'cooldown_hours': 24,
+        },
+        'compound': {
+            'enabled': True,
+            'step': 50,
+            'increase': 25,
+            'max_stake': 300,
+        },
+        'tp_sl': {
+            'tp1_multiplier': 0.95,
+            'tp2_multiplier': 0.92,
+            'tp1_close_ratio': 0.5,
+            'hard_stop_loss_pct': 5.0,
+        },
+    }
+
+
+def _empty_v3() -> dict:
+    """返回空的 v3 骨架"""
+    return {
+        '_version': 3,
         'admin': {},
         'accounts': {},
         'active_account': '',
     }
+
+
+def _empty_v2() -> dict:
+    """返回空的 v2 骨架（向后兼容）"""
+    return _empty_v3()
 
 
 def _migrate_v1_to_v2(data: dict) -> dict:
@@ -87,7 +153,7 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     从 v1 单账户格式迁移到 v2 多账户格式。
     v1 的 exchanges 字段被移入第一个自动创建的账户。
     """
-    v2 = _empty_v2()
+    v2 = _empty_v3()
     v2['admin'] = data.get('admin', {})
 
     # 从 v1 exchanges 创建默认账户
@@ -101,6 +167,20 @@ def _migrate_v1_to_v2(data: dict) -> dict:
         }
         v2['active_account'] = account_id
     return v2
+
+
+def _migrate_v2_to_v3(data: dict) -> dict:
+    """
+    从 v2 迁移到 v3：为每个交易所的凭证添加独立的 settings。
+    v2 的交易所条目只有 api_key/secret/passphrase，v3 新增 settings 字段。
+    """
+    data['_version'] = 3
+    for acc_id, acc in data.get('accounts', {}).items():
+        exchanges = acc.get('exchanges', {})
+        for exch_name, exch_data in exchanges.items():
+            if 'settings' not in exch_data:
+                exch_data['settings'] = _default_exchange_settings()
+    return data
 
 
 SHADOW_ACCOUNT_ID = 'acc_shadow_system'  # 固定ID，影子账户不可删除
@@ -157,27 +237,35 @@ def _locked_secrets():
 
 
 def _load_raw() -> dict:
-    """读整个 secrets 文件；不存在或损坏返回空 v2 骨架。自动迁移 v1→v2。"""
+    """读整个 secrets 文件；不存在或损坏返回空 v3 骨架。自动迁移 v1→v2→v3。"""
     if not os.path.exists(SECRETS_FILE):
-        return _empty_v2()
+        return _empty_v3()
     try:
         with open(SECRETS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (json.JSONDecodeError, IOError, OSError) as e:
         logger.error(f"admin_secrets.json 读取失败: {e}")
-        return _empty_v2()
+        return _empty_v3()
 
     version = data.get('_version', 1)
 
     if version < 2:
-        # 自动迁移 v1 → v2
-        logger.info("admin_secrets: 检测到 v1 格式，自动迁移到 v2（多账户）")
+        # 自动迁移 v1 → v2 → v3
+        logger.info("admin_secrets: 检测到 v1 格式，自动迁移到 v3（每交易所独立账户）")
         v2 = _migrate_v1_to_v2(data)
-        _save_raw(v2)
-        return v2
+        v3 = _migrate_v2_to_v3(v2)
+        _save_raw(v3)
+        return v3
 
-    # v2 格式，确保字段完整
-    data.setdefault('_version', 2)
+    if version < 3:
+        # 自动迁移 v2 → v3
+        logger.info("admin_secrets: 检测到 v2 格式，自动迁移到 v3（每交易所独立账户）")
+        v3 = _migrate_v2_to_v3(data)
+        _save_raw(v3)
+        return v3
+
+    # v3 格式，确保字段完整
+    data.setdefault('_version', 3)
     data.setdefault('admin', {})
     data.setdefault('accounts', {})
     data.setdefault('active_account', '')
@@ -278,7 +366,7 @@ def delete_account(account_id: str) -> None:
 def list_accounts() -> list:
     """
     返回所有账户列表:
-    [{id, name, created_at, has_binance, has_okx, trading_enabled, is_system}]
+    [{id, name, created_at, has_binance, has_okx, has_gate, trading_enabled, is_system}]
     """
     d = _load_raw()
     result = []
@@ -290,6 +378,7 @@ def list_accounts() -> list:
             'created_at': acc.get('created_at', ''),
             'has_binance': bool(exchanges.get('binance', {}).get('api_key')),
             'has_okx': bool(exchanges.get('okx', {}).get('api_key')),
+            'has_gate': bool(exchanges.get('gate', {}).get('api_key')),
             # 交易开关：默认为 True（兼容未设置该字段的旧账户）
             'trading_enabled': acc.get('trading_enabled', True),
             'is_system': bool(acc.get('system')),
@@ -546,6 +635,11 @@ def get_exchange_credentials(exchange: str, account_id: Optional[str] = None) ->
             'secret': exch_data.get('secret') or os.environ.get('OKX_SECRET', ''),
             'passphrase': exch_data.get('passphrase') or os.environ.get('OKX_PASSPHRASE', ''),
         }
+    if exchange == 'gate':
+        return {
+            'api_key': exch_data.get('api_key') or os.environ.get('GATE_API_KEY', ''),
+            'secret': exch_data.get('secret') or os.environ.get('GATE_SECRET', ''),
+        }
     return {}
 
 
@@ -554,8 +648,8 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
     更新交易所凭证。只更新传入的字段；传空字符串等于不改。
     """
     exchange = exchange.lower()
-    if exchange not in ('binance', 'okx'):
-        raise ValueError(f"不支持的交易所: {exchange}")
+    if exchange not in SUPPORTED_EXCHANGES:
+        raise ValueError(f"不支持的交易所: {exchange}（支持: {SUPPORTED_EXCHANGES}）")
 
     acc_id = _resolve_account_id(account_id)
 
@@ -567,9 +661,16 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
         current = exchanges.get(exchange, {})
 
         for k, v in kwargs.items():
-            if v:
+            if k == 'settings':
+                # settings 用 update 合并，不是整体覆盖
+                current.setdefault('settings', _default_exchange_settings()).update(v)
+            elif v:
                 current[k] = v
         current['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+        # 确保 settings 字段存在
+        if 'settings' not in current:
+            current['settings'] = _default_exchange_settings()
 
         exchanges[exchange] = current
         d['accounts'][acc_id]['exchanges'] = exchanges
@@ -646,6 +747,11 @@ def get_account_exchange_credentials(exchange: str, account_id: str) -> dict:
             'secret': exch_data.get('secret', ''),
             'passphrase': exch_data.get('passphrase', ''),
         }
+    if exchange == 'gate':
+        return {
+            'api_key': exch_data.get('api_key', ''),
+            'secret': exch_data.get('secret', ''),
+        }
     return {}
 
 
@@ -664,3 +770,175 @@ def mask_credentials(exchange: str, account_id: Optional[str] = None) -> dict:
         else:
             out[k] = f"{v[:6]}{'*' * 8}{v[-4:]}"
     return out
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  每交易所独立账户设置 (v3.0)
+# ══════════════════════════════════════════════════════════════════
+
+def get_exchange_settings(exchange: str, account_id: Optional[str] = None) -> dict:
+    """
+    获取指定交易所的独立账户设置。
+
+    返回该交易所在指定账户下的完整 settings 字典。
+    如果没有自定义设置，返回默认值。
+
+    Args:
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+        account_id: 账户 ID，None 表示活跃账户
+
+    Returns:
+        settings 字典，包含 account_balance, leverage, default_stake, risk, compound, tp_sl 等
+
+    用法:
+        settings = get_exchange_settings('binance')
+        leverage = settings['leverage']           # 10
+        max_loss = settings['risk']['max_daily_loss']  # 30
+    """
+    exchange = exchange.lower()
+    acc_id = _resolve_account_id(account_id)
+
+    d = _load_raw()
+    acc = d.get('accounts', {}).get(acc_id, {})
+    exch_data = acc.get('exchanges', {}).get(exchange, {})
+    settings = exch_data.get('settings', {})
+
+    # 合并默认值（确保所有字段都存在）
+    defaults = _default_exchange_settings()
+    merged = _deep_merge(defaults, settings)
+    return merged
+
+
+def set_exchange_settings(exchange: str, settings: dict,
+                          account_id: Optional[str] = None) -> None:
+    """
+    更新指定交易所的独立账户设置。
+    使用深度合并，只更新传入的字段。
+
+    Args:
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+        settings: 要更新的设置字典（部分更新即可）
+        account_id: 账户 ID，None 表示活跃账户
+
+    用法:
+        # 只改 OKX 的杠杆和风控
+        set_exchange_settings('okx', {
+            'leverage': 5,
+            'risk': {'max_daily_loss': 50}
+        })
+    """
+    exchange = exchange.lower()
+    if exchange not in SUPPORTED_EXCHANGES:
+        raise ValueError(f"不支持的交易所: {exchange}（支持: {SUPPORTED_EXCHANGES}）")
+
+    acc_id = _resolve_account_id(account_id)
+
+    with _locked_secrets() as (d, save):
+        if acc_id not in d['accounts']:
+            raise ValueError(f"账户 {acc_id} 不存在")
+
+        exchanges = d['accounts'][acc_id].setdefault('exchanges', {})
+        exch_data = exchanges.setdefault(exchange, {})
+        current_settings = exch_data.get('settings', _default_exchange_settings())
+
+        # 深度合并
+        merged = _deep_merge(current_settings, settings)
+        exch_data['settings'] = merged
+        exch_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+        exchanges[exchange] = exch_data
+        save(d)
+
+
+def get_exchange_setting(exchange: str, key: str, account_id: Optional[str] = None,
+                         default=None):
+    """
+    获取指定交易所的单个设置值。支持点号分隔的嵌套路径。
+
+    Args:
+        exchange: 交易所名称
+        key: 设置路径 ('leverage', 'risk.max_daily_loss', 'compound.step')
+        account_id: 账户 ID
+        default: 未找到时的默认值
+
+    Returns:
+        设置值
+
+    用法:
+        get_exchange_setting('okx', 'leverage')            → 10
+        get_exchange_setting('binance', 'risk.max_daily_loss')  → 30
+    """
+    settings = get_exchange_settings(exchange, account_id)
+    keys = key.split('.')
+    current = settings
+    for k in keys:
+        if isinstance(current, dict):
+            current = current.get(k)
+        else:
+            return default
+        if current is None:
+            return default
+    return current
+
+
+def is_exchange_live_mode(exchange: str, account_id: Optional[str] = None) -> bool:
+    """
+    检查指定交易所在指定账户下是否开启了实盘模式。
+    """
+    settings = get_exchange_settings(exchange, account_id)
+    return bool(settings.get('live_mode', False))
+
+
+def get_live_exchanges(account_id: Optional[str] = None) -> list:
+    """
+    返回指定账户下所有开启了实盘模式的交易所名称列表。
+
+    Args:
+        account_id: 账户 ID，None 表示活跃账户
+
+    Returns:
+        ['binance', 'okx'] — 所有 live_mode=True 的交易所
+    """
+    acc_id = _resolve_account_id(account_id)
+    d = _load_raw()
+    acc = d.get('accounts', {}).get(acc_id, {})
+    exchanges = acc.get('exchanges', {})
+
+    result = []
+    for exch_name, exch_data in exchanges.items():
+        settings = exch_data.get('settings', {})
+        if settings.get('live_mode', False):
+            result.append(exch_name)
+    return result
+
+
+def get_all_exchange_settings(account_id: Optional[str] = None) -> dict:
+    """
+    获取指定账户下所有交易所的完整设置。
+
+    Returns:
+        {
+            'binance': { 'account_balance': 100, 'leverage': 10, ... },
+            'okx': { 'account_balance': 200, 'leverage': 5, ... },
+            'gate': { ... }
+        }
+    """
+    result = {}
+    for exch_name in SUPPORTED_EXCHANGES:
+        result[exch_name] = get_exchange_settings(exch_name, account_id)
+    return result
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """
+    深度合并两个字典。override 中的值覆盖 base。
+    对于嵌套字典，递归合并而非整体替换。
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result

@@ -1,20 +1,109 @@
 # 系统配置
 # 运行时、调度、交易所、部署相关
 
-# 账户 & 模式
+# ══════════════════════════════════════════════════════════════════
+#  全局账户 & 模式（向后兼容）
+# ══════════════════════════════════════════════════════════════════
 account:
-  balance: 100                 # 账户总本金 (USDT)
-  live_mode: false             # 实盘模式
+  live_mode: false             # 全局实盘总开关
   shadow_parallel: true        # 实盘时保留影子交易对照
   position_mode: manual        # manual | proportional
   baseline_balance: 100        # 比例模式基准本金
 
-# 自动复利
-compound:
-  enabled: true
-  step: 50                     # 每累计盈利 N U
-  increase: 25                 # 每步增加保证金
-  max_stake: 300               # 单笔保证金上限
+# ══════════════════════════════════════════════════════════════════
+#  交易所配置 — 每个交易所独立账户
+#  每个交易所拥有自己的资金池、杠杆、仓位、风控参数
+# ══════════════════════════════════════════════════════════════════
+exchanges:
+  binance:
+    enabled: true
+    # 账户参数（独立于其他交易所）
+    account_balance: 100         # 该交易所账户本金 (USDT)
+    leverage: 10                 # 杠杆倍数
+    default_stake: 30            # 单笔保证金 (USDT)
+    slippage_alert_pct: 1.0      # 滑点告警阈值 (%)
+    # 风控参数（每个交易所独立风控）
+    risk:
+      max_daily_loss: 30         # 单日最大亏损 (USDT)
+      max_daily_trades: 3        # 单日最大开仓次数
+      consecutive_loss_pause: 3  # 连亏暂停阈值
+      max_position_pct: 0.5      # 最大持仓占比
+      cooldown_hours: 24         # 止损后冷却期 (h)
+    # 复利策略
+    compound:
+      enabled: true
+      step: 50                   # 每累计盈利 N U 步进
+      increase: 25               # 每步增加的保证金 (U)
+      max_stake: 300             # 单笔保证金上限 (U)
+    # 止盈止损
+    tp_sl:
+      tp1_multiplier: 0.95       # TP1 价格乘数 (做空 -5%)
+      tp2_multiplier: 0.92       # TP2 价格乘数 (做空 -8%)
+      tp1_close_ratio: 0.5       # TP1 平仓比例
+      hard_stop_loss_pct: 5.0    # 硬止损 (%)
+
+  okx:
+    enabled: true
+    live_mode: false             # OKX 独立实盘开关
+    cross_validate: false        # 是否用作交叉验证数据源
+    # 账户参数
+    account_balance: 100         # OKX 账户本金 (USDT)
+    leverage: 10                 # OKX 杠杆倍数
+    default_stake: 30            # 单笔保证金 (USDT)
+    slippage_alert_pct: 1.0
+    # 风控参数
+    risk:
+      max_daily_loss: 30
+      max_daily_trades: 3
+      consecutive_loss_pause: 3
+      max_position_pct: 0.5
+      cooldown_hours: 24
+    # 复利策略
+    compound:
+      enabled: true
+      step: 50
+      increase: 25
+      max_stake: 300
+    # 止盈止损
+    tp_sl:
+      tp1_multiplier: 0.95
+      tp2_multiplier: 0.92
+      tp1_close_ratio: 0.5
+      hard_stop_loss_pct: 5.0
+
+  gate:
+    enabled: true
+    live_mode: false             # Gate.io 独立实盘开关
+    # 账户参数
+    account_balance: 100         # Gate.io 账户本金 (USDT)
+    leverage: 10                 # Gate.io 杠杆倍数
+    default_stake: 30            # 单笔保证金 (USDT)
+    slippage_alert_pct: 1.0
+    # 风控参数
+    risk:
+      max_daily_loss: 30
+      max_daily_trades: 3
+      consecutive_loss_pause: 3
+      max_position_pct: 0.5
+      cooldown_hours: 24
+    # 复利策略
+    compound:
+      enabled: true
+      step: 50
+      increase: 25
+      max_stake: 300
+    # 止盈止损
+    tp_sl:
+      tp1_multiplier: 0.95
+      tp2_multiplier: 0.92
+      tp1_close_ratio: 0.5
+      hard_stop_loss_pct: 5.0
+
+  # 实盘路由（多交易所都开启实盘时生效）
+  routing:
+    primary_exchange: binance    # binance | okx | gate | both | auto
+    primary_fallback: binance    # auto 模式下两所都有合约时选谁
+    price_divergence_max_pct: 2.0
 
 # 调度器
 scheduler:
@@ -23,23 +112,6 @@ scheduler:
   check_candidates_budget_sec: 480
   check_candidates_per_candidate_sec: 30
   check_candidates_parallelism: 4
-
-# 交易所
-exchanges:
-  binance:
-    enabled: true
-    leverage: 10
-    slippage_alert_pct: 1.0
-  okx:
-    enabled: false
-    leverage: 10
-    live_mode: false
-    cross_validate: false
-
-  # 实盘路由
-  primary_exchange: binance      # binance | okx | both | auto
-  primary_fallback: binance
-  price_divergence_max_pct: 2.0
 
 # 数据库
 database:

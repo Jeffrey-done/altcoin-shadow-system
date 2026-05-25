@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
-策略参数集中配置 v5.0
+策略参数集中配置 v6.0
 所有阈值、档位、止损规则统一管理，方便调优和回测。
 专注做空策略 + 风控系统。
+
+v6.0 变更：每个交易所独立账户配置
+  - 每个交易所拥有自己的 account_balance / leverage / default_stake / 风控 / 复利 / 止盈止损
+  - 旧的全局变量保留作为向后兼容默认值（Binance 默认配置）
+  - 新增 EXCHANGE_ACCOUNTS 字典，以交易所名为 key，存放独立账户参数
 """
 
 # ══════════════════════════════════════════════════════════════════
-#  账户 & 杠杆
+#  全局默认值（向后兼容，同时作为 Binance 默认）
 # ══════════════════════════════════════════════════════════════════
-ACCOUNT_BALANCE = 100          # 账户总本金（USDT）
-LEVERAGE = 10                  # 杠杆倍数（10x → 100U本金变1000U仓位）
-DEFAULT_STAKE = 30             # 单笔保证金（USDT），实际仓位 = STAKE × LEVERAGE
-# 实际仓位举例：30U × 10x = 300U 名义仓位
-# M-6 修复（2026-05）：从 50 降到 30，与 RISK_MAX_POSITION_PCT=0.5 协同：
-#   max_position = 100 × 0.5 = 50U
-#   单笔 30U 时最多可同时持仓 ⌊50/30⌋ = 1 笔（仍偏紧但避免 50+50>50 直接锁死）
-#   建议同步把 ACCOUNT_BALANCE 提到 ≥ 200U，或 RISK_MAX_POSITION_PCT 提到 0.6
-#   才能真正发挥 RISK_MAX_DAILY_TRADES=3 的允许容量。
+ACCOUNT_BALANCE = 100          # 默认账户本金（USDT）— 向后兼容
+LEVERAGE = 10                  # 默认杠杆倍数（向后兼容，对应 Binance）
+DEFAULT_STAKE = 30             # 默认单笔保证金（USDT）
 # 注意：DEFAULT_STAKE 必须 <= ACCOUNT_BALANCE * RISK_MAX_POSITION_PCT，否则风控会永远拒绝开仓
 
 # ── 仓位模式（v5.1 新增）──────────────────────────────────────────
@@ -313,13 +312,184 @@ OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10   # 两所费率差异显著阈值（%）
 GATE_ENABLED = True                    # 是否启用 Gate.io 作为辅助/备用交易所
 GATE_LIVE_MODE = False                 # True=通过 Gate.io API 真实下单
 GATE_DEFAULT_LEVERAGE = 10             # Gate.io 默认杠杆倍数
-# Gate.io 优势：
-#   - 品种覆盖广（比 Binance 多 200+ 小币种永续合约）
-#   - Maker 费率低 (0.015% vs Binance 0.02%)
-#   - API Rate Limit 宽松 (900 req/min vs Binance ~600)
-#   - 适合做 Binance 没有的小币种策略
-# Gate.io 用途：
-#   1. 扩展品种宇宙（Binance 没上的小币在 Gate 做）
-#   2. 费率交叉验证第三方数据源
-#   3. Binance 限流/维护时备用执行场所
-#   4. 跨所价差套利探索
+
+# ══════════════════════════════════════════════════════════════════
+#  每交易所独立账户配置 (v6.0)
+# ══════════════════════════════════════════════════════════════════
+# 每个交易所拥有独立的资金池、杠杆、仓位、风控、复利、止盈止损参数。
+# 旧代码通过 config.LEVERAGE 等全局变量访问仍然正常工作（向后兼容），
+# 新代码通过 get_exchange_account_config('binance') 获取某个交易所的完整配置。
+#
+# 设计理念：
+#   - 用户可能在 Binance 放 100U 跑 10x，在 OKX 放 200U 跑 5x
+#   - 每个交易所的风控应该独立（Binance 止损不影响 OKX 开仓）
+#   - 每个交易所可以有不同的止盈止损策略
+
+EXCHANGE_ACCOUNTS = {
+    'binance': {
+        'enabled': True,
+        'live_mode': False,            # Binance 实盘开关（对应旧 LIVE_MODE）
+        'account_balance': 100,        # Binance 账户本金 (USDT)
+        'leverage': 10,                # Binance 杠杆倍数
+        'default_stake': 30,           # Binance 单笔保证金 (USDT)
+        'slippage_alert_pct': 1.0,     # 滑点告警阈值 (%)
+        # 风控
+        'risk': {
+            'max_daily_loss': 30,      # 单日最大亏损 (USDT)
+            'max_daily_trades': 3,     # 单日最大开仓次数
+            'consecutive_loss_pause': 3,  # 连亏暂停阈值
+            'max_position_pct': 0.5,   # 最大持仓占比
+            'cooldown_hours': 24,      # 止损后冷却期 (h)
+        },
+        # 复利
+        'compound': {
+            'enabled': True,
+            'step': 50,                # 每累计盈利 N U 步进
+            'increase': 25,            # 每步增加保证金 (U)
+            'max_stake': 300,          # 单笔保证金上限 (U)
+        },
+        # 止盈止损
+        'tp_sl': {
+            'tp1_multiplier': 0.95,
+            'tp2_multiplier': 0.92,
+            'tp1_close_ratio': 0.5,
+            'hard_stop_loss_pct': 5.0,
+        },
+    },
+    'okx': {
+        'enabled': True,
+        'live_mode': False,            # OKX 实盘开关（对应旧 OKX_LIVE_MODE）
+        'account_balance': 100,        # OKX 账户本金 (USDT)
+        'leverage': 10,                # OKX 杠杆倍数
+        'default_stake': 30,           # OKX 单笔保证金 (USDT)
+        'slippage_alert_pct': 1.0,
+        'cross_validate': False,       # 是否用作交叉验证数据源
+        # 风控
+        'risk': {
+            'max_daily_loss': 30,
+            'max_daily_trades': 3,
+            'consecutive_loss_pause': 3,
+            'max_position_pct': 0.5,
+            'cooldown_hours': 24,
+        },
+        # 复利
+        'compound': {
+            'enabled': True,
+            'step': 50,
+            'increase': 25,
+            'max_stake': 300,
+        },
+        # 止盈止损
+        'tp_sl': {
+            'tp1_multiplier': 0.95,
+            'tp2_multiplier': 0.92,
+            'tp1_close_ratio': 0.5,
+            'hard_stop_loss_pct': 5.0,
+        },
+    },
+    'gate': {
+        'enabled': True,
+        'live_mode': False,            # Gate.io 实盘开关
+        'account_balance': 100,        # Gate.io 账户本金 (USDT)
+        'leverage': 10,                # Gate.io 杠杆倍数
+        'default_stake': 30,           # Gate.io 单笔保证金 (USDT)
+        'slippage_alert_pct': 1.0,
+        # 风控
+        'risk': {
+            'max_daily_loss': 30,
+            'max_daily_trades': 3,
+            'consecutive_loss_pause': 3,
+            'max_position_pct': 0.5,
+            'cooldown_hours': 24,
+        },
+        # 复利
+        'compound': {
+            'enabled': True,
+            'step': 50,
+            'increase': 25,
+            'max_stake': 300,
+        },
+        # 止盈止损
+        'tp_sl': {
+            'tp1_multiplier': 0.95,
+            'tp2_multiplier': 0.92,
+            'tp1_close_ratio': 0.5,
+            'hard_stop_loss_pct': 5.0,
+        },
+    },
+}
+
+# 实盘路由配置
+EXCHANGE_ROUTING = {
+    'primary_exchange': 'binance',     # binance | okx | gate | both | auto
+    'primary_fallback': 'binance',     # auto 模式下两所都有合约时选谁
+    'price_divergence_max_pct': 2.0,   # 开仓前跨交易所价格偏差上限 (%)
+}
+
+
+def get_exchange_account_config(exchange: str) -> dict:
+    """
+    获取指定交易所的独立账户配置。
+
+    Args:
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+
+    Returns:
+        该交易所的完整配置字典。如果交易所未定义，返回 Binance 的配置作为默认。
+
+    用法:
+        cfg = get_exchange_account_config('okx')
+        leverage = cfg['leverage']       # 10
+        stake = cfg['default_stake']     # 30
+        max_loss = cfg['risk']['max_daily_loss']  # 30
+    """
+    exchange = exchange.lower()
+    if exchange in EXCHANGE_ACCOUNTS:
+        return dict(EXCHANGE_ACCOUNTS[exchange])
+    # 未知交易所 → 返回 Binance 默认（向后兼容）
+    return dict(EXCHANGE_ACCOUNTS.get('binance', {}))
+
+
+def get_exchange_param(exchange: str, key: str, default=None):
+    """
+    获取指定交易所的单个参数值。支持点号分隔的嵌套路径。
+
+    Args:
+        exchange: 交易所名称
+        key: 参数路径，支持 'leverage' 或 'risk.max_daily_loss' 形式
+        default: 未找到时的默认值
+
+    Returns:
+        参数值，未找到返回 default
+
+    用法:
+        get_exchange_param('okx', 'leverage')          → 10
+        get_exchange_param('okx', 'risk.max_daily_loss')  → 30
+        get_exchange_param('gate', 'compound.step')    → 50
+    """
+    cfg = get_exchange_account_config(exchange)
+    keys = key.split('.')
+    current = cfg
+    for k in keys:
+        if isinstance(current, dict):
+            current = current.get(k)
+        else:
+            return default
+        if current is None:
+            return default
+    return current
+
+
+def is_exchange_live(exchange: str) -> bool:
+    """检查指定交易所是否开启了实盘模式"""
+    cfg = get_exchange_account_config(exchange)
+    return bool(cfg.get('live_mode', False))
+
+
+def get_active_live_exchanges() -> list:
+    """返回所有开启了实盘模式的交易所名称列表"""
+    result = []
+    for name, cfg in EXCHANGE_ACCOUNTS.items():
+        if cfg.get('enabled') and cfg.get('live_mode'):
+            result.append(name)
+    return result

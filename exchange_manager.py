@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多交易所管理模块 v2.0
+多交易所管理模块 v3.0 — 每交易所独立账户
 统一封装 Binance / OKX / Gate.io 的数据接口，提供：
   - K线/Ticker 数据获取
   - OI（持仓量）变化率
@@ -8,14 +8,15 @@
   - 合约品种列表
   - 费率交叉验证（多所费率都异常 = 信号更强）
 
-设计原则：
-  - Binance 为主交易所（下单 + 主数据源）
-  - OKX 为辅助交易所（交叉验证 + 补充品种）
-  - Gate.io 为第三交易所（扩展品种覆盖 + 备用执行）
-  - 单个交易所故障不影响系统运行（优雅降级）
+设计原则 (v3.0 变更)：
+  - 每个交易所拥有独立的账户配置（资金池、杠杆、风控参数）
+  - 公共数据实例：无认证单例，用于读取行情/费率
+  - 认证实例：按账户创建，使用该账户对应的 API 凭证和配置
+  - 通过 get_exchange_config() 获取该交易所的独立账户参数
+  - 单个交易所故障不影响其他交易所运行（优雅降级）
 """
 
-from typing import Optional
+from typing import Optional, Dict
 
 import ccxt
 import requests
@@ -27,12 +28,16 @@ logger = setup_logger("exchange_manager")
 
 
 # ══════════════════════════════════════════════════════════════════
-#  交易所实例管理（单例复用，避免重复创建）
+#  交易所实例管理
 # ══════════════════════════════════════════════════════════════════
 
+# 公共数据实例（无认证，单例复用）
 _binance_instance: Optional[ccxt.binance] = None
 _okx_instance: Optional[ccxt.okx] = None
 _gate_instance: Optional[ccxt.gate] = None
+
+# 认证实例缓存：key = (exchange_name, account_id)
+_authenticated_instances: Dict[tuple, ccxt.Exchange] = {}
 
 
 # H10: ccxt HTTP 超时（毫秒）。所有走 ccxt 的 fetch_*/create_order 调用
@@ -100,26 +105,30 @@ def make_exchange(
     raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx' / 'gate'）")
 
 
-def get_binance(authenticated: bool = False) -> ccxt.binance:
+def get_binance(authenticated: bool = False, account_id: str = None) -> ccxt.binance:
     """获取 Binance 交易所实例
 
     公共数据：无认证单例（节省资源）。
-    认证版本：凭证优先级 admin_secrets 活跃账户 > .env 环境变量，
-    与 live_executor.get_live_exchange() 完全一致，
-    防止 admin panel 改凭证后认证接口仍读旧的 .env 导致下错账户。
+    认证版本：凭证优先级 admin_secrets 指定账户 > 活跃账户 > .env 环境变量。
+
+    Args:
+        authenticated: 是否需要认证实例（下单等操作需要）
+        account_id: 指定账户 ID（多账户场景下指定用哪个账户的凭证）
     """
     global _binance_instance
     if not authenticated:
         if _binance_instance is None:
-            # H10: make_exchange 强制 timeout，避免 OKX/Binance 抽风时
-            # 子进程卡到父超时（600s）
             _binance_instance = make_exchange('binance')
         return _binance_instance
 
-    # 认证版本：与 live_executor 统一凭证解析逻辑
+    # 认证版本：按 account_id 缓存
+    cache_key = ('binance', account_id or '_active')
+    if cache_key in _authenticated_instances:
+        return _authenticated_instances[cache_key]
+
     try:
         from admin_secrets import get_exchange_credentials
-        creds = get_exchange_credentials('binance')
+        creds = get_exchange_credentials('binance', account_id=account_id)
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
     except Exception as e:
@@ -131,18 +140,24 @@ def get_binance(authenticated: bool = False) -> ccxt.binance:
     if not api_key or not secret:
         logger.warning("Binance API 凭证未配置（admin_secrets 和 .env 都没有）")
 
-    return make_exchange(
+    instance = make_exchange(
         'binance',
         api_key=api_key,
         secret=secret,
         default_type='future',
     )
+    _authenticated_instances[cache_key] = instance
+    return instance
 
 
-def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
+def get_okx(authenticated: bool = False, account_id: str = None) -> Optional[ccxt.okx]:
     """
     获取 OKX 交易所实例。
     如果 OKX 未启用或连接失败，返回 None（优雅降级）。
+
+    Args:
+        authenticated: 是否需要认证实例
+        account_id: 指定账户 ID
     """
     global _okx_instance
     if not config.OKX_ENABLED:
@@ -151,19 +166,20 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
     if not authenticated:
         if _okx_instance is None:
             try:
-                # H10: make_exchange 强制 timeout，避免 OKX 抽风时
-                # fetch_ticker/load_markets 卡在 urllib3 socket read，
-                # 导致子进程被父超时 600s 强杀
                 _okx_instance = make_exchange('okx')
             except Exception as e:
                 logger.warning(f"OKX 初始化失败: {e}")
                 return None
         return _okx_instance
 
-    # 认证版本（admin_secrets.json 优先于 .env）
+    # 认证版本：按 account_id 缓存
+    cache_key = ('okx', account_id or '_active')
+    if cache_key in _authenticated_instances:
+        return _authenticated_instances[cache_key]
+
     try:
         from admin_secrets import get_exchange_credentials
-        creds = get_exchange_credentials('okx')
+        creds = get_exchange_credentials('okx', account_id=account_id)
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
         passphrase = creds.get('passphrase', '')
@@ -178,12 +194,14 @@ def get_okx(authenticated: bool = False) -> Optional[ccxt.okx]:
         return None
 
     try:
-        return make_exchange(
+        instance = make_exchange(
             'okx',
             api_key=api_key,
             secret=secret,
             passphrase=passphrase,
         )
+        _authenticated_instances[cache_key] = instance
+        return instance
     except Exception as e:
         logger.warning(f"OKX 认证实例创建失败: {e}")
         return None
@@ -199,17 +217,15 @@ GATE_LIVE_MODE = getattr(config, 'GATE_LIVE_MODE', False)
 GATE_DEFAULT_LEVERAGE = getattr(config, 'GATE_DEFAULT_LEVERAGE', 10)
 
 
-def get_gate(authenticated: bool = False) -> Optional[ccxt.gate]:
+def get_gate(authenticated: bool = False, account_id: str = None) -> Optional[ccxt.gate]:
     """
     获取 Gate.io 交易所实例。
 
-    Gate.io 特点：
-      - 品种覆盖广（比 Binance 多 200+ 小币种合约）
-      - Maker 费率低 (0.015%)
-      - API Rate Limit 相对宽松 (900 req/min)
-      - 支持 USDT 永续合约 (linear swap)
-
     如果 Gate.io 未启用或连接失败，返回 None（优雅降级）。
+
+    Args:
+        authenticated: 是否需要认证实例
+        account_id: 指定账户 ID
     """
     global _gate_instance
     if not GATE_ENABLED:
@@ -228,10 +244,14 @@ def get_gate(authenticated: bool = False) -> Optional[ccxt.gate]:
                 return None
         return _gate_instance
 
-    # 认证版本
+    # 认证版本：按 account_id 缓存
+    cache_key = ('gate', account_id or '_active')
+    if cache_key in _authenticated_instances:
+        return _authenticated_instances[cache_key]
+
     try:
         from admin_secrets import get_exchange_credentials
-        creds = get_exchange_credentials('gate')
+        creds = get_exchange_credentials('gate', account_id=account_id)
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
     except Exception as e:
@@ -245,16 +265,109 @@ def get_gate(authenticated: bool = False) -> Optional[ccxt.gate]:
         return None
 
     try:
-        return make_exchange(
+        instance = make_exchange(
             'gate',
             api_key=api_key,
             secret=secret,
             default_type='swap',
             extra_options={'defaultSettle': 'usdt'},
         )
+        _authenticated_instances[cache_key] = instance
+        return instance
     except Exception as e:
         logger.warning(f"Gate.io 认证实例创建失败: {e}")
         return None
+
+
+# ══════════════════════════════════════════════════════════════════
+#  统一获取器（通用接口）
+# ══════════════════════════════════════════════════════════════════
+
+def get_exchange(name: str, authenticated: bool = False,
+                 account_id: str = None) -> Optional[ccxt.Exchange]:
+    """
+    统一的交易所实例获取接口。
+
+    Args:
+        name: 交易所名称 ('binance', 'okx', 'gate')
+        authenticated: 是否需要认证实例
+        account_id: 指定账户 ID
+
+    Returns:
+        ccxt.Exchange 实例，或 None（交易所未启用/连接失败）
+    """
+    name = name.lower()
+    if name == 'binance':
+        return get_binance(authenticated=authenticated, account_id=account_id)
+    elif name == 'okx':
+        return get_okx(authenticated=authenticated, account_id=account_id)
+    elif name == 'gate':
+        return get_gate(authenticated=authenticated, account_id=account_id)
+    else:
+        logger.warning(f"未知交易所: {name}")
+        return None
+
+
+def get_exchange_config(exchange: str, account_id: str = None) -> dict:
+    """
+    获取指定交易所的独立账户配置（leverage, stake, risk 等）。
+
+    这是获取交易所配置的推荐统一入口。
+    优先级：runtime_config > admin_secrets > config_legacy > 默认值
+
+    Args:
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+        account_id: 账户 ID，None 使用活跃账户
+
+    Returns:
+        完整配置字典：{
+            'account_balance': 100,
+            'leverage': 10,
+            'default_stake': 30,
+            'live_mode': False,
+            'slippage_alert_pct': 1.0,
+            'risk': {...},
+            'compound': {...},
+            'tp_sl': {...},
+        }
+    """
+    try:
+        from runtime_config import get_effective_exchange_config
+        return get_effective_exchange_config(exchange, account_id)
+    except Exception as e:
+        logger.debug(f"get_exchange_config fallback to config_legacy: {e}")
+        # Fallback：从 config_legacy 读取
+        try:
+            exchange_accounts = getattr(config, 'EXCHANGE_ACCOUNTS', {})
+            return exchange_accounts.get(exchange.lower(), {})
+        except Exception:
+            return {}
+
+
+def invalidate_authenticated_cache(exchange: str = None, account_id: str = None):
+    """
+    清除认证实例缓存。当凭证被更新时调用，强制下次创建新实例。
+
+    Args:
+        exchange: 指定交易所（None = 全部清除）
+        account_id: 指定账户（None = 全部清除）
+    """
+    global _authenticated_instances
+    if exchange is None and account_id is None:
+        _authenticated_instances.clear()
+        return
+
+    keys_to_remove = []
+    for key in _authenticated_instances:
+        exch, acc = key
+        if exchange and exch != exchange.lower():
+            continue
+        if account_id and acc != account_id:
+            continue
+        keys_to_remove.append(key)
+
+    for key in keys_to_remove:
+        del _authenticated_instances[key]
 
 
 def gate_has_swap(symbol: str) -> bool:

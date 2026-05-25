@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
 """
-运行时配置覆盖层 — 跨进程同步 config 变更 v2.0（多账户版）
+运行时配置覆盖层 — 跨进程同步 config 变更 v3.0（多账户 + 每交易所独立账户）
 
 工作方式：
   1. admin_panel 写 runtime_config.json（白名单字段，带时间戳）
   2. 所有进程在关键时刻调 apply_overrides()
   3. apply_overrides 读文件 → 按白名单写回 config 模块属性
 
-v2 多账户结构：
+v3 多账户 + 每交易所独立账户结构：
 {
-  "_global": { "LIVE_MODE": false, "OKX_LIVE_MODE": false, ... },
+  "_global": { "PRIMARY_EXCHANGE": "binance", "SHADOW_PARALLEL": true, ... },
+  "_exchanges": {
+    "acc_abc123": {
+      "binance": { "account_balance": 200, "leverage": 10, "live_mode": true, ... },
+      "okx": { "account_balance": 100, "leverage": 5, "live_mode": false, ... },
+      "gate": { ... }
+    }
+  },
   "acc_abc123": { "ACCOUNT_BALANCE": 100, "DEFAULT_STAKE": 50, ... },
   "acc_def456": { "ACCOUNT_BALANCE": 500, ... }
 }
 
 全局字段(GLOBAL_FIELDS): 只存一份，所有账户共享
-  LIVE_MODE, OKX_LIVE_MODE, PRIMARY_EXCHANGE, PRIMARY_EXCHANGE_FALLBACK
+  PRIMARY_EXCHANGE, PRIMARY_EXCHANGE_FALLBACK, SHADOW_PARALLEL
 
-账户字段(ACCOUNT_FIELDS): 每个账户独立的风控/仓位参数
+账户字段(ACCOUNT_FIELDS): 每个账户独立的风控/仓位参数（向后兼容）
   ACCOUNT_BALANCE, DEFAULT_STAKE, LEVERAGE, ...
+
+交易所字段(_exchanges段): v3 新增，每个账户下每个交易所独立配置
+  每个交易所拥有自己的 account_balance, leverage, default_stake, risk, compound, tp_sl
 """
 
 import json
@@ -117,9 +127,23 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
 }
 
 # ── 全局字段 vs 账户字段 ──
+# v3 变更：LIVE_MODE / OKX_LIVE_MODE 移至每交易所独立设置
+# 向后兼容：旧的 GLOBAL_FIELDS 保留这些字段用于读取 v2 格式配置
 GLOBAL_FIELDS = {'LIVE_MODE', 'OKX_LIVE_MODE', 'PRIMARY_EXCHANGE',
                  'PRIMARY_EXCHANGE_FALLBACK', 'SHADOW_PARALLEL'}
 ACCOUNT_FIELDS = set(ALLOWED.keys()) - GLOBAL_FIELDS
+
+# v3: 每交易所独立允许的设置字段白名单
+EXCHANGE_SETTING_FIELDS = {
+    'account_balance': (int, _int_validator(10, 10000), '交易所账户本金 (U)'),
+    'leverage': (int, _int_validator(1, 20), '杠杆倍数'),
+    'default_stake': (int, _int_validator(5, 500), '单笔保证金 (U)'),
+    'live_mode': (bool, None, '实盘开关'),
+    'slippage_alert_pct': (float, _pct_validator(0.1, 5.0), '滑点告警阈值 (%)'),
+}
+
+# 支持的交易所列表
+SUPPORTED_EXCHANGES = ('binance', 'okx', 'gate')
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1263,3 +1287,301 @@ def get_current_values() -> dict:
     for key in ALLOWED.keys():
         out[key] = getattr(_config, key, None)
     return out
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  v3: 每交易所独立账户配置覆盖层
+# ══════════════════════════════════════════════════════════════════
+# 设计理念：每个交易所（binance/okx/gate）拥有自己独立的资金池、杠杆、
+# 仓位、风控参数。不同交易所之间互不影响。
+#
+# runtime_config.json 中 "_exchanges" 段结构：
+# {
+#   "_exchanges": {
+#     "acc_abc123": {
+#       "binance": { "account_balance": 200, "leverage": 10, ... },
+#       "okx": { "account_balance": 100, "leverage": 5, ... }
+#     }
+#   }
+# }
+#
+# 优先级（高→低）：
+#   1. runtime_config.json _exchanges 段（admin panel 实时修改）
+#   2. admin_secrets.json 中的 settings 字段
+#   3. config_legacy.py EXCHANGE_ACCOUNTS 字典
+#   4. _default_exchange_settings() 兜底默认值
+
+def _default_exchange_settings() -> dict:
+    """每交易所账户的默认设置"""
+    return {
+        'account_balance': 100,
+        'leverage': 10,
+        'default_stake': 30,
+        'live_mode': False,
+        'slippage_alert_pct': 1.0,
+        'risk': {
+            'max_daily_loss': 30,
+            'max_daily_trades': 3,
+            'consecutive_loss_pause': 3,
+            'max_position_pct': 0.5,
+            'cooldown_hours': 24,
+        },
+        'compound': {
+            'enabled': True,
+            'step': 50,
+            'increase': 25,
+            'max_stake': 300,
+        },
+        'tp_sl': {
+            'tp1_multiplier': 0.95,
+            'tp2_multiplier': 0.92,
+            'tp1_close_ratio': 0.5,
+            'hard_stop_loss_pct': 5.0,
+        },
+    }
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """深度合并字典，override 覆盖 base"""
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_exchange_overrides(account_id: str, exchange: str) -> dict:
+    """
+    读取指定账户+交易所的配置覆盖。
+
+    Args:
+        account_id: 账户 ID
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+
+    Returns:
+        该交易所的覆盖值字典（可能为空）
+    """
+    data = _load_raw_config()
+    exchanges_data = data.get('_exchanges', {})
+    acc_exchanges = exchanges_data.get(account_id, {})
+    return acc_exchanges.get(exchange.lower(), {})
+
+
+def save_exchange_overrides(account_id: str, exchange: str, overrides: dict) -> None:
+    """
+    保存指定账户+交易所的配置覆盖。
+
+    使用深度合并，只更新传入的字段。
+
+    Args:
+        account_id: 账户 ID
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+        overrides: 要保存的覆盖值字典
+    """
+    exchange = exchange.lower()
+    if exchange not in SUPPORTED_EXCHANGES:
+        raise ValueError(f"不支持的交易所: {exchange}")
+
+    with _locked_config() as (data, save):
+        exchanges_data = data.setdefault('_exchanges', {})
+        acc_exchanges = exchanges_data.setdefault(account_id, {})
+        current = acc_exchanges.get(exchange, {})
+        merged = _deep_merge(current, overrides)
+        acc_exchanges[exchange] = merged
+        save(data)
+
+
+def load_all_exchange_overrides(account_id: str) -> dict:
+    """
+    读取指定账户下所有交易所的配置覆盖。
+
+    Returns:
+        { 'binance': {...}, 'okx': {...}, 'gate': {...} }
+    """
+    data = _load_raw_config()
+    exchanges_data = data.get('_exchanges', {})
+    return exchanges_data.get(account_id, {})
+
+
+def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict:
+    """
+    获取指定交易所的最终生效配置。
+
+    合并优先级（高→低）：
+      1. runtime_config.json _exchanges 段覆盖
+      2. admin_secrets.json 中的 per-exchange settings
+      3. config_legacy.py EXCHANGE_ACCOUNTS 字典
+      4. 默认值
+
+    Args:
+        exchange: 交易所名称 ('binance', 'okx', 'gate')
+        account_id: 账户 ID，None 使用活跃账户
+
+    Returns:
+        完整的交易所配置字典
+    """
+    exchange = exchange.lower()
+    if not account_id:
+        try:
+            import admin_secrets
+            account_id = admin_secrets.get_active_account_id()
+        except Exception:
+            account_id = ''
+
+    # 层 4: 默认值
+    result = _default_exchange_settings()
+
+    # 层 3: config_legacy.py EXCHANGE_ACCOUNTS
+    try:
+        import config
+        exchange_accounts = getattr(config, 'EXCHANGE_ACCOUNTS', {})
+        legacy_cfg = exchange_accounts.get(exchange, {})
+        if legacy_cfg:
+            result = _deep_merge(result, legacy_cfg)
+    except Exception:
+        pass
+
+    # 层 2: admin_secrets.json settings
+    if account_id:
+        try:
+            import admin_secrets
+            secrets_settings = admin_secrets.get_exchange_settings(exchange, account_id)
+            if secrets_settings:
+                result = _deep_merge(result, secrets_settings)
+        except Exception:
+            pass
+
+    # 层 1: runtime_config.json _exchanges 覆盖
+    if account_id:
+        runtime_overrides = load_exchange_overrides(account_id, exchange)
+        if runtime_overrides:
+            result = _deep_merge(result, runtime_overrides)
+
+    return result
+
+
+def get_effective_exchange_param(exchange: str, key: str,
+                                 account_id: str = None, default=None):
+    """
+    获取指定交易所的单个生效参数。支持点号分隔的嵌套路径。
+
+    Args:
+        exchange: 交易所名称
+        key: 参数路径 ('leverage', 'risk.max_daily_loss', 'compound.step')
+        account_id: 账户 ID
+        default: 未找到时的默认值
+
+    Returns:
+        参数值
+
+    用法:
+        get_effective_exchange_param('okx', 'leverage')           → 5
+        get_effective_exchange_param('binance', 'risk.max_daily_loss')  → 30
+    """
+    cfg = get_effective_exchange_config(exchange, account_id)
+    keys = key.split('.')
+    current = cfg
+    for k in keys:
+        if isinstance(current, dict):
+            current = current.get(k)
+        else:
+            return default
+        if current is None:
+            return default
+    return current
+
+
+def is_exchange_live(exchange: str, account_id: str = None) -> bool:
+    """
+    检查指定交易所是否开启了实盘模式。
+
+    Args:
+        exchange: 交易所名称
+        account_id: 账户 ID，None 使用活跃账户
+
+    Returns:
+        True/False
+    """
+    return bool(get_effective_exchange_param(exchange, 'live_mode', account_id, False))
+
+
+def get_all_live_exchanges(account_id: str = None) -> list:
+    """
+    返回所有开启了实盘模式的交易所名称列表。
+
+    Returns:
+        ['binance', 'okx'] — live_mode=True 的交易所
+    """
+    result = []
+    for exch in SUPPORTED_EXCHANGES:
+        if is_exchange_live(exch, account_id):
+            result.append(exch)
+    return result
+
+
+def validate_exchange_overrides(exchange: str, overrides: dict,
+                                 account_id: str = None) -> tuple:
+    """
+    校验每交易所覆盖值的一致性。
+
+    Args:
+        exchange: 交易所名称
+        overrides: 即将保存的覆盖值
+        account_id: 账户 ID
+
+    Returns:
+        (errors: list[str], warnings: list[str])
+    """
+    errors = []
+    warnings_out = []
+
+    # 获取合并后的生效配置
+    current = get_effective_exchange_config(exchange, account_id)
+    # 应用 overrides 得到"保存后"的值
+    merged = _deep_merge(current, overrides)
+
+    balance = float(merged.get('account_balance', 100))
+    stake = float(merged.get('default_stake', 30))
+    risk = merged.get('risk', {})
+    pos_pct = float(risk.get('max_position_pct', 0.5))
+
+    max_position = balance * pos_pct
+
+    if stake > balance:
+        errors.append(
+            f"❌ [{exchange}] default_stake({stake:.0f}U) > account_balance({balance:.0f}U)，"
+            f"保证金超过本金，风控将永远拒绝开仓。"
+        )
+    elif stake > max_position:
+        errors.append(
+            f"❌ [{exchange}] default_stake({stake:.0f}U) > 最大持仓上限({max_position:.0f}U = "
+            f"account_balance {balance:.0f} × max_position_pct {pos_pct})，"
+            f"风控会永远拒绝开仓。"
+        )
+
+    for e in errors:
+        logger.error(f"交易所配置一致性 ERROR: {e}")
+    for w in warnings_out:
+        logger.warning(f"交易所配置一致性 WARNING: {w}")
+
+    return (errors, warnings_out)
+
+
+def get_current_exchange_values() -> dict:
+    """
+    获取所有交易所当前的生效配置（供 admin panel 使用）。
+
+    Returns:
+        {
+            'binance': { 'account_balance': 200, 'leverage': 10, ... },
+            'okx': { 'account_balance': 100, 'leverage': 5, ... },
+            'gate': { ... }
+        }
+    """
+    result = {}
+    for exch in SUPPORTED_EXCHANGES:
+        result[exch] = get_effective_exchange_config(exch)
+    return result
