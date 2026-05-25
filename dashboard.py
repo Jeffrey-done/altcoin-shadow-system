@@ -1217,6 +1217,234 @@ def api_signal_scores():
 
 
 # ══════════════════════════════════════════════════════════════════
+#  System Status APIs (策略/信号/ML/事件总线/执行引擎/Gate)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/system-status')
+def system_status_page():
+    _require_auth()
+    return render_template('system_status.html')
+
+
+@app.route('/api/strategies')
+@check_api_token
+def api_strategies():
+    """返回策略引擎状态：注册的策略、启用状态、各策略独立 PnL"""
+    result = {'strategies': [], 'engine_status': 'unknown'}
+    try:
+        from strategies.registry import StrategyRegistry
+        registry = StrategyRegistry()
+        for name, strategy in registry._strategies.items():
+            enabled = registry._enabled.get(name, False)
+            # 计算该策略的独立 PnL
+            trades = load_json(TRADES_FILE, [])
+            account_id = get_current_account_id()
+            trades = filter_trades_by_account(trades, account_id)
+            strat_trades = [t for t in trades if t.get('strategy', '') == name]
+            closed = [t for t in strat_trades if t.get('status') == 'closed']
+            open_trades = [t for t in strat_trades if t.get('status') == 'open']
+            total_pnl = sum(t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed)
+            wins = sum(1 for t in closed if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
+            win_rate = round(wins / len(closed) * 100, 1) if closed else 0
+
+            result['strategies'].append({
+                'name': name,
+                'version': getattr(strategy, 'version', '?'),
+                'description': getattr(strategy, 'description', ''),
+                'direction': getattr(strategy, 'direction', '?'),
+                'enabled': enabled,
+                'open_count': len(open_trades),
+                'closed_count': len(closed),
+                'total_pnl': round(total_pnl, 2),
+                'win_rate': win_rate,
+            })
+        result['engine_status'] = 'running'
+    except Exception as e:
+        result['engine_status'] = f'error: {e}'
+    result['timestamp'] = utcnow_iso()
+    return jsonify(result)
+
+
+@app.route('/api/signals')
+@check_api_token
+def api_signals():
+    """返回市场信号系统状态：regime、sentiment、whale alerts"""
+    result = {'regime': {}, 'sentiment': {}, 'whale_alerts': [], 'timestamp': utcnow_iso()}
+    # Regime
+    try:
+        from signals.regime import get_current_regime
+        state = get_current_regime()
+        result['regime'] = {
+            'regime': state.regime.value if hasattr(state.regime, 'value') else str(state.regime),
+            'description': state.regime.description if hasattr(state.regime, 'description') else '',
+            'confidence': round(state.confidence, 2),
+            'short_bias': state.regime.short_bias if hasattr(state.regime, 'short_bias') else 1.0,
+            'long_bias': state.regime.long_bias if hasattr(state.regime, 'long_bias') else 1.0,
+            'updated_at': state.updated_at,
+            'indicators': state.indicators,
+            'reason': state.reason,
+        }
+    except Exception as e:
+        result['regime'] = {'status': 'unavailable', 'error': str(e)}
+    # Sentiment
+    try:
+        from signals.sentiment import get_sentiment_state
+        sent = get_sentiment_state()
+        result['sentiment'] = sent if isinstance(sent, dict) else {'status': 'unavailable'}
+    except Exception as e:
+        result['sentiment'] = {'status': 'unavailable', 'error': str(e)}
+    # Whale alerts
+    try:
+        from signals.whale_alert import get_recent_alerts
+        alerts = get_recent_alerts()
+        result['whale_alerts'] = alerts[:20] if isinstance(alerts, list) else []
+    except Exception as e:
+        result['whale_alerts'] = []
+    return jsonify(result)
+
+
+@app.route('/api/ml')
+@check_api_token
+def api_ml():
+    """返回 ML 模型状态：版本、最近预测统计、A/B 测试"""
+    result = {'status': 'unavailable', 'model': {}, 'predictions': {}, 'ab_test': {}}
+    try:
+        from ml.scorer import get_scorer_status
+        status = get_scorer_status()
+        result.update(status if isinstance(status, dict) else {})
+        result['status'] = 'active'
+    except Exception as e:
+        result['status'] = f'not_loaded: {e}'
+    # 尝试获取最近预测分布
+    try:
+        from ml.scorer import get_recent_predictions
+        preds = get_recent_predictions()
+        result['predictions'] = preds if isinstance(preds, dict) else {}
+    except Exception:
+        pass
+    # A/B 测试
+    try:
+        from ml.ab_test import get_ab_results
+        result['ab_test'] = get_ab_results() or {}
+    except Exception:
+        pass
+    result['timestamp'] = utcnow_iso()
+    return jsonify(result)
+
+
+@app.route('/api/event-bus')
+@check_api_token
+def api_event_bus():
+    """返回事件总线状态：后端类型、订阅者数、最近事件统计"""
+    result = {'backend': 'unknown', 'subscribers': 0, 'channels': [],
+              'recent_events': [], 'stats': {}}
+    try:
+        from event_bus import get_event_bus
+        bus = get_event_bus()
+        result['backend'] = getattr(bus, '_backend_name', type(bus).__name__)
+        # 获取订阅信息
+        if hasattr(bus, '_backend') and hasattr(bus._backend, '_subscriptions'):
+            subs = bus._backend._subscriptions
+            result['subscribers'] = len(subs)
+            result['channels'] = list(set(s.pattern for s in subs.values()))
+        elif hasattr(bus, '_subscriptions'):
+            result['subscribers'] = len(bus._subscriptions)
+            result['channels'] = list(set(s.pattern for s in bus._subscriptions.values()))
+        # 事件统计
+        if hasattr(bus, 'get_stats'):
+            result['stats'] = bus.get_stats()
+    except Exception as e:
+        result['backend'] = f'error: {e}'
+    result['timestamp'] = utcnow_iso()
+    return jsonify(result)
+
+
+@app.route('/api/execution-engine')
+@check_api_token
+def api_execution_engine():
+    """返回执行引擎状态：WS连接池、延迟、Smart Order"""
+    result = {'ws_engine': {}, 'smart_order': {}, 'orderbook': {}, 'status': 'unknown'}
+    # WS Order Engine
+    try:
+        from execution.ws_order import get_ws_engine_status
+        result['ws_engine'] = get_ws_engine_status() or {}
+    except Exception as e:
+        result['ws_engine'] = {'status': 'unavailable', 'error': str(e)}
+    # Smart Order
+    try:
+        from execution.smart_order import get_smart_order_status
+        result['smart_order'] = get_smart_order_status() or {}
+    except Exception as e:
+        result['smart_order'] = {'status': 'unavailable', 'error': str(e)}
+    # Orderbook Monitor
+    try:
+        from execution.orderbook_monitor import get_monitor_status
+        result['orderbook'] = get_monitor_status() or {}
+    except Exception as e:
+        result['orderbook'] = {'status': 'unavailable', 'error': str(e)}
+    result['status'] = 'active'
+    result['timestamp'] = utcnow_iso()
+    return jsonify(result)
+
+
+@app.route('/api/gate-account')
+@check_api_token
+def api_gate_account():
+    """返回 Gate.io 账号状态、余额、持仓"""
+    result = {'status': 'unavailable', 'balance': {}, 'positions': [], 'credentials': False}
+    try:
+        from admin_secrets import list_accounts, get_active_account_id
+        accounts = list_accounts()
+        active_id = get_active_account_id()
+        # 检查是否有 Gate 凭证
+        for acc in accounts:
+            if acc.get('has_gate', False):
+                result['credentials'] = True
+                result['account_id'] = acc['id']
+                result['account_name'] = acc['name']
+                break
+        # 尝试获取余额
+        if result['credentials']:
+            try:
+                from admin_secrets import get_credentials
+                gate_creds = get_credentials(result['account_id'], 'gate')
+                if gate_creds and gate_creds.get('api_key'):
+                    result['status'] = 'configured'
+                    # 尝试拉实时余额
+                    try:
+                        import ccxt
+                        gate = ccxt.gateio({
+                            'apiKey': gate_creds['api_key'],
+                            'secret': gate_creds['secret'],
+                            'options': {'defaultType': 'swap'},
+                        })
+                        balance = gate.fetch_balance({'type': 'swap'})
+                        result['balance'] = {
+                            'total': round(float(balance.get('total', {}).get('USDT', 0)), 2),
+                            'free': round(float(balance.get('free', {}).get('USDT', 0)), 2),
+                            'used': round(float(balance.get('used', {}).get('USDT', 0)), 2),
+                        }
+                        positions = gate.fetch_positions()
+                        result['positions'] = [{
+                            'symbol': p['symbol'],
+                            'side': p['side'],
+                            'contracts': p['contracts'],
+                            'unrealizedPnl': round(float(p.get('unrealizedPnl', 0)), 4),
+                            'leverage': p.get('leverage'),
+                            'entryPrice': p.get('entryPrice'),
+                        } for p in positions if p.get('contracts', 0) != 0]
+                        result['status'] = 'active'
+                    except Exception as e:
+                        result['balance_error'] = str(e)[:100]
+            except Exception:
+                pass
+    except Exception as e:
+        result['status'] = f'error: {e}'
+    result['timestamp'] = utcnow_iso()
+    return jsonify(result)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  SocketIO Events
 # ══════════════════════════════════════════════════════════════════
 

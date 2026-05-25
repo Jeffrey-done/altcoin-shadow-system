@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+
+{% block title %}系统状态 - Shadow Trading{% endblock %}
+{% block page_title %}系统全景{% endblock %}
+{% block subtitle %}策略引擎 | 市场信号 | ML模型 | 事件总线 | 执行引擎 | Gate.io{% endblock %}
+
+{% block header_controls %}
+<label class="auto-refresh-toggle" id="auto-refresh-toggle">
+    <span class="dot"></span> 自动刷新
+</label>
+{% endblock %}
+
+{% block content %}
+<div id="content"><div class="empty-state">加载系统状态...</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadAll() {
+    const content = document.getElementById('content');
+    try {
+        const [strats, signals, ml, evbus, exec, gate] = await Promise.all([
+            fetch('/api/strategies').then(r => r.json()).catch(() => null),
+            fetch('/api/signals').then(r => r.json()).catch(() => null),
+            fetch('/api/ml').then(r => r.json()).catch(() => null),
+            fetch('/api/event-bus').then(r => r.json()).catch(() => null),
+            fetch('/api/execution-engine').then(r => r.json()).catch(() => null),
+            fetch('/api/gate-account').then(r => r.json()).catch(() => null),
+        ]);
+        let html = '';
+        html += renderStrategies(strats);
+        html += renderSignals(signals);
+        html += renderML(ml);
+        html += renderEventBus(evbus);
+        html += renderExecution(exec);
+        html += renderGate(gate);
+        content.innerHTML = html;
+        if (window.lucide) lucide.createIcons();
+    } catch (e) {
+        content.innerHTML = `<div class="empty-state">加载失败: ${e.message}</div>`;
+    }
+}
+
+function renderStrategies(data) {
+    if (!data) return '';
+    const badge = data.engine_status === 'running'
+        ? '<span class="badge badge-ok">运行中</span>'
+        : `<span class="badge badge-stop">${data.engine_status}</span>`;
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="layers"></i> 策略引擎 ${badge}</div>`;
+    if (!data.strategies || data.strategies.length === 0) {
+        html += '<div class="card-sub" style="padding:12px;text-align:center;">无已注册策略（策略模块未加载）</div>';
+    } else {
+        html += '<div class="table-wrapper"><table><thead><tr><th>策略</th><th>版本</th><th>方向</th><th>状态</th><th>持仓</th><th>已平仓</th><th>盈亏</th><th>胜率</th></tr></thead><tbody>';
+        data.strategies.forEach(s => {
+            const statusBadge = s.enabled ? '<span class="badge badge-ok">启用</span>' : '<span class="badge badge-stop">禁用</span>';
+            const dir = s.direction === 'SHORT' ? '<span class="red">做空</span>' : (s.direction === 'LONG' ? '<span class="green">做多</span>' : s.direction);
+            html += `<tr>
+                <td><b>${s.name}</b><div style="font-size:0.6rem;color:var(--text-muted);">${s.description || ''}</div></td>
+                <td>${s.version}</td><td>${dir}</td><td>${statusBadge}</td>
+                <td>${s.open_count}</td><td>${s.closed_count}</td>
+                <td><b>${App.fmtPnl(s.total_pnl)}</b></td>
+                <td>${s.win_rate}%</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderSignals(data) {
+    if (!data) return '';
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="radio"></i> 市场信号系统</div>
+        <div class="grid grid-3">`;
+    // Regime
+    const r = data.regime || {};
+    if (r.regime) {
+        const conf = (r.confidence * 100).toFixed(0);
+        html += `<div class="card" style="border-color:var(--accent-subtle);">
+            <div class="card-header">市场状态 (Regime)</div>
+            <div class="card-value" style="font-size:1.2rem;">${r.description || r.regime}</div>
+            <div class="card-sub">置信度: ${conf}% | 做空系数: ${r.short_bias}x | 做多系数: ${r.long_bias}x</div>
+            ${r.reason ? '<div class="card-sub" style="margin-top:4px;">'+r.reason+'</div>' : ''}
+        </div>`;
+    } else {
+        html += `<div class="card"><div class="card-header">市场状态</div><div class="card-sub">${r.error || '未加载'}</div></div>`;
+    }
+    // Sentiment
+    const s = data.sentiment || {};
+    if (s.score !== undefined) {
+        const cls = s.score > 0 ? 'green' : (s.score < 0 ? 'red' : 'yellow');
+        html += `<div class="card">
+            <div class="card-header">社交情绪</div>
+            <div class="card-value ${cls}" style="font-size:1.2rem;">${s.score > 0 ? '+' : ''}${s.score}</div>
+            <div class="card-sub">${s.label || ''} | Fear&Greed: ${s.fear_greed || '--'}</div>
+        </div>`;
+    } else {
+        html += `<div class="card"><div class="card-header">社交情绪</div><div class="card-sub">${s.error || s.status || '未启用'}</div></div>`;
+    }
+    // Whale
+    const whales = data.whale_alerts || [];
+    html += `<div class="card">
+        <div class="card-header">鲸鱼预警</div>
+        <div class="card-value" style="font-size:1.2rem;">${whales.length} <span style="font-size:0.7rem;color:var(--text-muted);">条警报</span></div>
+        <div class="card-sub">最近24h大额 CEX 充值</div>
+    </div>`;
+    html += '</div>';
+    // Whale alerts detail
+    if (whales.length > 0) {
+        html += '<div class="table-wrapper" style="margin-top:10px;"><table><thead><tr><th>时间</th><th>币种</th><th>金额</th><th>方向</th><th>交易所</th></tr></thead><tbody>';
+        whales.slice(0, 10).forEach(w => {
+            html += `<tr><td>${App.formatTime(w.timestamp || w.ts)}</td><td><b>${w.symbol || w.token}</b></td>
+                <td>${w.amount_usd ? '$'+Number(w.amount_usd).toLocaleString() : (w.amount||'--')}</td>
+                <td>${w.direction || w.type || '--'}</td><td>${w.exchange || '--'}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderML(data) {
+    if (!data) return '';
+    const statusBadge = data.status === 'active'
+        ? '<span class="badge badge-ok">活跃</span>'
+        : `<span class="badge badge-warn">${data.status}</span>`;
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="brain"></i> ML 因子模型 ${statusBadge}</div>`;
+    const m = data.model || {};
+    if (m.version || m.features_count) {
+        html += `<div class="grid grid-4">
+            <div><span class="card-sub">模型版本</span><div style="font-weight:700;">${m.version || '--'}</div></div>
+            <div><span class="card-sub">特征数</span><div style="font-weight:700;">${m.features_count || '--'}</div></div>
+            <div><span class="card-sub">训练样本</span><div style="font-weight:700;">${m.train_samples || '--'}</div></div>
+            <div><span class="card-sub">最后训练</span><div style="font-weight:700;">${m.last_trained ? App.formatTime(m.last_trained) : '--'}</div></div>
+        </div>`;
+    }
+    const p = data.predictions || {};
+    if (p.total !== undefined) {
+        html += `<div style="margin-top:12px;"><span class="card-sub">最近预测分布</span>
+            <div class="grid grid-3" style="margin-top:6px;">
+                <div><span class="card-sub">总预测数</span><div style="font-weight:700;">${p.total}</div></div>
+                <div><span class="card-sub">平均分</span><div style="font-weight:700;">${p.avg_score ? p.avg_score.toFixed(1) : '--'}</div></div>
+                <div><span class="card-sub">高分比例(&gt;70)</span><div style="font-weight:700;">${p.high_pct ? p.high_pct.toFixed(1)+'%' : '--'}</div></div>
+            </div></div>`;
+    }
+    const ab = data.ab_test || {};
+    if (ab.enabled !== undefined) {
+        html += `<div style="margin-top:12px;border-top:1px solid var(--border-subtle);padding-top:12px;">
+            <span class="card-sub">A/B 测试</span>: ${ab.enabled ? '<span class="badge badge-ok">进行中</span>' : '<span class="badge badge-warn">未启用</span>'}
+            ${ab.ml_pnl !== undefined ? ' | ML组 PnL: '+App.fmtPnl(ab.ml_pnl)+' | 线性组: '+App.fmtPnl(ab.linear_pnl) : ''}
+        </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderEventBus(data) {
+    if (!data) return '';
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="radio-tower"></i> 事件总线</div>
+        <div class="grid grid-4">
+            <div><span class="card-sub">后端</span><div style="font-weight:700;">${data.backend || '--'}</div></div>
+            <div><span class="card-sub">订阅者数</span><div style="font-weight:700;">${data.subscribers || 0}</div></div>
+            <div><span class="card-sub">频道数</span><div style="font-weight:700;">${(data.channels||[]).length}</div></div>
+            <div><span class="card-sub">状态</span><div style="font-weight:700;"><span class="badge badge-ok">在线</span></div></div>
+        </div>`;
+    if (data.channels && data.channels.length > 0) {
+        html += '<div style="margin-top:10px;"><span class="card-sub">订阅频道:</span> <span style="font-size:0.7rem;color:var(--text-secondary);">';
+        html += data.channels.map(c => `<span class="badge badge-info" style="margin:2px;">${c}</span>`).join(' ');
+        html += '</span></div>';
+    }
+    const st = data.stats || {};
+    if (st.total_published !== undefined) {
+        html += `<div style="margin-top:10px;"><span class="card-sub">统计:</span>
+            已发布 ${st.total_published || 0} 事件 | 已投递 ${st.total_delivered || 0} | 丢失 ${st.total_dropped || 0}
+        </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderExecution(data) {
+    if (!data) return '';
+    const statusBadge = data.status === 'active'
+        ? '<span class="badge badge-ok">活跃</span>'
+        : `<span class="badge badge-warn">${data.status}</span>`;
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="zap"></i> 执行引擎 ${statusBadge}</div>
+        <div class="grid grid-3">`;
+    // WS Engine
+    const ws = data.ws_engine || {};
+    html += `<div class="card">
+        <div class="card-header">WebSocket 下单</div>`;
+    if (ws.status === 'unavailable') {
+        html += `<div class="card-sub">${ws.error || '未加载'}</div>`;
+    } else {
+        html += `<div style="font-size:0.76rem;">
+            连接池: ${ws.pool_size || '--'} | 活跃: ${ws.active_connections || '--'}<br>
+            平均延迟: ${ws.avg_latency_ms ? ws.avg_latency_ms.toFixed(0)+'ms' : '--'}<br>
+            已执行: ${ws.total_orders || '--'} 单
+        </div>`;
+    }
+    html += '</div>';
+    // Smart Order
+    const so = data.smart_order || {};
+    html += `<div class="card">
+        <div class="card-header">智能拆单 (TWAP/VWAP)</div>`;
+    if (so.status === 'unavailable') {
+        html += `<div class="card-sub">${so.error || '未加载'}</div>`;
+    } else {
+        html += `<div style="font-size:0.76rem;">
+            活跃任务: ${so.active_tasks || 0}<br>
+            已完成: ${so.completed || '--'}<br>
+            模式: ${so.default_algo || '--'}
+        </div>`;
+    }
+    html += '</div>';
+    // Orderbook
+    const ob = data.orderbook || {};
+    html += `<div class="card">
+        <div class="card-header">盘口监控</div>`;
+    if (ob.status === 'unavailable') {
+        html += `<div class="card-sub">${ob.error || '未加载'}</div>`;
+    } else {
+        html += `<div style="font-size:0.76rem;">
+            监控币种: ${ob.symbols_count || '--'}<br>
+            更新频率: ${ob.update_interval || '--'}<br>
+            流动性警告: ${ob.low_liquidity_count || 0}
+        </div>`;
+    }
+    html += '</div></div></div>';
+    return html;
+}
+
+function renderGate(data) {
+    if (!data) return '';
+    let statusBadge;
+    if (data.status === 'active') statusBadge = '<span class="badge badge-ok">已连接</span>';
+    else if (data.status === 'configured') statusBadge = '<span class="badge badge-warn">已配置(未验证)</span>';
+    else statusBadge = '<span class="badge badge-stop">未配置</span>';
+
+    let html = `<div class="card" style="margin-bottom:14px;">
+        <div class="section-title"><i data-lucide="landmark"></i> Gate.io 账号 ${statusBadge}</div>`;
+    if (!data.credentials) {
+        html += '<div class="card-sub" style="padding:12px;text-align:center;">未检测到 Gate.io API 凭证。请在 Admin Panel 中配置。</div>';
+    } else {
+        const b = data.balance || {};
+        html += `<div class="grid grid-4">
+            <div><span class="card-sub">账户</span><div style="font-weight:700;">${data.account_name || '--'}</div></div>
+            <div><span class="card-sub">总资产</span><div style="font-weight:700;">${b.total !== undefined ? b.total+'U' : '--'}</div></div>
+            <div><span class="card-sub">可用</span><div style="font-weight:700;">${b.free !== undefined ? b.free+'U' : '--'}</div></div>
+            <div><span class="card-sub">占用</span><div style="font-weight:700;">${b.used !== undefined ? b.used+'U' : '--'}</div></div>
+        </div>`;
+        if (data.balance_error) {
+            html += `<div class="card-sub" style="margin-top:8px;color:var(--yellow);">余额查询失败: ${data.balance_error}</div>`;
+        }
+        const pos = data.positions || [];
+        if (pos.length > 0) {
+            html += '<div style="margin-top:12px;"><span class="card-sub">当前持仓:</span></div>';
+            html += '<div class="table-wrapper" style="margin-top:6px;"><table><thead><tr><th>币种</th><th>方向</th><th>数量</th><th>杠杆</th><th>入场价</th><th>浮动盈亏</th></tr></thead><tbody>';
+            pos.forEach(p => {
+                const pnlCls = p.unrealizedPnl >= 0 ? 'green' : 'red';
+                html += `<tr><td><b>${p.symbol}</b></td><td>${p.side}</td><td>${p.contracts}</td>
+                    <td>${p.leverage || '--'}x</td><td>${p.entryPrice || '--'}</td>
+                    <td class="${pnlCls}">${p.unrealizedPnl >= 0 ? '+' : ''}${p.unrealizedPnl}U</td></tr>`;
+            });
+            html += '</tbody></table></div>';
+        } else if (data.status === 'active') {
+            html += '<div class="card-sub" style="margin-top:8px;text-align:center;">暂无持仓</div>';
+        }
+    }
+    html += '</div>';
+    return html;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadAll();
+    AutoRefresh.init(loadAll);
+});
+</script>
+{% endblock %}
