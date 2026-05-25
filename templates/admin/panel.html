@@ -22,25 +22,29 @@
   <div id="alert-box"></div>
 
   <!-- ACCOUNT BAR -->
-  <div class="account-bar">
-    <div class="account-info">
-      <div class="account-avatar" id="account-avatar">?</div>
-      <div>
-        <div class="account-name" id="active-account-name">加载中...</div>
-        <div class="account-id" id="active-account-id"></div>
+  <div class="account-bar" style="flex-direction:column;align-items:stretch;">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;">
+      <div class="account-info">
+        <div class="account-avatar" id="account-avatar">?</div>
+        <div>
+          <div class="account-name" id="active-account-name">加载中...</div>
+          <div class="account-id" id="active-account-id"></div>
+        </div>
+      </div>
+      <div class="account-actions">
+        <span id="trading-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;">
+          <span style="font-size:0.7rem;color:var(--text-muted);">交易</span>
+          <input type="checkbox" id="account-trading-toggle" onchange="toggleAccountTrading(this)" style="cursor:pointer;">
+          <span class="badge" id="badge-trading">ON</span>
+        </span>
+        <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
+        <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
+        <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
       </div>
     </div>
-    <div class="account-actions">
-      <span id="trading-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;">
-        <span style="font-size:0.7rem;color:var(--text-muted);">交易</span>
-        <input type="checkbox" id="account-trading-toggle" onchange="toggleAccountTrading(this)" style="cursor:pointer;">
-        <span class="badge" id="badge-trading">ON</span>
-      </span>
-      <select id="account-switcher" class="btn btn-ghost btn-sm" style="padding:7px 14px;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:0.72rem;"></select>
-      <button class="btn btn-primary btn-sm" onclick="openAccountModal()"><i data-lucide="plus" style="width:12px;height:12px;"></i> 新建</button>
-      <button class="btn btn-ghost btn-sm" onclick="openRenameModal()"><i data-lucide="edit-3" style="width:12px;height:12px;"></i></button>
-      <button class="btn btn-danger btn-sm" onclick="deleteCurrentAccount()"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
-    </div>
+    <!-- Account Cards Grid -->
+    <div id="account-cards-grid"></div>
   </div>
 
 
@@ -177,10 +181,38 @@
 
     <div class="card">
       <div class="card-title"><i data-lucide="target"></i> 止盈与止损</div>
-      <div class="form-row"><label>一档止盈系数 (0.80~1.00)</label><input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01"></div>
-      <div class="form-row"><label>二档止盈系数 (0.70~1.00)</label><input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01"></div>
-      <div class="form-row"><label>一档平仓比例 (0.1~0.9)</label><input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1"></div>
-      <div class="form-row"><label>硬止损 (%)</label><input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5"></div>
+      <div class="form-row">
+        <label>一档止盈系数 (0.80~1.00)</label>
+        <div class="slider-dual-control">
+          <input type="range" id="slider-TP1_MULTIPLIER" min="0.80" max="1.00" step="0.01" oninput="syncSliderToNumber('TP1_MULTIPLIER', this.value)">
+          <input type="number" id="cfg-TP1_MULTIPLIER" min="0.80" max="1.0" step="0.01" oninput="syncNumberToSlider('TP1_MULTIPLIER', this.value)">
+          <span class="slider-value-label" id="lbl-TP1_MULTIPLIER"></span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>二档止盈系数 (0.70~1.00)</label>
+        <div class="slider-dual-control">
+          <input type="range" id="slider-TP2_MULTIPLIER" min="0.70" max="1.00" step="0.01" oninput="syncSliderToNumber('TP2_MULTIPLIER', this.value)">
+          <input type="number" id="cfg-TP2_MULTIPLIER" min="0.70" max="1.0" step="0.01" oninput="syncNumberToSlider('TP2_MULTIPLIER', this.value)">
+          <span class="slider-value-label" id="lbl-TP2_MULTIPLIER"></span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>一档平仓比例 (0.1~0.9)</label>
+        <div class="slider-dual-control">
+          <input type="range" id="slider-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1" oninput="syncSliderToNumber('TP1_CLOSE_RATIO', this.value)">
+          <input type="number" id="cfg-TP1_CLOSE_RATIO" min="0.1" max="0.9" step="0.1" oninput="syncNumberToSlider('TP1_CLOSE_RATIO', this.value)">
+          <span class="slider-value-label" id="lbl-TP1_CLOSE_RATIO"></span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>硬止损 (%)</label>
+        <div class="slider-dual-control">
+          <input type="range" id="slider-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5" oninput="syncSliderToNumber('HARD_STOP_LOSS_PCT', this.value)">
+          <input type="number" id="cfg-HARD_STOP_LOSS_PCT" min="1" max="20" step="0.5" oninput="syncNumberToSlider('HARD_STOP_LOSS_PCT', this.value)">
+          <span class="slider-value-label" id="lbl-HARD_STOP_LOSS_PCT"></span>
+        </div>
+      </div>
       <div class="form-row"><label>滑点告警 (%)</label><input type="number" id="cfg-SLIPPAGE_ALERT_PCT" min="0.1" max="5" step="0.1"></div>
     </div>
 
@@ -200,6 +232,13 @@
       <span style="margin-left:14px;font-size:0.72rem;color:var(--text-muted);">
         全局字段落到 <code>_global</code>；其余字段落到当前账号。
       </span>
+    </div>
+
+    <!-- Consistency Warnings Banner -->
+    <div id="consistency-warnings">
+      <div class="cw-title"><i data-lucide="alert-triangle" style="width:16px;height:16px;"></i> 一致性警告</div>
+      <ul class="cw-list" id="cw-list"></ul>
+      <button class="cw-dismiss" onclick="dismissConsistencyWarnings()">关闭提示</button>
     </div>
   </div>
 
@@ -326,6 +365,9 @@
   </div>
 </div>
 
+<!-- Toast Notification Container -->
+<div id="toast-container"></div>
+
 
 
 <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
@@ -354,7 +396,85 @@ async function api(method, path, body) {
   if (!res.ok) { if (data.error === 'totp_required') return {needTotp: true}; throw new Error(data.error || data.message || 'HTTP ' + res.status); }
   return data;
 }
-function alertBox(msg, level) { const el = document.getElementById('alert-box'); const cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success'); el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>'; setTimeout(() => { el.innerHTML = ''; }, 5000); }
+function alertBox(msg, level) { const el = document.getElementById('alert-box'); const cls = level === 'error' ? 'alert-error' : (level === 'warning' ? 'alert-warning' : 'alert-success'); el.innerHTML = '<div class="alert ' + cls + '">' + msg + '</div>'; setTimeout(() => { el.innerHTML = ''; }, 5000); if (level === 'ok') showToast('success', msg); else if (level === 'error') showToast('error', msg); }
+
+// ── Toast Notification System ──
+function showToast(type, text) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  const icon = type === 'success' ? '\u2713' : '\u2717';
+  toast.innerHTML = '<span class="toast-icon">' + icon + '</span><span class="toast-text">' + text + '</span><span class="toast-close" onclick="this.parentElement.remove()">\u00d7</span>';
+  container.appendChild(toast);
+  setTimeout(() => { toast.classList.add('toast-hide'); setTimeout(() => toast.remove(), 300); }, 4000);
+}
+
+// ── Range Slider Sync Functions ──
+function syncSliderToNumber(key, val) {
+  const numEl = document.getElementById('cfg-' + key);
+  const lblEl = document.getElementById('lbl-' + key);
+  if (numEl) numEl.value = val;
+  if (lblEl) lblEl.textContent = val;
+}
+function syncNumberToSlider(key, val) {
+  const sliderEl = document.getElementById('slider-' + key);
+  const lblEl = document.getElementById('lbl-' + key);
+  if (sliderEl) sliderEl.value = val;
+  if (lblEl) lblEl.textContent = val;
+}
+function initSliders() {
+  ['TP1_MULTIPLIER', 'TP2_MULTIPLIER', 'HARD_STOP_LOSS_PCT', 'TP1_CLOSE_RATIO'].forEach(key => {
+    const numEl = document.getElementById('cfg-' + key);
+    const sliderEl = document.getElementById('slider-' + key);
+    const lblEl = document.getElementById('lbl-' + key);
+    if (numEl && sliderEl) {
+      const val = numEl.value || sliderEl.min;
+      sliderEl.value = val;
+      if (lblEl) lblEl.textContent = val;
+    }
+  });
+}
+
+// ── Consistency Warnings ──
+function showConsistencyWarnings(warnings) {
+  const el = document.getElementById('consistency-warnings');
+  const list = document.getElementById('cw-list');
+  if (!el || !list || !warnings || !warnings.length) return;
+  list.innerHTML = warnings.map(w => '<li>' + w + '</li>').join('');
+  el.style.display = 'block';
+  lucide.createIcons();
+}
+function dismissConsistencyWarnings() {
+  const el = document.getElementById('consistency-warnings');
+  if (el) el.style.display = 'none';
+}
+
+// ── Account Cards Grid Rendering ──
+function renderAccountCards() {
+  const grid = document.getElementById('account-cards-grid');
+  if (!grid) return;
+  if (!currentAccounts || currentAccounts.length === 0) { grid.innerHTML = ''; return; }
+  const cfg = lastConfigState.config_active_snapshot || {};
+  grid.innerHTML = currentAccounts.map(acc => {
+    const isActive = acc.id === currentActiveId;
+    const tradingEnabled = acc.trading_enabled !== false;
+    const hasBn = true; // All accounts have potential Binance
+    const hasOkx = true; // All accounts have potential OKX
+    return '<div class="account-card' + (isActive ? ' account-card-active' : '') + '" onclick="switchAccount(\'' + acc.id + '\')">' +
+      (isActive ? '<div class="account-card-active-indicator"></div>' : '') +
+      '<div class="account-card-name">' + acc.name + '</div>' +
+      '<div class="account-card-badges">' +
+        '<span class="account-card-badge account-card-badge-bn">BN</span>' +
+        '<span class="account-card-badge account-card-badge-okx">OKX</span>' +
+      '</div>' +
+      '<div class="account-card-trading">' +
+        '<span class="dot ' + (tradingEnabled ? 'dot-green' : 'dot-red') + '"></span>' +
+        '<span>' + (tradingEnabled ? '交易中' : '已停用') + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -370,9 +490,15 @@ function switchTab(name) {
   }
 }
 
-function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => document.getElementById('totp-code').focus(), 50); }
+function openTotpModal(action) { pendingAction = action; document.getElementById('totp-modal').classList.add('show'); setTimeout(() => { document.getElementById('totp-code').focus(); }, 50); }
 function closeTotpModal() { pendingAction = null; document.getElementById('totp-modal').classList.remove('show'); document.getElementById('totp-code').value = ''; }
 async function submitTotp() { const code = document.getElementById('totp-code').value.trim(); try { await api('POST', 'verify-totp', {totp: code}); closeTotpModal(); if (pendingAction) { const fn = pendingAction; pendingAction = null; await fn(); } } catch (e) { alertBox('验证失败: ' + e.message, 'error'); } }
+
+// ── TOTP Auto-Submit (auto-trigger when 6 digits entered) ──
+document.getElementById('totp-code').addEventListener('input', function() {
+  this.value = this.value.replace(/\D/g, '');
+  if (this.value.length === 6) { setTimeout(submitTotp, 50); }
+});
 
 
 function openAccountModal() { document.getElementById('account-modal').classList.add('show'); setTimeout(() => document.getElementById('new-account-name').focus(), 50); }
@@ -486,7 +612,10 @@ function populateAccountFieldsForm() {
     }
     if (val === undefined || val === null) { if (el.type !== 'checkbox') el.value = ''; else el.checked = false; return; }
     if (el.type === 'checkbox') el.checked = !!val; else el.value = val;
+    // Sync range sliders
+    syncNumberToSlider(key, val);
   });
+  initSliders();
 }
 
 
@@ -529,6 +658,7 @@ function updateAccountUI() {
     opt.selected = acc.id === currentActiveId;
     sel.appendChild(opt);
   });
+  renderAccountCards();
 }
 
 async function toggleAccountTrading(el) {
@@ -589,7 +719,14 @@ function saveConfig() {
       const accCount = (r.saved && r.saved.account_fields || []).length;
       const globalCount = (r.saved && r.saved.global || []).length;
       const summary = [accCount ? accCount + ' 项到账号「' + accName + '」' : '', globalCount ? globalCount + ' 项到全局' : ''].filter(Boolean).join('，') || Object.keys(r.applied||{}).length + ' 项更改';
-      alertBox('已保存：' + summary, 'ok'); loadState();
+      alertBox('已保存：' + summary, 'ok');
+      // Show consistency warnings if present
+      if (r.consistency_warnings && r.consistency_warnings.length) {
+        showConsistencyWarnings(r.consistency_warnings);
+      } else {
+        dismissConsistencyWarnings();
+      }
+      loadState();
     } catch (e) { alertBox('保存失败: ' + e.message, 'error'); }
   }; doSave();
 }
