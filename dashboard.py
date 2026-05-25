@@ -40,7 +40,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, render_template, jsonify, request, make_response
+from flask import Flask, render_template, jsonify, request, make_response, redirect
 from flask_socketio import SocketIO, emit as socketio_emit
 
 # 添加项目路径
@@ -829,6 +829,17 @@ def backtest_page():
 def signal_scores_page():
     _require_auth()
     return render_template('signal_scores.html')
+
+
+@app.route('/admin')
+def admin_redirect():
+    """统一入口：从主面板跳转到 Admin Panel（保留安全机制）"""
+    _require_auth()
+    secret = os.environ.get('ADMIN_URL_SECRET', '').strip()
+    if not secret:
+        return render_template('admin_unavailable.html'), 503
+    return redirect(f'/{secret}/')
+
 
 
 # ══════════════════════════════════════════════════════════════════
