@@ -76,15 +76,27 @@ services:
       - "8080:8080"
     command: python3 dashboard.py
 
-  # 定时任务调度器
+  # 异步策略引擎（v2.0 生产级调度器，替代 scheduler）
   scheduler:
     <<: *common-app
-    command: python3 scheduler.py
+    command: python3 async_engine.py
     depends_on:
       redis:
         condition: service_healthy
       dashboard:
         condition: service_started
+
+  # 旧版同步调度器（备用，需要回滚时切换 command）
+  # scheduler-legacy:
+  #   <<: *common-app
+  #   command: python3 scheduler.py
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     dashboard:
+  #       condition: service_started
+  #   profiles:
+  #     - legacy
 
   # 实时止盈止损监控器
   realtime-monitor:
@@ -95,19 +107,6 @@ services:
         condition: service_healthy
       dashboard:
         condition: service_started
-
-  # 异步策略引擎（可选，USE_ASYNC_ENGINE=1 时启用）
-  async-engine:
-    <<: *common-app
-    command: python3 async_engine.py
-    environment:
-      - USE_ASYNC_ENGINE=1
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-    profiles:
-      - async
 
 volumes:
   redis-data:

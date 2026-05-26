@@ -63,8 +63,8 @@ class DepthMonitorConfig:
     impact_model: str = 'linear'        # 'linear' | 'sqrt' (Almgren-Chriss 简化)
     impact_coefficient: float = 0.5     # 冲击系数
 
-    # 监控的最大品种数（WebSocket 连接数限制）
-    max_symbols: int = 10
+    # 监控的最大品种数（Binance 单 WS 连接最多 200 stream，50 币完全在限额内）
+    max_symbols: int = 50
 
     # 重连
     reconnect_delay_sec: float = 3.0
