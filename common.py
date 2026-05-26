@@ -690,10 +690,14 @@ def get_compound_stake(account_id: str = None) -> float:
     trades = load_json(TRADES_FILE, [])
     trades = filter_trades_by_account(trades, account_id)
 
-    total_pnl = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
-        for t in trades if t.get('status') == 'closed'
-    )
+    try:
+        from db.compat import get_realized_pnl
+        total_pnl = get_realized_pnl(account_id)
+    except Exception:
+        total_pnl = sum(
+            t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            for t in trades if t.get('status') == 'closed'
+        )
 
     if total_pnl <= 0:
         return round(base_stake)
@@ -737,18 +741,21 @@ def get_dynamic_balance(account_id: str = None) -> float:
     的正反馈放大敞口（见 M2 修复）。
     """
     # 本金通过 _account_balance_for(account_id) 取，不再依赖全局 config.ACCOUNT_BALANCE
-    trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
-
-    total_pnl = 0.0
-    for t in trades:
-        if t.get('status') == 'closed':
-            total_pnl += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
-        elif t.get('status') == 'open' and t.get('tp1_locked_pnl', 0) > 0:
-            # TP1已触发但交易未完全平仓：锁定利润计入余额
-            total_pnl += t.get('tp1_locked_pnl', 0)
+    try:
+        from db.compat import get_dynamic_pnl
+        total_pnl = get_dynamic_pnl(account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
+        total_pnl = 0.0
+        for t in trades:
+            if t.get('status') == 'closed':
+                total_pnl += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            elif t.get('status') == 'open' and t.get('tp1_locked_pnl', 0) > 0:
+                # TP1已触发但交易未完全平仓：锁定利润计入余额
+                total_pnl += t.get('tp1_locked_pnl', 0)
 
     return _account_balance_for(account_id) + total_pnl
 
@@ -764,15 +771,18 @@ def get_realized_balance(account_id: str = None) -> float:
         形成 TP1 → 余额 +X → 持仓上限 +X/2 → 多开一笔 → 敞口翻倍的正反馈
     """
     # 本金通过 _account_balance_for(account_id) 取
-    trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
-
-    realized_pnl = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
-        for t in trades if t.get('status') == 'closed'
-    )
+    try:
+        from db.compat import get_realized_pnl
+        realized_pnl = get_realized_pnl(account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
+        realized_pnl = sum(
+            t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+            for t in trades if t.get('status') == 'closed'
+        )
     return _account_balance_for(account_id) + realized_pnl
 
 

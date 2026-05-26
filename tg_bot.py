@@ -56,9 +56,13 @@ def cmd_help() -> str:
 
 def cmd_balance() -> str:
     """账户余额"""
-    trades = load_json(TRADES_FILE, [])
     account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
+    try:
+        from db.compat import load_all_trades
+        trades = load_all_trades(account_id=account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
     closed = [t for t in trades if t.get('status') == 'closed']
 
     today = today_str()
@@ -136,9 +140,13 @@ def cmd_balance() -> str:
 
 def cmd_positions() -> str:
     """持仓详情"""
-    trades = load_json(TRADES_FILE, [])
     account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
+    try:
+        from db.compat import load_all_trades
+        trades = load_all_trades(account_id=account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
     open_trades = [t for t in trades if t.get('status') == 'open']
 
     if not open_trades:
@@ -269,9 +277,13 @@ def cmd_risk() -> str:
 
 def cmd_status() -> str:
     """综合状态（持仓概览 + 风控）"""
-    trades = load_json(TRADES_FILE, [])
     account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
+    try:
+        from db.compat import load_all_trades
+        trades = load_all_trades(account_id=account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
     open_trades = [t for t in trades if t.get('status') == 'open']
 
     # 持仓概览
@@ -330,9 +342,13 @@ def cmd_status() -> str:
 
 def cmd_compare() -> str:
     """影子 vs 实盘盈亏对比"""
-    trades = load_json(TRADES_FILE, [])
     account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
+    try:
+        from db.compat import load_all_trades
+        trades = load_all_trades(account_id=account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
 
     shadow_trades = [t for t in trades if t.get('exchange', 'shadow') == 'shadow']
     live_trades = [t for t in trades if t.get('exchange', 'shadow') != 'shadow']

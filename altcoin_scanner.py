@@ -837,11 +837,18 @@ def check_candidates():
 
     # 仅用于"是否已有持仓"的预过滤（真实开仓时会在锁内再校验一次，防竞态）
     # M3: 把 close_retry_pending=True 的 closed 交易视同 open
-    trades_snapshot = load_json(TRADES_FILE, [])
-    open_symbols = {
-        t['symbol'] for t in trades_snapshot
-        if t.get('status') == 'open' or t.get('close_retry_pending')
-    }
+    try:
+        from db.compat import get_open_symbols
+        open_symbols = get_open_symbols()
+        # Also include close_retry_pending from JSON (DB doesn't track this flag)
+        trades_snapshot = load_json(TRADES_FILE, [])
+        open_symbols.update(t['symbol'] for t in trades_snapshot if t.get('close_retry_pending'))
+    except Exception:
+        trades_snapshot = load_json(TRADES_FILE, [])
+        open_symbols = {
+            t['symbol'] for t in trades_snapshot
+            if t.get('status') == 'open' or t.get('close_retry_pending')
+        }
 
     triggered_any = False
 
@@ -1433,6 +1440,14 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             journal_mark_confirmed(_coid, _trade.live_order_id or '')
         except Exception as _je:
             logger.debug(f"journal mark_confirmed 失败（非致命）: {_je}")
+
+    # Dual-write to DB (non-blocking, JSON is source of truth for now)
+    try:
+        from db.compat import save_trade
+        for _trade, _ep, _ex, _rs, _coid in opened_trades:
+            save_trade(_trade.to_dict())
+    except Exception as _db_err:
+        logger.debug(f"DB dual-write failed (non-fatal): {_db_err}")
 
     # ── H5: both 模式部分失败回滚 ──
     rollbacks = []

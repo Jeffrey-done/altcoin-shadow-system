@@ -261,3 +261,70 @@ def log_signal(signal_data: Dict):
             SignalLogRepo.log(signal_data)
         except Exception as e:
             logger.debug(f"信号日志写入 DB 失败: {e}")
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  新增方法 — 支持 common.py / risk_control.py 迁移
+# ══════════════════════════════════════════════════════════════════
+
+def load_all_trades_for_account(account_id: Optional[str] = None) -> List[Dict]:
+    """Load all trades (open + closed) filtered by account. Used by common.py calculations."""
+    return load_all_trades(account_id=account_id)
+
+
+def get_dynamic_pnl(account_id: Optional[str] = None) -> float:
+    """Cumulative realized PnL + TP1 locked PnL from open trades (for dynamic balance)"""
+    if _is_db_ready():
+        try:
+            from db.repositories import TradeRepo
+            return TradeRepo.get_dynamic_pnl(account_id=account_id)
+        except Exception:
+            pass
+    # Fallback: compute from JSON
+    from common import TRADES_FILE, load_json, filter_trades_by_account
+    trades = load_json(TRADES_FILE, [])
+    if account_id:
+        trades = filter_trades_by_account(trades, account_id)
+    total = 0.0
+    for t in trades:
+        if t.get('status') == 'closed':
+            total += t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
+        elif t.get('status') == 'open' and t.get('tp1_locked_pnl', 0) > 0:
+            total += t.get('tp1_locked_pnl', 0)
+    return total
+
+
+def get_open_symbols(account_id: Optional[str] = None) -> set:
+    """Get set of symbols with open positions (for dedup pre-filtering)"""
+    if _is_db_ready():
+        try:
+            from db.repositories import TradeRepo
+            return TradeRepo.get_open_symbols(account_id=account_id)
+        except Exception:
+            pass
+    from common import TRADES_FILE, load_json
+    trades = load_json(TRADES_FILE, [])
+    return {t['symbol'] for t in trades if t.get('status') == 'open' or t.get('close_retry_pending')}
+
+
+def get_consecutive_losses(account_id: Optional[str] = None) -> int:
+    """Get consecutive loss count from most recent closed trades"""
+    if _is_db_ready():
+        try:
+            from db.repositories import TradeRepo
+            return TradeRepo.get_consecutive_losses(account_id=account_id)
+        except Exception:
+            pass
+    return 0
+
+
+def get_today_realized_loss(account_id: Optional[str] = None) -> float:
+    """Today's realized loss (absolute value)"""
+    if _is_db_ready():
+        try:
+            from db.repositories import TradeRepo
+            return TradeRepo.get_today_realized_loss(account_id=account_id)
+        except Exception:
+            pass
+    return 0.0

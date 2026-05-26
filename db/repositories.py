@@ -228,6 +228,21 @@ class TradeRepo:
             return [t.to_dict() for t in query.order_by(desc(TradeModel.opened_at)).all()]
 
     @staticmethod
+    def get_dynamic_pnl(account_id: Optional[str] = None) -> float:
+        """Cumulative PnL including TP1 locked from open trades"""
+        with get_session() as session:
+            query = session.query(TradeModel)
+            if account_id:
+                query = query.filter(TradeModel.account_id == account_id)
+            total = 0.0
+            for t in query.all():
+                if t.status == 'closed':
+                    total += (t.tp1_locked_pnl or 0) + (t.pnl or 0)
+                elif t.status == 'open' and (t.tp1_locked_pnl or 0) > 0:
+                    total += (t.tp1_locked_pnl or 0)
+            return total
+
+    @staticmethod
     def archive_old_trades(days: int = 30) -> int:
         """归档超过 N 天的已平仓交易（标记 archived，不删除）"""
         cutoff = _utcnow() - timedelta(days=days)

@@ -939,6 +939,21 @@ def run(check_only: bool = False):
         if any_updated:
             save([t.to_dict() for t in trades])
             logger.info("交易数据已更新并保存")
+            # Dual-write closed/updated trades to DB
+            try:
+                from db.compat import save_trade, close_trade_compat
+                for t in trades:
+                    if t.status == 'closed' and t.close_type:
+                        close_trade_compat(
+                            trade_id=t.id, pnl=t.pnl,
+                            close_price=t.current_price or 0,
+                            close_reason=t.close_reason or '',
+                            close_type=t.close_type,
+                        )
+                    else:
+                        save_trade(t.to_dict())
+            except Exception as _db_err:
+                logger.debug(f"DB dual-write (tracker) failed (non-fatal): {_db_err}")
             # 立即刷新 realtime_monitor 的内存快照：
             # TP1 触发后 trail_stop_price 已变成保本止损，
             # 必须立刻反映到内存里，否则 realtime_monitor 的 30s 快照窗口内

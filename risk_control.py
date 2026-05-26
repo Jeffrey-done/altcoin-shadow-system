@@ -131,8 +131,14 @@ def save_risk_state(state: RiskState, account_id: Optional[str] = None) -> None:
 
 def _calc_actual_open_stake(account_id: Optional[str] = None) -> float:
     """从交易文件计算指定账户的实际持仓总保证金"""
-    trades = load_json(TRADES_FILE, [])
     acc_id = _resolve_account_id(account_id)
+    try:
+        from db.compat import get_open_stake
+        return get_open_stake(acc_id if acc_id != '_default' else None)
+    except Exception:
+        pass
+    # Original fallback
+    trades = load_json(TRADES_FILE, [])
 
     # 如果是 _default（旧单账户模式），不过滤
     if acc_id != '_default':
@@ -197,8 +203,14 @@ def _save_state_in_lock(raw: dict, state: RiskState, account_id: Optional[str] =
 
 def _calc_today_realized_loss(account_id: Optional[str] = None) -> float:
     """计算指定账户今日已实现亏损"""
-    trades = load_json(TRADES_FILE, [])
     acc_id = _resolve_account_id(account_id)
+    try:
+        from db.compat import get_today_realized_loss
+        return get_today_realized_loss(acc_id if acc_id != '_default' else None)
+    except Exception:
+        pass
+    # Original fallback
+    trades = load_json(TRADES_FILE, [])
     if acc_id != '_default':
         trades = filter_trades_by_account(trades, acc_id)
 
@@ -218,8 +230,14 @@ def _calc_today_realized_loss(account_id: Optional[str] = None) -> float:
 
 def _calc_today_trades_opened(account_id: Optional[str] = None) -> int:
     """统计指定账户今日新开的仓位数"""
-    trades = load_json(TRADES_FILE, [])
     acc_id = _resolve_account_id(account_id)
+    try:
+        from db.compat import get_today_trades_count
+        return get_today_trades_count(acc_id if acc_id != '_default' else None)
+    except Exception:
+        pass
+    # Original fallback
+    trades = load_json(TRADES_FILE, [])
     if acc_id != '_default':
         trades = filter_trades_by_account(trades, acc_id)
 
@@ -229,8 +247,14 @@ def _calc_today_trades_opened(account_id: Optional[str] = None) -> int:
 
 def _calc_consecutive_losses(account_id: Optional[str] = None) -> int:
     """从最近已平仓交易反推当前连续亏损次数（按账户过滤后）。"""
-    trades = load_json(TRADES_FILE, [])
     acc_id = _resolve_account_id(account_id)
+    try:
+        from db.compat import get_consecutive_losses
+        return get_consecutive_losses(acc_id if acc_id != '_default' else None)
+    except Exception:
+        pass
+    # Original fallback
+    trades = load_json(TRADES_FILE, [])
     if acc_id != '_default':
         trades = filter_trades_by_account(trades, acc_id)
 

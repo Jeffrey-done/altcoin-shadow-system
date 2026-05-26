@@ -242,10 +242,14 @@ def _load_risk_v1_view(account_id: str) -> dict:
 
 def get_dashboard_data(account_id: str = None) -> dict:
     """汇总所有数据供前端展示（按指定账户过滤；account_id=None 时使用活跃账户）"""
-    trades = load_json(TRADES_FILE, [])
     if account_id is None:
         account_id = get_current_account_id()
-    trades = filter_trades_by_account(trades, account_id)
+    try:
+        from db.compat import load_all_trades
+        trades = load_all_trades(account_id=account_id)
+    except Exception:
+        trades = load_json(TRADES_FILE, [])
+        trades = filter_trades_by_account(trades, account_id)
     candidates = load_json(CANDIDATES_FILE, [])
     # BUG 修复（2026-05）：以前是 load_json(RISK_FILE, {})，risk_state 是 v2
     # 多账户嵌套结构（{_version:2, accounts:{...}}），前端模板按 v1 平铺字段
@@ -892,7 +896,11 @@ def api_accounts_overview():
 
     all_accounts = list_accounts()
     active_id = get_active_account_id()
-    all_trades = load_json(TRADES_FILE, [])
+    try:
+        from db.compat import load_all_trades
+        all_trades = load_all_trades()
+    except Exception:
+        all_trades = load_json(TRADES_FILE, [])
 
     # B9 修复：之前对每个账户都遍历整个 all_trades 一遍 (O(账户数 × 交易数))，
     # 现在单遍把 trades 按 account_id 分桶到 dict (O(交易数 + 账户数))。
@@ -985,7 +993,11 @@ def api_data_all_accounts():
     except Exception:
         pass
 
-    all_trades = load_json(TRADES_FILE, [])
+    try:
+        from db.compat import load_all_trades
+        all_trades = load_all_trades()
+    except Exception:
+        all_trades = load_json(TRADES_FILE, [])
     # 不按账户过滤 - 返回全部
     open_trades = [t for t in all_trades if t.get('status') == 'open']
     closed_trades = [t for t in all_trades if t.get('status') == 'closed']
