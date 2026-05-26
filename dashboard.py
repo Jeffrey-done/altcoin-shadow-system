@@ -15,6 +15,12 @@ Features:
 
 启动：python3 dashboard.py [--port 8080]
 访问：http://localhost:8080
+
+M1 修复（2026-05）— 模块拆分
+================================
+原本本文件 1535 行职责糅合，现在仅保留 Flask / SocketIO 路由层 + 启动入口；
+所有数据读取、事件抽取、实时价格、token 认证逻辑已迁移到 ``dashboard_app/``
+子包，详见 ``docs/UNIFIED_ARCHITECTURE.md``。
 """
 
 # ══════════════════════════════════════════════════════════════════
@@ -30,15 +36,10 @@ Features:
 import eventlet
 eventlet.monkey_patch(thread=False)
 
-import hashlib
-import hmac
 import json
 import os
 import sys
-import threading
-import time
 from datetime import datetime, timedelta, timezone
-from functools import wraps
 
 from flask import Flask, render_template, jsonify, request, make_response, redirect
 from flask_socketio import SocketIO, emit as socketio_emit
@@ -53,6 +54,28 @@ from common import (
     load_json, utcnow_iso, today_str, get_dynamic_balance, get_compound_stake,
     get_current_account_id, filter_trades_by_account, account_param,
 )
+
+# ── M1: 拆分后的子模块 ─────────────────────────────────────────────
+from dashboard_app.auth import (
+    check_api_token,
+    require_auth as _require_auth,
+    Unauthorized,
+)
+from dashboard_app.data import (
+    get_dashboard_data,
+    build_execution_metrics as _build_execution_metrics,
+    get_long_candidates as _get_long_candidates,
+    load_risk_v1_view as _load_risk_v1_view,
+    read_tail_lines as _read_tail_lines,
+    get_risk_history as _get_risk_history,
+)
+from dashboard_app.events import extract_events as _extract_events
+from dashboard_app.live_prices import (
+    inject_live_prices as _inject_live_prices,
+    fetch_live_prices as _fetch_live_prices,
+    make_background_push,
+)
+from dashboard_app.etag import make_etag_response as _make_etag_response
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -150,669 +173,16 @@ BATCH_BACKTEST_RESULTS_FILE = os.path.join(SCRIPT_DIR, 'batch_backtest_results.j
 
 
 # ══════════════════════════════════════════════════════════════════
-#  API Authentication (Optional Token-based)
-# ══════════════════════════════════════════════════════════════════
-
-def check_api_token(f):
-    """
-    Simple token-based auth decorator.
-    Checks X-Dashboard-Token header against DASHBOARD_TOKEN env var.
-    If DASHBOARD_TOKEN is not set, authentication is skipped (development mode).
-
-    Security notes:
-      - Uses hmac.compare_digest for constant-time comparison (prevents timing attacks)
-      - Warns on startup if token is shorter than 16 chars
-      - Recommend 32+ byte random token in production: secrets.token_urlsafe(32)
-      - Requires HTTPS when exposed to public network (e.g. behind nginx/caddy)
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        expected_token = os.environ.get('DASHBOARD_TOKEN', '')
-        if not expected_token:
-            # No token configured, skip auth
-            return f(*args, **kwargs)
-        provided_token = request.headers.get('X-Dashboard-Token', '')
-        # Constant-time comparison
-        if not hmac.compare_digest(provided_token, expected_token):
-            return jsonify({'error': 'Unauthorized', 'message': 'Invalid or missing X-Dashboard-Token'}), 401
-        return f(*args, **kwargs)
-    return decorated
-
-
-def _require_auth():
-    expected_token = os.environ.get('DASHBOARD_TOKEN', '')
-    if not expected_token:
-        return
-    provided = request.headers.get('X-Dashboard-Token', '')
-    if not hmac.compare_digest(provided, expected_token):
-        raise Unauthorized('Invalid or missing X-Dashboard-Token')
-
-
-class Unauthorized(Exception):
-    pass
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Data Reading
-# ══════════════════════════════════════════════════════════════════
-
-def _get_long_candidates() -> list:
-    """
-    获取做多策略（Pre-Pump Sniffer）的候选列表。
-    尝试从 DB 或候选文件中读取 strategy='prepump_sniffer' 的候选，
-    如果不存在则返回空列表。
-    """
-    try:
-        from db.compat import _is_db_ready
-        if _is_db_ready():
-            from db.repositories import CandidateRepo
-            # 如果 CandidateRepo 支持按策略过滤
-            all_cands = CandidateRepo.get_active(exclude_triggered=True)
-            return [c for c in all_cands if c.get('strategy') == 'prepump_sniffer']
-    except Exception:
-        pass
-
-    # Fallback: 尝试读取独立的做多候选文件（如果存在）
-    long_candidates_file = os.path.join(SCRIPT_DIR, 'long_candidates.json')
-    if os.path.exists(long_candidates_file):
-        try:
-            return load_json(long_candidates_file, [])
-        except Exception:
-            pass
-
-    return []
-
-
-def _load_risk_v1_view(account_id: str) -> dict:
-    """
-    把 risk_state.json (v2 多账户结构) 转成单账户 v1 平铺视图，
-    供前端 templates/index.html 直接使用 risk.daily_loss / paused_until /
-    consecutive_losses 等字段（前端模板长期依赖 v1 结构）。
-
-    BUG 修复（2026-05）：
-      原实现 `load_json(RISK_FILE, {})` 后直接把 {_version:2, accounts:{...}}
-      传给前端，导致 risk.daily_loss 永远为 undefined → 显示 "0/30U"，
-      paused_until 也读不出来 → 永远显示"正常"，连亏暂停状态完全失真。
-
-      统一改走 risk_control.load_risk_state(account_id)，它会自动处理
-      v1→v2 迁移、按账户解析、日期翻转重置，再把 RiskState dataclass
-      转回 v1 平铺 dict 给前端。
-    """
-    try:
-        from risk_control import load_risk_state
-        state = load_risk_state(account_id)
-        return state.to_dict()
-    except Exception as e:
-        # 风控状态读取异常时返回空字典，让前端按默认值渲染（避免 500）
-        import logging as _log
-        _log.getLogger("dashboard").warning(f"读取风控状态失败: {e}")
-        return {}
-
-
-def get_dashboard_data(account_id: str = None) -> dict:
-    """汇总所有数据供前端展示（按指定账户过滤；account_id=None 时使用活跃账户）"""
-    if account_id is None:
-        account_id = get_current_account_id()
-    try:
-        from db.compat import load_all_trades
-        trades = load_all_trades(account_id=account_id)
-    except Exception:
-        trades = load_json(TRADES_FILE, [])
-        trades = filter_trades_by_account(trades, account_id)
-    candidates = load_json(CANDIDATES_FILE, [])
-    # BUG 修复（2026-05）：以前是 load_json(RISK_FILE, {})，risk_state 是 v2
-    # 多账户嵌套结构（{_version:2, accounts:{...}}），前端模板按 v1 平铺字段
-    # 读取会全部失效。改用 _load_risk_v1_view 把当前账户的 RiskState 转成
-    # v1 兼容的平铺 dict。
-    risk_state = _load_risk_v1_view(account_id)
-
-    # 分离做空和做多（保留direction字段向后兼容）
-    short_trades = [t for t in trades if t.get('direction', 'SHORT') == 'SHORT']
-    long_trades = [t for t in trades if t.get('direction') == 'LONG']
-
-    open_short = [t for t in short_trades if t.get('status') == 'open']
-    closed_short = [t for t in short_trades if t.get('status') == 'closed']
-    open_long = [t for t in long_trades if t.get('status') == 'open']
-    closed_long = [t for t in long_trades if t.get('status') == 'closed']
-
-    # 今日盈亏
-    today = today_str()
-    today_closed_short = [
-        t for t in closed_short if t.get('closed_at', '').startswith(today)
-    ]
-    today_closed_long = [
-        t for t in closed_long if t.get('closed_at', '').startswith(today)
-    ]
-
-    today_pnl_short = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in today_closed_short
-    )
-    today_pnl_long = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in today_closed_long
-    )
-
-    # TP1已锁定但未平仓的利润
-    today_tp1_locked_short = sum(
-        t.get('tp1_locked_pnl', 0) for t in open_short
-        if t.get('tp1_triggered') and t.get('opened_at', '').startswith(today)
-    )
-    today_tp1_locked_long = sum(
-        t.get('tp1_locked_pnl', 0) for t in open_long
-        if t.get('tp1_triggered') and t.get('opened_at', '').startswith(today)
-    )
-    today_pnl_short += today_tp1_locked_short
-    today_pnl_long += today_tp1_locked_long
-
-    # 累计盈亏
-    total_pnl_short = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_short
-    )
-    total_pnl_long = sum(
-        t.get('tp1_locked_pnl', 0) + t.get('pnl', 0) for t in closed_long
-    )
-
-    total_pnl_short += sum(
-        t.get('tp1_locked_pnl', 0) for t in open_short if t.get('tp1_triggered')
-    )
-    total_pnl_long += sum(
-        t.get('tp1_locked_pnl', 0) for t in open_long if t.get('tp1_triggered')
-    )
-
-    # 胜率
-    all_closed = closed_short + closed_long
-    tp1_triggered_trades = [
-        t for t in open_short + open_long if t.get('tp1_triggered')
-    ]
-    all_for_winrate = all_closed + tp1_triggered_trades
-    wins = sum(1 for t in all_for_winrate if (t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)) > 0)
-    win_rate = (wins / len(all_for_winrate) * 100) if all_for_winrate else 0
-
-    # PnL 历史
-    pnl_history = {}
-    for t in closed_short + closed_long:
-        closed_at = t.get('closed_at', '')
-        if not closed_at:
-            continue
-        day = closed_at[:10]
-        pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
-        pnl_history[day] = pnl_history.get(day, 0) + pnl
-
-    sorted_days = sorted(pnl_history.keys())
-    pnl_chart_data = {
-        'dates': sorted_days,
-        'daily_pnl': [round(pnl_history[d], 2) for d in sorted_days],
-        'cumulative': [],
-    }
-    cum = 0
-    for d in sorted_days:
-        cum += pnl_history[d]
-        pnl_chart_data['cumulative'].append(round(cum, 2))
-
-    # 动态余额
-    dynamic_balance = get_dynamic_balance(account_id)
-    compound_stake = get_compound_stake(account_id)
-
-    # 持仓占用
-    short_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_short)
-    long_used = sum(t.get('stake_remaining', t.get('stake', 0)) for t in open_long)
-    total_used = short_used + long_used
-    # 多账号修复：用 account_param 取该账号自己的 RISK_MAX_POSITION_PCT，
-    # 而不是被 apply_overrides 写到 config 模块的活跃账号值
-    risk_max_pos_pct = float(account_param(account_id, 'RISK_MAX_POSITION_PCT',
-                                           config.RISK_MAX_POSITION_PCT))
-    max_position = dynamic_balance * risk_max_pos_pct
-    available = max(0, max_position - total_used)
-
-    pool_allocation = {
-        'total': round(dynamic_balance, 2),
-        'max_position': round(max_position, 2),
-        'compound_stake': round(compound_stake, 2),
-        'short_used': round(short_used, 2),
-        'long_used': round(long_used, 2),
-        'total_used': round(total_used, 2),
-        'available': round(available, 2),
-        'used_pct': round(total_used / max_position * 100, 1) if max_position > 0 else 0,
-    }
-
-    # ── Yesterday PnL (for trend comparison) ──
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
-    yesterday_pnl = pnl_history.get(yesterday, 0)
-
-    # ── Risk History (last 7 days daily_loss) ──
-    risk_history = _get_risk_history(pnl_history)
-
-    # ── Last pause timestamp ──
-    risk_last_pause = risk_state.get('last_paused_at', risk_state.get('paused_until', None))
-
-    return {
-        'account': {
-            'balance': round(dynamic_balance, 2),
-            'initial_balance': float(account_param(account_id, 'ACCOUNT_BALANCE', config.ACCOUNT_BALANCE)),
-            'leverage': int(account_param(account_id, 'LEVERAGE', config.LEVERAGE)),
-            'today_pnl': round(today_pnl_short + today_pnl_long, 2),
-            'total_pnl': round(total_pnl_short + total_pnl_long, 2),
-            'win_rate': round(win_rate, 1),
-            'total_trades': len(all_for_winrate),
-        },
-        'short_trades': {
-            'open': open_short,
-            'closed': closed_short[-20:],
-            'today_pnl': round(today_pnl_short, 2),
-            'total_pnl': round(total_pnl_short, 2),
-        },
-        'long_trades': {
-            'open': open_long,
-            'closed': closed_long[-20:],
-            'today_pnl': round(today_pnl_long, 2),
-            'total_pnl': round(total_pnl_long, 2),
-        },
-        'candidates': candidates,
-        'long_candidates': _get_long_candidates(),
-        'risk': risk_state,
-        'pnl_chart': pnl_chart_data,
-        'pool': pool_allocation,
-        'config': {
-            # 多账号修复：每个 account 视图返回该账号自己的止盈止损 / 风控参数
-            'tp1_pct': round((1 - float(account_param(account_id, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER))) * 100, 1),
-            'tp2_pct': round((1 - float(account_param(account_id, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER))) * 100, 1),
-            'hard_stop_pct': float(account_param(account_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
-            'trail_activate_pct': config.TRAIL_STOP_ACTIVATE_PCT,
-            'max_hold_days': config.MAX_HOLD_DAYS,
-            'max_daily_loss': float(account_param(account_id, 'RISK_MAX_DAILY_LOSS', config.RISK_MAX_DAILY_LOSS)),
-            'max_daily_trades': int(account_param(account_id, 'RISK_MAX_DAILY_TRADES', config.RISK_MAX_DAILY_TRADES)),
-        },
-        'yesterday_pnl': round(yesterday_pnl, 2),
-        'risk_history': risk_history,
-        'risk_last_pause': risk_last_pause,
-        'account_id': account_id or '',
-        'timestamp': utcnow_iso(),
-    }
-
-
-def _read_tail_lines(path: str, max_lines: int = 1500) -> list:
-    """Read tail lines from text file safely."""
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        if len(lines) <= max_lines:
-            return lines
-        return lines[-max_lines:]
-    except Exception:
-        return []
-
-
-def _build_execution_metrics(account_id: str = None, minutes: int = 0) -> dict:
-    """Build lightweight execution/reconcile metrics from execution events."""
-    lines = _read_tail_lines(EXECUTION_EVENTS_FILE, max_lines=2000)
-    cutoff_dt = None
-    if minutes and minutes > 0:
-        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    total_created = 0
-    total_filled = 0
-    total_failed = 0
-    close_created = 0
-    close_filled = 0
-    close_failed = 0
-    reconcile_diffs = 0
-    recent_errors = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-
-        if cutoff_dt is not None:
-            ts = ev.get('ts', '')
-            try:
-                ev_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                if ev_dt.tzinfo is None:
-                    ev_dt = ev_dt.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-            if ev_dt < cutoff_dt:
-                continue
-
-        if account_id is not None:
-            ev_acc = (ev.get('account_id') or '').strip()
-            if ev_acc != (account_id or '').strip():
-                continue
-
-        et = ev.get('event_type', '')
-        if et == 'order_created':
-            total_created += 1
-        elif et == 'order_filled':
-            total_filled += 1
-        elif et == 'order_failed':
-            total_failed += 1
-            if len(recent_errors) < 5:
-                recent_errors.append({
-                    'ts': ev.get('ts', ''),
-                    'symbol': ev.get('symbol', ''),
-                    'exchange': ev.get('exchange', ''),
-                    'error': ev.get('error', ''),
-                })
-        elif et == 'close_created':
-            close_created += 1
-        elif et == 'close_filled':
-            close_filled += 1
-        elif et == 'close_failed':
-            close_failed += 1
-            if len(recent_errors) < 5:
-                recent_errors.append({
-                    'ts': ev.get('ts', ''),
-                    'symbol': ev.get('symbol', ''),
-                    'exchange': ev.get('exchange', ''),
-                    'error': ev.get('error', ''),
-                })
-        elif et == 'position_reconcile_diff':
-            reconcile_diffs += 1
-
-    open_success_rate = round((total_filled / total_created) * 100, 1) if total_created > 0 else 0.0
-    close_success_rate = round((close_filled / close_created) * 100, 1) if close_created > 0 else 0.0
-
-    return {
-        'open_orders': {
-            'created': total_created,
-            'filled': total_filled,
-            'failed': total_failed,
-            'success_rate': open_success_rate,
-        },
-        'close_orders': {
-            'created': close_created,
-            'filled': close_filled,
-            'failed': close_failed,
-            'success_rate': close_success_rate,
-        },
-        'reconcile': {
-            'diff_events': reconcile_diffs,
-        },
-        'recent_errors': recent_errors,
-        'window_minutes': int(minutes or 0),
-        'updated_at': utcnow_iso(),
-    }
-
-
-
-def _get_risk_history(pnl_history: dict) -> list:
-    """Get last 7 days of daily loss values for sparkline."""
-    today_dt = datetime.now(timezone.utc).date()
-    history = []
-    for i in range(7, 0, -1):
-        day = (today_dt - timedelta(days=i)).strftime('%Y-%m-%d')
-        # Negative PnL = loss
-        daily = pnl_history.get(day, 0)
-        # We want the loss amount (negative values mean losses)
-        history.append(round(-daily if daily < 0 else 0, 2))
-    return history
-
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Events System
-# ══════════════════════════════════════════════════════════════════
-
-# L-6 修复：events 缓存（mtime 失效）
-# 旧实现每次 /api/events 都全表扫一遍 trades + filter（虽 7 天窗口但仍 O(N)）。
-# 加 mtime 缓存：trades.json 不变时直接返回上次结果。
-# 优化（2026-05）：缓存 key 同时跟踪 RISK_FILE mtime —— 风控暂停事件
-# (paused_until) 在 risk_state.json 改但 trades.json 不变的情况下也能立刻
-# 体现到 /api/events，否则告警事件最坏要等到下一笔交易开/平仓才出现。
-_events_cache_lock = threading.Lock()
-_events_cache_trades_mtime: float = 0.0
-_events_cache_risk_mtime: float = 0.0
-_events_cache_account: str = ''
-_events_cache_data: list = []
-
-
-def _extract_events() -> list:
-    """
-    Extract events from trade files based on opened_at, closed_at timestamps.
-    Returns last 50 events sorted by time (newest first).
-
-    B8 优化：只扫最近 7 天的事件，不再每 30s 全量遍历交易历史。
-    L-6 优化：mtime 缓存 — 文件未变时复用上次结果。
-    2026-05 优化：同时跟踪 RISK_FILE mtime，风控暂停事件秒级生效。
-    """
-    global _events_cache_trades_mtime, _events_cache_risk_mtime
-    global _events_cache_account, _events_cache_data
-
-    EVENT_WINDOW_DAYS = 7
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=EVENT_WINDOW_DAYS)
-    cutoff_iso = cutoff_dt.isoformat()
-
-    account_id = get_current_account_id()
-
-    # 先看缓存（trades + risk 两个 mtime 都没变才命中）
-    try:
-        current_trades_mtime = os.path.getmtime(TRADES_FILE)
-    except OSError:
-        current_trades_mtime = 0.0
-    try:
-        current_risk_mtime = os.path.getmtime(RISK_FILE)
-    except OSError:
-        current_risk_mtime = 0.0
-
-    with _events_cache_lock:
-        if (
-            _events_cache_trades_mtime == current_trades_mtime
-            and _events_cache_risk_mtime == current_risk_mtime
-            and _events_cache_account == (account_id or '')
-            and _events_cache_data
-        ):
-            return list(_events_cache_data)
-
-    events = []
-    trades = load_json(TRADES_FILE, [])
-    trades = filter_trades_by_account(trades, account_id)
-    # BUG 修复（2026-05）：v2 多账户格式下 load_json(RISK_FILE) 返回的是
-    # 嵌套 dict（{_version:2, accounts:{...}}），直接 .get('paused_until') 永远 None。
-    # 改用 _load_risk_v1_view 拿当前账户的扁平视图。
-    risk_state = _load_risk_v1_view(account_id)
-
-    # Trade open/close events（只看 7 天内的）
-    for t in trades:
-        symbol = t.get('symbol', '?')
-        direction = t.get('direction', 'SHORT')
-
-        opened_at = t.get('opened_at') or ''
-        if opened_at and opened_at >= cutoff_iso:
-            events.append({
-                'time': opened_at,
-                'type': 'open',
-                'level': 'info',
-                'message': f"📈 开仓 {direction} {symbol} @ {t.get('entry_price', 0):.6f}",
-            })
-
-        closed_at = t.get('closed_at') or ''
-        if closed_at and closed_at >= cutoff_iso:
-            pnl = t.get('tp1_locked_pnl', 0) + t.get('pnl', 0)
-            reason = t.get('close_reason', '')
-            level = 'success' if pnl > 0 else 'warning'
-
-            # 基于 close_type 做稳定分类（避免依赖文案匹配）
-            ct = str(t.get('close_type') or '').lower()
-            if ct in ('hard_stop', 'trail_stop', 'time_stop', 'breakeven_stop'):
-                level = 'critical'
-
-            events.append({
-                'time': closed_at,
-                'type': 'close',
-                'level': level,
-                'message': f"{'✅' if pnl > 0 else '❌'} 平仓 {direction} {symbol} | {pnl:+.2f}U | {reason}",
-            })
-
-    # Risk pause events（无视窗口，只要还在 paused 状态就显示）
-    if risk_state.get('paused_until'):
-        events.append({
-            'time': risk_state.get('last_paused_at', risk_state.get('paused_until', '')),
-            'type': 'risk_pause',
-            'level': 'critical',
-            'message': f"🚨 风控暂停 | 暂停至 {risk_state['paused_until'][:16]}",
-        })
-
-    # Sort by time descending
-    events.sort(key=lambda e: e.get('time', ''), reverse=True)
-    result = events[:50]
-
-    with _events_cache_lock:
-        _events_cache_trades_mtime = current_trades_mtime
-        _events_cache_risk_mtime = current_risk_mtime
-        _events_cache_account = account_id or ''
-        _events_cache_data = list(result)
-
-    return result
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Background Push Thread
-# ══════════════════════════════════════════════════════════════════
-
-_live_prices = {}
-_price_lock = threading.Lock()
-
-
-def _fetch_live_prices(symbols: list) -> dict:
-    """从 Binance 获取持仓币种的实时价格。
-
-    重要修复（B3）：
-      1. 之前用 https://api.binance.com/api/v3/ticker/price 拉**整个现货市场**（几千个币
-         的 JSON，每次几 MB），即使只持仓 3 个币也是全量下载 → 5s timeout 经常被打穿。
-      2. 之前查的是**现货价**，但策略做的是**永续合约**，两边价格在快速行情时会
-         偏 0.1–0.3% → 前端显示的现价和实际持仓的合约市场不一致。
-      3. timeout 5s 在 SSL 握手 + TCP RTT 较高时容易超时，但这个调用阻塞了
-         background_push 的整个 loop，从而拖慢 SocketIO 心跳 → 前端"WiFi 图标变红"。
-
-    现在：
-      - 切到 fapi（永续合约）
-      - 只拉持仓里的 symbols（用 ?symbols=[...] 参数）
-      - timeout 收紧到 3s（拿不到就让前端 BinanceWS 自己直连 wss 拉，不要拖后端）
-    """
-    import requests as _requests
-    prices = {}
-    if not symbols:
-        return prices
-
-    # 把 ccxt 格式 (BTC/USDT) 转成 Binance API 格式 (BTCUSDT)
-    binance_syms = [s.replace('/USDT', 'USDT').replace('/', '') for s in symbols]
-    # ccxt -> binance 的反向映射，下面循环里查回 ccxt key
-    rev_map = dict(zip(binance_syms, symbols))
-
-    try:
-        # fapi 的 ?symbols= 参数要 JSON-encoded array
-        params = {'symbols': json.dumps(binance_syms, separators=(',', ':'))}
-        r = _requests.get(
-            "https://fapi.binance.com/fapi/v1/ticker/price",
-            params=params,
-            timeout=3,
-        )
-        if r.status_code == 200:
-            payload = r.json()
-            # fapi 返回单个 dict（symbols=1）或 list（symbols=N）。统一成 list
-            items = payload if isinstance(payload, list) else [payload]
-            for item in items:
-                bsym = item.get('symbol')
-                if bsym in rev_map:
-                    try:
-                        prices[rev_map[bsym]] = float(item['price'])
-                    except (TypeError, ValueError):
-                        continue
-    except Exception as e:
-        # 不打日志刷屏；fapi 偶发 5xx / 超时是常态，前端会用 wss 实时拉补齐
-        pass
-    return prices
-
-
-def _inject_live_prices(data: dict) -> dict:
-    """将实时价格注入到 dashboard 数据的持仓中"""
-    with _price_lock:
-        prices = _live_prices.copy()
-
-    if not prices:
-        return data
-
-    for trade in data.get('short_trades', {}).get('open', []):
-        sym = trade.get('symbol', '')
-        if sym in prices:
-            trade['current_price'] = prices[sym]
-
-    for trade in data.get('long_trades', {}).get('open', []):
-        sym = trade.get('symbol', '')
-        if sym in prices:
-            trade['current_price'] = prices[sym]
-
-    return data
-
-
-def background_push():
-    """每 10 秒推送最新数据到所有连接的客户端。
-
-    重要修复（B3）：
-      - 之前用 time.sleep(10) → eventlet 不会 yield，hub 卡死，心跳延迟，前端
-        SocketIO 触发 disconnect（WiFi 图标变红）。改用 socketio.sleep() 让出协程。
-      - 之前用 threading.Thread 直接调 socketio.emit → 跨线程 emit 在 eventlet
-        下 unsafe。改用 socketio.start_background_task 在 eventlet 协程里跑。
-      - 之前每 10s 都拉 Binance 现货全市场（几 MB JSON）→ 网络抽风时一卡 5–30s
-        把推送 loop 拖死。现在 _fetch_live_prices 只拉持仓 symbols 而且 3s 超时；
-        即使失败前端有 wss 兜底，不影响主推送循环。
-    """
-    while True:
-        try:
-            socketio.sleep(10)  # ← 不要 time.sleep
-            data = get_dashboard_data()
-
-            # 收集所有持仓中的币种
-            open_symbols = set()
-            for trade in data.get('short_trades', {}).get('open', []):
-                open_symbols.add(trade.get('symbol', ''))
-            for trade in data.get('long_trades', {}).get('open', []):
-                open_symbols.add(trade.get('symbol', ''))
-            open_symbols.discard('')
-
-            # 获取实时价格（只拉持仓里的 symbols；失败不阻塞主推送）
-            if open_symbols:
-                prices = _fetch_live_prices(list(open_symbols))
-                if prices:
-                    with _price_lock:
-                        _live_prices.update(prices)
-
-            data = _inject_live_prices(data)
-            socketio.emit('update', data)
-        except Exception as e:
-            # 任何异常都不能让推送 loop 退出，否则前端会一直显示离线
-            print(f"[Dashboard] 推送异常: {e}")
-
-
-
-# ══════════════════════════════════════════════════════════════════
 #  ETag Helper
 # ══════════════════════════════════════════════════════════════════
-
-def _make_etag_response(data):
-    """Create a JSON response with ETag and Last-Modified headers for caching."""
-    content = json.dumps(data, ensure_ascii=False, sort_keys=True)
-    etag = hashlib.md5(content.encode()).hexdigest()
-
-    # Check If-None-Match
-    if_none_match = request.headers.get('If-None-Match', '')
-    if if_none_match == etag:
-        return make_response('', 304)
-
-    resp = make_response(jsonify(data))
-    resp.headers['ETag'] = etag
-    resp.headers['Cache-Control'] = 'private, max-age=60'
-    resp.headers['Last-Modified'] = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
-    return resp
+# (M1: 实现已迁移到 dashboard_app/etag.py — 这里仅保留导入别名 _make_etag_response)
 
 
 # ══════════════════════════════════════════════════════════════════
 #  Routes - Pages (Jinja2 templates)
 # ══════════════════════════════════════════════════════════════════
+# 本节及以下：所有 @app.route / @socketio.on 处理函数。
+# 数据读取、事件抽取、实时价格、ETag 都已迁移到 dashboard_app/ 子包。
 
 @app.route('/')
 def index():
@@ -1530,6 +900,9 @@ if __name__ == '__main__':
     # 后台推送任务：用 socketio.start_background_task 而不是 threading.Thread
     # 才能跑在 eventlet 协程里，与 SocketIO 心跳协同；用真线程 + socketio.emit
     # 是 unsafe 的（会偶尔与 hub 写出竞争）。
-    socketio.start_background_task(background_push)
+    # M1 修复：实现已迁移到 dashboard_app.live_prices.make_background_push()
+    socketio.start_background_task(
+        make_background_push(socketio, get_dashboard_data)
+    )
 
     socketio.run(app, host=_bind_host, port=port, debug=False)

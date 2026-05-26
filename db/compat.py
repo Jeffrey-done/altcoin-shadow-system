@@ -2,15 +2,28 @@
 """
 数据兼容层 — 旧模块渐进迁移到 DB 的桥接接口。
 
-策略：DB 优先，JSON fallback。
-  - 写操作：双写（DB + JSON），保证旧模块仍能读 JSON
-  - 读操作：优先读 DB，DB 为空时 fallback 到 JSON
-  - 当所有模块迁移完成后，删除 JSON 写入路径即可
+S4 修复（2026-05）— 双写模式可配置
+======================================
+
+历史背景：原本所有写操作"双写"（DB + JSON），保证旧模块仍能读 JSON。
+代价是每次交易要做 2 次 IO，且 DB 与 JSON 之间偶尔不一致（崩溃在两次写
+之间）。读路径用"DB 优先 → JSON fallback"也意味着两份数据并存，难以判定
+真源。
+
+新增配置开关 ``DB_WRITE_MODE``（环境变量 / config / runtime_config）：
+
+  * ``dual``        — 双写（**默认**，向后兼容；旧 dashboard 仍能读 JSON）
+  * ``db-canonical`` — DB 写，JSON 仅作只读快照（每分钟由 dashboard refresh）
+  * ``json-only``   — DB 关闭（无 SQLAlchemy 时的兜底）
+
+所有读路径通过统一函数（load_open_trades / load_candidates 等）走，调用方
+不需关心模式。
 
 被 engine_adapter.py / scheduler.py / dashboard.py 等调用。
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 
@@ -18,6 +31,32 @@ logger = logging.getLogger("db.compat")
 
 # DB 是否可用的缓存（避免每次调用都 try import）
 _db_available: Optional[bool] = None
+
+
+def get_write_mode() -> str:
+    """
+    返回当前写模式：'dual' / 'db-canonical' / 'json-only'。
+    优先级：env var > config 模块属性 > 默认 'dual'。
+    """
+    env = os.environ.get('DB_WRITE_MODE', '').strip().lower()
+    if env in ('dual', 'db-canonical', 'json-only'):
+        return env
+    try:
+        import config as _cfg
+        attr = str(getattr(_cfg, 'DB_WRITE_MODE', 'dual')).lower()
+        if attr in ('dual', 'db-canonical', 'json-only'):
+            return attr
+    except Exception:
+        pass
+    return 'dual'
+
+
+def _should_write_db() -> bool:
+    return get_write_mode() in ('dual', 'db-canonical') and _is_db_ready()
+
+
+def _should_write_json() -> bool:
+    return get_write_mode() in ('dual', 'json-only')
 
 
 def _check_db() -> bool:
@@ -69,9 +108,11 @@ def load_candidates() -> List[Dict]:
 
 
 def save_candidates(candidates: List[Dict]):
-    """双写候选池"""
-    # DB
-    if _is_db_ready():
+    """
+    保存候选池。
+    写模式由 ``get_write_mode()`` 决定（dual / db-canonical / json-only）。
+    """
+    if _should_write_db():
         try:
             from db.repositories import CandidateRepo
             for c in candidates:
@@ -79,13 +120,13 @@ def save_candidates(candidates: List[Dict]):
         except Exception as e:
             logger.warning(f"候选写入 DB 失败: {e}")
 
-    # JSON（兼容）
-    from common import CANDIDATES_FILE, LockedJsonFile
-    try:
-        with LockedJsonFile(CANDIDATES_FILE, default=[]) as (_, save):
-            save(candidates)
-    except Exception as e:
-        logger.warning(f"候选写入 JSON 失败: {e}")
+    if _should_write_json():
+        from common import CANDIDATES_FILE, LockedJsonFile
+        try:
+            with LockedJsonFile(CANDIDATES_FILE, default=[]) as (_, save):
+                save(candidates)
+        except Exception as e:
+            logger.warning(f"候选写入 JSON 失败: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -135,11 +176,14 @@ def load_all_trades(status: Optional[str] = None,
 
 
 def save_trade(trade_dict: Dict):
-    """双写单笔交易（新建或更新）"""
+    """
+    保存单笔交易（新建或更新）。
+    写模式由 ``get_write_mode()`` 决定。
+    JSON 路径由调用方通过 LockedJsonFile 管理（保留旧约定，避免双层加锁）。
+    """
     trade_id = trade_dict.get('id', '')
 
-    # DB
-    if _is_db_ready():
+    if _should_write_db():
         try:
             from db.repositories import TradeRepo
             existing = TradeRepo.get_by_id(trade_id)
@@ -156,8 +200,8 @@ def save_trade(trade_dict: Dict):
 
 def close_trade_compat(trade_id: str, pnl: float, close_price: float,
                        close_reason: str, close_type: str, **kwargs):
-    """平仓 — 双写 DB"""
-    if _is_db_ready():
+    """平仓 — 写 DB（json-only 模式跳过）"""
+    if _should_write_db():
         try:
             from db.repositories import TradeRepo
             TradeRepo.close_trade(
@@ -226,18 +270,21 @@ def get_realized_pnl(account_id: Optional[str] = None) -> float:
 # ══════════════════════════════════════════════════════════════════
 
 def log_event(event_type: str, **kwargs):
-    """记录执行事件（双写 DB + JSONL）"""
-    # DB
-    if _is_db_ready():
+    """
+    记录执行事件。
+    - dual / db-canonical: 写 DB
+    - dual / json-only: 写 JSONL
+    """
+    if _should_write_db():
         try:
             from db.repositories import EventRepo
             EventRepo.log(event_type, **kwargs)
         except Exception as e:
             logger.debug(f"事件写入 DB 失败: {e}")
 
-    # JSONL（兼容）
-    from common import log_execution_event
-    log_execution_event(event_type, **kwargs)
+    if _should_write_json():
+        from common import log_execution_event
+        log_execution_event(event_type, **kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -245,8 +292,8 @@ def log_event(event_type: str, **kwargs):
 # ══════════════════════════════════════════════════════════════════
 
 def log_signal(signal_data: Dict):
-    """记录信号评分到 DB"""
-    if _is_db_ready():
+    """记录信号评分到 DB（json-only 模式跳过）"""
+    if _should_write_db():
         try:
             from db.repositories import SignalLogRepo
             SignalLogRepo.log(signal_data)

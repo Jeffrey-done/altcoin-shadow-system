@@ -280,3 +280,226 @@ def apply_yaml_to_config():
         logger.info(f"📋 YAML 配置已注入 config.py: {applied} 个属性")
 
     return applied
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  S5 修复（2026-05）: 统一配置解析器
+# ══════════════════════════════════════════════════════════════════
+#
+# 历史背景
+# --------
+# 项目存在 4 级配置（按优先级从高到低）：
+#   1. 环境变量（os.environ）
+#   2. runtime_config.json + admin_secrets.json[settings]（admin panel）
+#   3. config/*.yaml（项目级）
+#   4. config/_defaults.py（代码兜底）
+#
+# 但**没有任何函数**能直接告诉你"key X 的最终生效值是什么、来自哪一层"。
+# 实际机制是各模块在启动时 / 周期性调 ``apply_yaml_to_config()`` +
+# ``runtime_config.apply_overrides()`` 把值"灌"到 config 模块的全局属性，
+# 调用方读 ``config.X`` 时已经分不清来源。
+#
+# ``resolve()`` 提供唯一对外解析入口：
+#
+#   from config import resolve
+#   value = resolve('DEFAULT_STAKE')           # → 当前生效值
+#   value, source = resolve('LEVERAGE', with_source=True)
+#                                              # → (10, 'runtime_config')
+#
+# 解析顺序：env > runtime_config > admin_secrets settings > yaml > defaults
+# 仅做"读"，不修改任何状态。
+
+import json as _s5_json
+
+
+_S5_RUNTIME_CONFIG_FILE = os.path.join(
+    os.path.dirname(_CONFIG_DIR), 'runtime_config.json'
+)
+_S5_ADMIN_SECRETS_FILE = os.path.join(
+    os.path.dirname(_CONFIG_DIR), 'admin_secrets.json'
+)
+
+
+def _s5_load_json(path: str) -> dict:
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            return _s5_json.load(fh) or {}
+    except (FileNotFoundError, _s5_json.JSONDecodeError, OSError):
+        return {}
+
+
+def _s5_layer_env(key: str):
+    """1. 环境变量层 — 仅当 key 完全匹配 env 变量名时返回"""
+    if key in os.environ:
+        return os.environ[key]
+    return _MISSING
+
+
+def _s5_layer_runtime(key: str):
+    """2. runtime_config.json 层（含全局 + 活跃账户覆盖）"""
+    data = _s5_load_json(_S5_RUNTIME_CONFIG_FILE)
+    if not data:
+        return _MISSING
+    # v3 结构：{"_global": {...}, "_exchanges": {...}, "<acc_id>": {...}}
+    # 非 v3：扁平 {"KEY": val}
+    if '_global' in data or '_exchanges' in data:
+        global_section = data.get('_global', {}) or {}
+        if key in global_section:
+            return global_section[key]
+        # 活跃账户
+        try:
+            from admin_secrets import get_active_account_id as _gaa
+            acc_id = _gaa()
+        except Exception:
+            acc_id = None
+        if acc_id and isinstance(data.get(acc_id), dict) and key in data[acc_id]:
+            return data[acc_id][key]
+    elif key in data:
+        return data[key]
+    return _MISSING
+
+
+def _s5_layer_admin_secrets(key: str):
+    """3. admin_secrets.json 的 settings 字段"""
+    data = _s5_load_json(_S5_ADMIN_SECRETS_FILE)
+    settings = data.get('settings') if isinstance(data, dict) else None
+    if isinstance(settings, dict) and key in settings:
+        return settings[key]
+    return _MISSING
+
+
+def _s5_layer_yaml(key: str):
+    """
+    4. YAML 层 — 反向查 ``_SYSTEM_MAPPING`` / ``_STRATEGY_MAPPING`` /
+    ``_RISK_MAPPING``，找到 attr_name == key 的 yaml 路径，再 ``get(...)``。
+    """
+    yaml_cfg = load_all()
+
+    # 系统
+    for yaml_key, attr_name in _SYSTEM_MAPPING.items():
+        if attr_name == key:
+            v = _resolve_nested(yaml_cfg.get('system', {}), yaml_key)
+            if v is not None:
+                return v
+
+    # 策略
+    strategy_root = yaml_cfg.get('strategy', {}).get('short_overbought', {})
+    for yaml_key, mapping in _STRATEGY_MAPPING.items():
+        target = mapping[0] if isinstance(mapping, tuple) else mapping
+        if target == key:
+            v = _resolve_nested(strategy_root, yaml_key)
+            if v is not None:
+                if isinstance(mapping, tuple):
+                    _, transform = mapping
+                    try:
+                        v = transform(v)
+                    except Exception:
+                        pass
+                return v
+
+    # 风控
+    risk_root = yaml_cfg.get('risk', {}).get('global', {})
+    for yaml_key, attr_name in _RISK_MAPPING.items():
+        if attr_name == key and yaml_key in risk_root:
+            return risk_root[yaml_key]
+
+    return _MISSING
+
+
+def _s5_layer_defaults(key: str):
+    """5. 代码层兜底 — 直接读已注入本模块的 _defaults.py 全局变量"""
+    if key in globals() and not key.startswith('_'):
+        return globals()[key]
+    return _MISSING
+
+
+class _Missing:
+    def __repr__(self) -> str:  # pragma: no cover
+        return '<MISSING>'
+
+
+_MISSING = _Missing()
+
+
+_S5_LAYERS = (
+    ('env',           _s5_layer_env),
+    ('runtime_config', _s5_layer_runtime),
+    ('admin_secrets', _s5_layer_admin_secrets),
+    ('yaml',          _s5_layer_yaml),
+    ('defaults',      _s5_layer_defaults),
+)
+
+
+def resolve(key: str, default: Any = None, *, with_source: bool = False):
+    """
+    按 4 级配置优先级读取 ``key`` 的最终生效值。
+
+    优先级（高 → 低）：
+      env > runtime_config > admin_secrets.settings > yaml > defaults
+
+    Args:
+        key: 配置键名（与 config 模块属性名一致，如 'DEFAULT_STAKE'）
+        default: 全部层都缺失时返回的默认值
+        with_source: True 时返回 ``(value, source_name)`` 元组
+
+    Returns:
+        值，或（with_source=True 时）``(value, source)``。
+
+    例子::
+
+        from config import resolve
+        stake = resolve('DEFAULT_STAKE')
+        stake, src = resolve('DEFAULT_STAKE', with_source=True)
+        # → (33, 'runtime_config')
+
+    注意：本函数**只读**，不会修改 config 模块属性。如果你需要"应用"
+    新值到运行时进程，仍要调 ``apply_yaml_to_config()`` 或
+    ``runtime_config.apply_overrides()``。
+    """
+    for layer_name, layer_fn in _S5_LAYERS:
+        try:
+            v = layer_fn(key)
+        except Exception:
+            continue
+        if v is _MISSING:
+            continue
+        return (v, layer_name) if with_source else v
+    return (default, 'default') if with_source else default
+
+
+def explain(key: str) -> Dict[str, Any]:
+    """
+    返回每一层对 ``key`` 的可见值，方便 admin panel / debug 时定位
+    "为什么生效值是这个"。
+
+    Returns:
+        {
+          'final_value': ...,
+          'final_source': 'runtime_config',
+          'layers': {
+            'env': <MISSING> | value,
+            'runtime_config': ...,
+            'admin_secrets': ...,
+            'yaml': ...,
+            'defaults': ...,
+          },
+        }
+    """
+    out: Dict[str, Any] = {'layers': {}}
+    final_value: Any = None
+    final_source = 'default'
+    found = False
+    for layer_name, layer_fn in _S5_LAYERS:
+        try:
+            v = layer_fn(key)
+        except Exception as e:
+            v = f'<error: {e}>'
+        out['layers'][layer_name] = '<MISSING>' if v is _MISSING else v
+        if not found and v is not _MISSING and not isinstance(v, str):
+            final_value, final_source, found = v, layer_name, True
+        elif not found and v is not _MISSING:
+            final_value, final_source, found = v, layer_name, True
+    out['final_value'] = final_value
+    out['final_source'] = final_source
+    return out

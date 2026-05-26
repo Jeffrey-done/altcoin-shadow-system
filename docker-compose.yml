@@ -86,9 +86,11 @@ services:
     command: python3 dashboard.py
 
   # 异步策略引擎（v2.0 生产级调度器，替代 scheduler）
+  # S2 修复（2026-05）: 统一入口为 scheduler.py（内部委托 async_engine.main）。
+  # 直接 ``python3 async_engine.py`` 仍然等价，保留为同义入口。
   scheduler:
     <<: *common-app
-    command: python3 async_engine.py
+    command: python3 scheduler.py
     depends_on:
       redis:
         condition: service_healthy
