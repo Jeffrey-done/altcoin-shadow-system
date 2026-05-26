@@ -702,7 +702,10 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
     except ImportError:
         pass
 
-    # ── 多因子评分（替代旧4×25评分）──
+    # ── 评分（S3 修复 — 2026-05）──
+    # 改为统一入口 scoring.score_signal()，内部按
+    # ml > multifactor > linear 优先级自动 fallback。
+    # 单一调用替代旧的 try/except 双层 fallback。
     try:
         ohlcv_raw = exchange.fetch_ohlcv(c.symbol, '1h', limit=200)
 
@@ -716,49 +719,36 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
 
         import pandas as _pd
         _df_score = _pd.DataFrame(ohlcv_raw, columns=['timestamp','open','high','low','close','volume'])
-        _mf = score_signal_multifactor(_df_score, symbol=c.symbol, direction='SHORT')
-        score_result = {
-            "score": round(_mf.score),
-            "grade": _mf.grade,
-            "stake": 0,  # 实际 stake 由下方 compound_stake 决定
-            "details": {"multifactor": True, "confidence": _mf.confidence,
-                        "agreement": _mf.factor_agreement, "n_factors": _mf.n_factors_used,
-                        "whale": _whale_bonus, "sentiment": _sentiment_bonus},
-            "reason": f"MF score={_mf.score:.0f} conf={_mf.confidence:.2f} top={_mf.top_factors[0][0] if _mf.top_factors else 'N/A'}",
-        }
-        # 多因子评分也要加上鲸鱼/情绪 bonus（和旧评分逻辑一致）
-        _mf_total = score_result["score"] + _whale_bonus + _sentiment_bonus
-        _mf_total = max(0, min(100, _mf_total))
-        score_result["score"] = _mf_total
-        # 重新判定 grade
-        if _mf_total >= config.SCORE_FULL_THRESHOLD:
-            score_result["grade"] = "A"
-        elif _mf_total >= config.SCORE_HALF_THRESHOLD:
-            score_result["grade"] = "B"
-        else:
-            score_result["grade"] = "SKIP"
+        _ohlcv_for_scoring = _df_score
+    except Exception as _ohlcv_err:
+        logger.debug(f"  OHLCV 拉取失败 {c.symbol}: {_ohlcv_err} — 评分走 linear 路径")
+        _ohlcv_for_scoring = None
+
+    from scoring import score_signal as _score_signal
+    _result = _score_signal(
+        rsi_1d=c.rsi_1d,
+        rsi_4h=rsi_4h,
+        rsi_4h_peak=rsi_4h_peak,
+        pct_24h=c.pct24h,
+        oi_change=c.oi_change,
+        funding_rate=c.funding_rate,
+        yao_score=c.yao_score,
+        trigger_type='abandon' if trigger_abandon else '4h_rsi',
+        abandon_oi_declining=abandon_oi,
+        btc_24h_pct=btc_pct,
+        cross_validate_bonus=cross_validate_bonus,
+        vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
+        whale_bonus=_whale_bonus,
+        sentiment_bonus=_sentiment_bonus,
+        ohlcv_df=_ohlcv_for_scoring,
+        symbol=c.symbol,
+        direction='SHORT',
+    )
+    score_result = _result.to_dict()
+    if _result.source == 'multifactor':
         logger.info(
-            f"  📊 多因子评分: {c.symbol} score={_mf.score:.0f}[{_mf.grade}] "
-            f"conf={_mf.confidence:.2f} agree={_mf.factor_agreement:.0%} "
-            f"stake×{_mf.recommended_stake_multiplier:.2f}"
-        )
-    except Exception as _mf_err:
-        logger.warning(f"  ⚠️ 多因子评分失败({c.symbol}): {_mf_err}，fallback 旧评分")
-        score_result = calculate_signal_score(
-            rsi_1d=c.rsi_1d,
-            rsi_4h=rsi_4h,
-            rsi_4h_peak=rsi_4h_peak,
-            pct_24h=c.pct24h,
-            oi_change=c.oi_change,
-            funding_rate=c.funding_rate,
-            yao_score=c.yao_score,
-            trigger_type='abandon' if trigger_abandon else '4h_rsi',
-            abandon_oi_declining=abandon_oi,
-            btc_24h_pct=btc_pct,
-            cross_validate_bonus=cross_validate_bonus,
-            vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
-            whale_bonus=_whale_bonus,
-            sentiment_bonus=_sentiment_bonus,
+            f"  📊 评分[mf]: {c.symbol} score={_result.score}[{_result.grade}] "
+            f"{_result.reason}"
         )
 
     if score_result["grade"] == "SKIP":
@@ -1752,6 +1742,24 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
 
 if __name__ == '__main__':
     import sys
+
+    # ── S2 修复（2026-05）: 调度器统一 ──────────────────────────────────
+    # 生产请用 ``python3 scheduler.py``（即 async_engine.main()），
+    # 那里有完整的启动序列（journal 恢复、风控对账、配置一致性校验、
+    # SAFE_MODE 检测、TG bot/hot-scanner 启动、宏观过滤等）。
+    #
+    # 这里保留 scan/check/both 子命令仅作为：
+    #   * 一次性手动触发（debug / 紧急回扫）
+    #   * 单元测试 / 集成测试
+    #   * 旧 cron 配置的临时兼容
+    #
+    # 长期运行请勿用本入口；详见 docs/UNIFIED_ARCHITECTURE.md。
+    if not os.environ.get('ALTCOIN_SCANNER_SUPPRESS_DEPRECATION'):
+        sys.stderr.write(
+            "\n[deprecation] altcoin_scanner.py 直接执行已被标记为运维工具入口。\n"
+            "              生产调度请使用：python3 scheduler.py\n"
+            "              如需关闭本提示：ALTCOIN_SCANNER_SUPPRESS_DEPRECATION=1\n\n"
+        )
 
     mode = sys.argv[1] if len(sys.argv) > 1 else 'check'
 

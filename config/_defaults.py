@@ -488,3 +488,26 @@ def get_active_live_exchanges() -> list:
         if cfg.get('enabled') and cfg.get('live_mode'):
             result.append(name)
     return result
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  S3 修复（2026-05）: 信号评分后端
+# ══════════════════════════════════════════════════════════════════
+# 决定 ``scoring.score_signal()`` 内部按何种顺序尝试 scorer：
+#   'auto'        — ml > multifactor > linear（**默认**，模型不可用自动降级）
+#   'ml'          — 只用 ML 评分；不可用直接 fallback linear
+#   'multifactor' — 优先多因子；OHLCV 不可用 fallback linear
+#   'linear'      — 始终用旧 4×25 评分（最稳定）
+SCORING_BACKEND = 'auto'
+
+
+# ══════════════════════════════════════════════════════════════════
+#  S4 修复（2026-05）: DB 写模式
+# ══════════════════════════════════════════════════════════════════
+# 决定 ``db.compat.save_*`` 在 DB 与 JSON 之间的写策略：
+#   'dual'         — DB + JSON 都写（**默认**，向后兼容老 dashboard）
+#   'db-canonical' — DB 唯一真源；JSON 只在 dashboard 周期 export 时刷新
+#   'json-only'    — DB 关闭（兜底，无 SQLAlchemy 时也能跑）
+# 也可由环境变量 ``DB_WRITE_MODE`` 覆盖，便于运维一键切换。
+DB_WRITE_MODE = 'dual'

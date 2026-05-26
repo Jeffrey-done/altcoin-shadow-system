@@ -1020,5 +1020,24 @@ def run(check_only: bool = False):
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    # ── S2 修复（2026-05）: 调度器统一 ──────────────────────────────────
+    # 生产请用 ``python3 scheduler.py``（即 async_engine.main()），那里有
+    # 完整的周期 tracker_loop（每分钟）+ daily_tasks_loop（每天 08:00 推日报）
+    # + 全套 fallback / journal recovery / 启动一致性校验。
+    #
+    # 这里保留 ``--check-only`` 仅作为：
+    #   * 一次性手动触发追踪 / 紧急回放
+    #   * 单元测试 / 集成测试
+    #   * 旧 cron 配置的临时兼容
+    #
+    # 长期运行请勿用本入口；详见 docs/UNIFIED_ARCHITECTURE.md。
+    import os
+    if not os.environ.get('ALTCOIN_TRACKER_SUPPRESS_DEPRECATION'):
+        sys.stderr.write(
+            "\n[deprecation] altcoin_tracker.py 直接执行已被标记为运维工具入口。\n"
+            "              生产调度请使用：python3 scheduler.py\n"
+            "              如需关闭本提示：ALTCOIN_TRACKER_SUPPRESS_DEPRECATION=1\n\n"
+        )
+
     check_only = '--check-only' in sys.argv
     run(check_only=check_only)
