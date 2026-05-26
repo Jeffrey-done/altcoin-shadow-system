@@ -86,12 +86,11 @@ services:
       dashboard:
         condition: service_started
 
-  # 旧版同步调度器（备用，需要回滚时切换 command）
+  # 旧版同步调度器已删除（scheduler.py removed in code-audit phase 2）
+  # 如需回退，请从 git history 恢复 scheduler.py 并取消下方注释
   # scheduler-legacy:
   #   <<: *common-app
   #   command: python3 scheduler.py
-  #   depends_on:
-  #     redis:
   #       condition: service_healthy
   #     dashboard:
   #       condition: service_started
