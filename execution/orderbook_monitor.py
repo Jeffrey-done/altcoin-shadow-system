@@ -590,6 +590,149 @@ class DepthMonitor:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  v2.0 增强方法
+# ══════════════════════════════════════════════════════════════════
+
+    def get_depth_change_rate(self, symbol: str, lookback_sec: float = 30.0) -> float:
+        """
+        计算深度变化率（过去 N 秒内的深度变化百分比）。
+
+        返回:
+          正数 = 深度增加（流动性改善）
+          负数 = 深度减少（流动性恶化）
+          0 = 无数据或无变化
+
+        用途：SmartOrderEngine Adaptive 模式检测"流动性枯竭"
+        """
+        history = self._history.get(symbol, [])
+        if len(history) < 2:
+            return 0.0
+
+        now = time.time()
+        cutoff = now - lookback_sec
+
+        # 找到 lookback_sec 前的快照
+        old_entry = None
+        for entry in history:
+            if entry[0] >= cutoff:
+                old_entry = entry
+                break
+
+        if old_entry is None:
+            old_entry = history[0]
+
+        latest = history[-1]
+
+        old_depth = old_entry[1] + old_entry[2]  # bid + ask
+        new_depth = latest[1] + latest[2]
+
+        if old_depth <= 0:
+            return 0.0
+
+        return (new_depth - old_depth) / old_depth
+
+    def get_spread_history(self, symbol: str, lookback_sec: float = 60.0) -> List[float]:
+        """
+        获取过去 N 秒的 spread 历史（bps）。
+
+        用途：Adaptive 模式检测 spread 扩大 → 流动性枯竭预警
+        """
+        with self._lock:
+            book = self._books.get(symbol)
+        if not book:
+            return []
+
+        # 当前只能返回当前快照的 spread（历史 spread 需要额外存储）
+        # v2.0: 返回单值列表供接口兼容
+        return [book.spread_bps] if book.spread_bps > 0 else []
+
+    def pre_execution_check(self, symbol: str, side: str,
+                            notional_usdt: float) -> Dict[str, Any]:
+        """
+        开仓前综合检查（供 SmartOrderEngine 调用）。
+
+        返回一个字典包含：
+          - ok: bool — 是否可以执行
+          - analysis: DepthAnalysis — 深度分析结果
+          - warnings: List[str] — 警告信息
+          - recommended_algo: str — 建议算法
+          - max_single_order_usdt: float — 建议单笔最大金额
+        """
+        result = {
+            'ok': True,
+            'analysis': None,
+            'warnings': [],
+            'recommended_algo': 'market',
+            'max_single_order_usdt': notional_usdt,
+        }
+
+        analysis = self.analyze(symbol, side, notional_usdt)
+        result['analysis'] = analysis
+
+        # 检查 1: 流动性等级
+        if analysis.liquidity_grade == 'D':
+            result['warnings'].append(
+                f"流动性等级 D (score={analysis.liquidity_score:.0f})"
+            )
+            if analysis.recommendation == 'abort':
+                result['ok'] = False
+                result['warnings'].append("建议放弃本次交易")
+
+        # 检查 2: 预估滑点
+        if analysis.estimated_slippage_bps > 30:
+            result['ok'] = False
+            result['warnings'].append(
+                f"预估滑点过高: {analysis.estimated_slippage_bps:.0f} bps"
+            )
+        elif analysis.estimated_slippage_bps > 15:
+            result['warnings'].append(
+                f"滑点较高: {analysis.estimated_slippage_bps:.0f} bps, 建议拆单"
+            )
+
+        # 检查 3: 买卖不平衡
+        if side == 'sell' and analysis.imbalance_ratio > 0.4:
+            result['warnings'].append(
+                f"买方压力强 (imbalance={analysis.imbalance_ratio:.2f}), "
+                f"做空可能面临反向冲击"
+            )
+        elif side == 'buy' and analysis.imbalance_ratio < -0.4:
+            result['warnings'].append(
+                f"卖方压力强 (imbalance={analysis.imbalance_ratio:.2f}), "
+                f"做多可能面临反向冲击"
+            )
+
+        # 检查 4: 深度变化趋势
+        depth_change = self.get_depth_change_rate(symbol, lookback_sec=30)
+        if depth_change < -0.3:
+            result['warnings'].append(
+                f"深度快速下降 ({depth_change*100:.0f}%)，流动性可能枯竭"
+            )
+
+        # 推荐算法
+        if analysis.estimated_slippage_bps <= 5 and analysis.liquidity_grade == 'A':
+            result['recommended_algo'] = 'market'
+        elif analysis.estimated_slippage_bps <= 10:
+            result['recommended_algo'] = 'twap'
+        elif analysis.estimated_slippage_bps <= 20:
+            result['recommended_algo'] = 'vwap'
+        else:
+            result['recommended_algo'] = 'iceberg'
+
+        # 建议单笔最大金额
+        if analysis.depth_sufficient:
+            result['max_single_order_usdt'] = notional_usdt
+        else:
+            # 不超过对手方深度的 20%
+            opposite_depth = (analysis.bid_depth_usdt if side == 'sell'
+                              else analysis.ask_depth_usdt)
+            result['max_single_order_usdt'] = min(
+                notional_usdt, opposite_depth * 0.2
+            )
+
+        return result
+
+
+# ══════════════════════════════════════════════════════════════════
 #  全局单例
 # ══════════════════════════════════════════════════════════════════
 
