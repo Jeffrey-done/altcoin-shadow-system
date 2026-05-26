@@ -647,12 +647,32 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
         c.rsi_4h_peak = rsi_4h_peak
         return ('skip', f'no_trigger (drop={drop:.1f}, abandon={abandon.get("reason","")})')
 
-    # ── 量价背离 + OKX 交叉验证 + 评分 ──
+    # ── 量价背离 + OKX 交叉验证 + 鲸鱼预警 + 情绪信号 + 评分 ──
     vol_divergence = detect_volume_divergence(exchange, c.symbol)
     if _expired():
         return ('skip', f'timeout_after_voldiv (>{per_candidate_timeout_sec:.0f}s)')
 
     abandon_oi = abandon.get("oi_declining", False) if trigger_abandon else False
+
+    # 鲸鱼预警：大额 CEX 充值 → 抛售意图 → 做空加分(0~15)
+    _whale_bonus = 0
+    try:
+        from signals.whale_alert import get_whale_bonus
+        _whale_bonus = get_whale_bonus(c.symbol)
+        if _whale_bonus > 0:
+            logger.info(f"  🐋 鲸鱼预警: {c.symbol} +{_whale_bonus}分")
+    except Exception as _we:
+        logger.debug(f"  鲸鱼预警查询失败（非致命）: {_we}")
+
+    # 社交情绪：FOMO 极端 → 顶部信号 → 做空加分(0~10)
+    _sentiment_bonus = 0
+    try:
+        from signals.sentiment import get_short_sentiment_bonus
+        _sentiment_bonus = get_short_sentiment_bonus(c.symbol)
+        if _sentiment_bonus > 0:
+            logger.info(f"  💬 FOMO情绪: {c.symbol} +{_sentiment_bonus}分")
+    except Exception as _se:
+        logger.debug(f"  情绪信号查询失败（非致命）: {_se}")
 
     cross_validate_bonus = 0
     okx_cv_info = ""
@@ -685,9 +705,21 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
             "grade": _mf.grade,
             "stake": 0,  # 实际 stake 由下方 compound_stake 决定
             "details": {"multifactor": True, "confidence": _mf.confidence,
-                        "agreement": _mf.factor_agreement, "n_factors": _mf.n_factors_used},
+                        "agreement": _mf.factor_agreement, "n_factors": _mf.n_factors_used,
+                        "whale": _whale_bonus, "sentiment": _sentiment_bonus},
             "reason": f"MF score={_mf.score:.0f} conf={_mf.confidence:.2f} top={_mf.top_factors[0][0] if _mf.top_factors else 'N/A'}",
         }
+        # 多因子评分也要加上鲸鱼/情绪 bonus（和旧评分逻辑一致）
+        _mf_total = score_result["score"] + _whale_bonus + _sentiment_bonus
+        _mf_total = max(0, min(100, _mf_total))
+        score_result["score"] = _mf_total
+        # 重新判定 grade
+        if _mf_total >= config.SCORE_FULL_THRESHOLD:
+            score_result["grade"] = "A"
+        elif _mf_total >= config.SCORE_HALF_THRESHOLD:
+            score_result["grade"] = "B"
+        else:
+            score_result["grade"] = "SKIP"
         logger.info(
             f"  📊 多因子评分: {c.symbol} score={_mf.score:.0f}[{_mf.grade}] "
             f"conf={_mf.confidence:.2f} agree={_mf.factor_agreement:.0%} "
@@ -708,6 +740,8 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
             btc_24h_pct=btc_pct,
             cross_validate_bonus=cross_validate_bonus,
             vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
+            whale_bonus=_whale_bonus,
+            sentiment_bonus=_sentiment_bonus,
         )
 
     if score_result["grade"] == "SKIP":

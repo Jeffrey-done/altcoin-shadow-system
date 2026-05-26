@@ -66,6 +66,8 @@ def calculate_signal_score(
     btc_24h_pct: float = 0.0,
     cross_validate_bonus: int = 0,
     vol_divergence_bonus: int = 0,
+    whale_bonus: int = 0,
+    sentiment_bonus: int = 0,
 ) -> dict:
     """
     综合评分 0~100。
@@ -77,6 +79,8 @@ def calculate_signal_score(
       4. 市场热度（0~25）：OI 变化 + 资金费率 + BTC 趋势加分
       5. OKX 交叉验证加分（额外 0~8）：两所数据一致时奖励
       6. 量价背离加分（额外 0~8）：价格新高但量缩，顶部确认
+      7. 鲸鱼预警加分（额外 0~15）：大额充值 CEX，抛售意图
+      8. 社交情绪加分（额外 0~10）：FOMO 极端，顶部信号
 
     返回:
       {
@@ -164,7 +168,7 @@ def calculate_signal_score(
     # 原始总和可能超过 100（最高 116），但下面 min(100, ...) 确保最终评分
     # 永远在 [0, 100] 范围内。这是有意设计：bonus 的作用是"把接近阈值的
     # 信号推过线"，而非无限放大评分。
-    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus + vol_divergence_bonus)
+    total_score = round(rsi_score + yao_dim_score + trigger_score + heat_score + cross_validate_bonus + vol_divergence_bonus + whale_bonus + sentiment_bonus)
     total_score = max(0, min(100, total_score))
 
     # ── 评级 & 仓位 ──
@@ -189,6 +193,8 @@ def calculate_signal_score(
         "heat": round(heat_score, 1),
         "cross_validate": cross_validate_bonus,
         "vol_divergence": vol_divergence_bonus,
+        "whale": whale_bonus,
+        "sentiment": sentiment_bonus,
     }
 
     reason_parts = []
@@ -204,6 +210,10 @@ def calculate_signal_score(
         reason_parts.append(f"OKX交叉验证(+{cross_validate_bonus})")
     if vol_divergence_bonus > 0:
         reason_parts.append(f"量价背离(+{vol_divergence_bonus})")
+    if whale_bonus > 0:
+        reason_parts.append(f"鲸鱼预警(+{whale_bonus})")
+    if sentiment_bonus > 0:
+        reason_parts.append(f"FOMO情绪(+{sentiment_bonus})")
 
     reason = " + ".join(reason_parts) if reason_parts else "信号一般"
 
@@ -221,6 +231,8 @@ def calculate_signal_score(
         f"触发={trigger_score:.0f} 热度={heat_score:.0f}"
         f"{f' OKX=+{cross_validate_bonus}' if cross_validate_bonus > 0 else ''}"
         f"{f' 量价背离=+{vol_divergence_bonus}' if vol_divergence_bonus > 0 else ''}"
+        f"{f' 🐋=+{whale_bonus}' if whale_bonus > 0 else ''}"
+        f"{f' 💬=+{sentiment_bonus}' if sentiment_bonus > 0 else ''}"
         f" | 仓位={stake}U | {reason}"
     )
 
