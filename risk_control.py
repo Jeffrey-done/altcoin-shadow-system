@@ -40,7 +40,9 @@ class RiskState:
     """单个账户的风控状态"""
     date: str = field(default_factory=today_str)
     daily_loss: float = 0.0          # 当日已实现亏损累计
-    daily_trades_opened: int = 0     # 当日已开仓次数
+    daily_trades_opened: int = 0     # 当日已开仓次数（总计）
+    daily_trades_long: int = 0       # 当日做多开仓次数
+    daily_trades_short: int = 0      # 当日做空开仓次数
     consecutive_losses: int = 0      # 连续亏损次数（跨日）
     paused_until: Optional[str] = None  # 暂停截止时间（ISO）
     total_open_stake: float = 0.0    # 当前持仓总保证金
@@ -106,6 +108,8 @@ def load_risk_state(account_id: Optional[str] = None) -> RiskState:
         state.date = today_str()
         state.daily_loss = 0.0
         state.daily_trades_opened = 0
+        state.daily_trades_long = 0
+        state.daily_trades_short = 0
         state.total_open_stake = _calc_actual_open_stake(account_id)
         save_risk_state(state, account_id)
 
@@ -179,6 +183,8 @@ def _state_from_data(data: dict, account_id: Optional[str] = None) -> RiskState:
         state.date = today_str()
         state.daily_loss = 0.0
         state.daily_trades_opened = 0
+        state.daily_trades_long = 0
+        state.daily_trades_short = 0
         state.total_open_stake = _calc_actual_open_stake(account_id)
 
     return state
@@ -326,6 +332,7 @@ def reconcile_risk_state(account_id: Optional[str] = None, notify: bool = False)
 # ══════════════════════════════════════════════════════════════════
 
 def can_open_trade(stake: float = None, strategy: str = 'short',
+                   direction: str = '',
                    account_id: Optional[str] = None) -> tuple:
     """
     检查指定账户是否允许开仓。
@@ -333,6 +340,7 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
     参数:
       stake: 本次开仓保证金；None → 取该账号的 DEFAULT_STAKE（含 proportional 缩放）
       strategy: 策略类型（保留参数向后兼容）
+      direction: 'SHORT' | 'LONG' | ''（空=不检查方向子限额）
       account_id: 账户 ID（None 使用活跃账户）
 
     返回: (allowed: bool, reason: str)
@@ -405,6 +413,29 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
             logger.warning(f"🚫 {reason}")
             return False, reason
 
+        # 3b. 检查方向子限额（LONG / SHORT 独立计数）
+        direction_upper = direction.upper() if direction else ''
+        if direction_upper == 'LONG':
+            _max_long = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES_LONG',
+                                          getattr(config, 'RISK_MAX_DAILY_TRADES_LONG', 0)))
+            if _max_long > 0 and state.daily_trades_long >= _max_long:
+                reason = f"做多方向开仓次数已达上限（{state.daily_trades_long} >= {_max_long}）"
+                if dirty:
+                    data = _save_state_in_lock(data, state, account_id)
+                    save(data)
+                logger.warning(f"🚫 {reason}")
+                return False, reason
+        elif direction_upper == 'SHORT':
+            _max_short = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES_SHORT',
+                                           getattr(config, 'RISK_MAX_DAILY_TRADES_SHORT', 0)))
+            if _max_short > 0 and state.daily_trades_short >= _max_short:
+                reason = f"做空方向开仓次数已达上限（{state.daily_trades_short} >= {_max_short}）"
+                if dirty:
+                    data = _save_state_in_lock(data, state, account_id)
+                    save(data)
+                logger.warning(f"🚫 {reason}")
+                return False, reason
+
         # 4. 检查最大持仓占比（用锁外快照同步持仓总额，避免交叉锁）
         if abs(state.total_open_stake - actual_stake_snapshot) > 0.01:
             logger.info(f"🔄 持仓自动修正：{state.total_open_stake:.0f}U → {actual_stake_snapshot:.0f}U")
@@ -457,6 +488,7 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
 
 
 def record_trade_opened(stake: float = None, strategy: str = 'short',
+                        direction: str = '',
                         account_id: Optional[str] = None) -> None:
     """记录指定账户的开仓事件（全程加锁）"""
     if stake is None:
@@ -465,11 +497,18 @@ def record_trade_opened(stake: float = None, strategy: str = 'short',
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
         state.daily_trades_opened += 1
+        # 按方向分桶计数
+        direction_upper = direction.upper() if direction else ''
+        if direction_upper == 'LONG':
+            state.daily_trades_long += 1
+        elif direction_upper == 'SHORT':
+            state.daily_trades_short += 1
         state.total_open_stake += stake
         data = _save_state_in_lock(data, state, account_id)
         save(data)
     logger.info(
-        f"📝 记录开仓 [{_resolve_account_id(account_id)}]：今日第{state.daily_trades_opened}单，"
+        f"📝 记录开仓 [{_resolve_account_id(account_id)}]：今日第{state.daily_trades_opened}单"
+        f"（多{state.daily_trades_long}/空{state.daily_trades_short}），"
         f"持仓{state.total_open_stake:.0f}U"
     )
 

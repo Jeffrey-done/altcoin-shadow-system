@@ -203,29 +203,53 @@ def cmd_positions() -> str:
 
 
 def cmd_candidates() -> str:
-    """候选池"""
+    """候选池 — 按策略分组展示"""
     candidates = load_json(CANDIDATES_FILE, [])
 
     if not candidates:
         return "📭 <b>候选池为空</b>"
 
-    # 分离：等待中 vs 已触发（tg_bot 只显示等待中的候选，已触发的已经开仓了，
-    # 查看请用 /positions；历史上这里曾一并展示但信息过密故移除）
+    # 分离已触发 vs 等待中
     waiting = [c for c in candidates if not c.get('triggered')]
+
+    if not waiting:
+        return "📭 <b>候选池为空（无等待中）</b>"
+
+    # 按策略分组
+    from collections import defaultdict
+    by_strategy = defaultdict(list)
+    for c in waiting:
+        strat = c.get('strategy', 'short_overbought')
+        by_strategy[strat].append(c)
 
     lines = [f"📋 <b>候选池（{len(waiting)}个等待中）</b>\n"]
 
-    for c in waiting[:10]:  # 最多显示10个
-        symbol = c.get('symbol', '?')
-        rsi = c.get('rsi_1d', 0)
-        pct = c.get('pct24h', 0)
-        yao = c.get('yao_score', 0)
-        yao_emoji = "🔥" if yao >= 2 else ("⚡" if yao == 1 else "📌")
+    strategy_labels = {
+        'short_overbought': '🔴 做空超买',
+        'long_oversold': '🟢 做多超卖',
+        'prepump_sniffer': '🔮 妖币嗅探',
+    }
 
-        lines.append(f"  {yao_emoji} {symbol} | RSI={rsi} | 24h={pct:+.1f}% | 妖={yao}/3")
+    for strat, cands in by_strategy.items():
+        label = strategy_labels.get(strat, f'📌 {strat}')
+        direction = cands[0].get('direction', '?') if cands else '?'
+        lines.append(f"\n<b>{label}</b> ({direction}, {len(cands)}个)")
 
-    if len(waiting) > 10:
-        lines.append(f"  ...还有 {len(waiting) - 10} 个")
+        for c in cands[:5]:  # 每个策略最多显示5个
+            symbol = c.get('symbol', '?')
+            rsi = c.get('rsi_1d', 0)
+            pct = c.get('pct24h', 0)
+            score = c.get('score', 0)
+
+            if strat == 'short_overbought':
+                yao = c.get('yao_score', 0)
+                yao_emoji = "🔥" if yao >= 2 else ("⚡" if yao == 1 else "")
+                lines.append(f"  {yao_emoji} {symbol} | RSI={rsi} | 24h={pct:+.1f}% | 妖={yao}/3")
+            else:
+                lines.append(f"  {symbol} | RSI={rsi} | 24h={pct:+.1f}% | 分={score:.0f}")
+
+        if len(cands) > 5:
+            lines.append(f"  ...还有 {len(cands) - 5} 个")
 
     return "\n".join(lines)
 
@@ -241,6 +265,8 @@ def cmd_risk() -> str:
 
     daily_loss = state.daily_loss
     trades_opened = state.daily_trades_opened
+    trades_long = state.daily_trades_long
+    trades_short = state.daily_trades_short
     consec = state.consecutive_losses
     paused = state.paused_until
     stake = state.total_open_stake
@@ -251,6 +277,10 @@ def cmd_risk() -> str:
                                           config.RISK_MAX_DAILY_LOSS))
     _max_daily_trades = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES',
                                           config.RISK_MAX_DAILY_TRADES))
+    _max_long = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES_LONG',
+                                  getattr(config, 'RISK_MAX_DAILY_TRADES_LONG', 0)))
+    _max_short = int(account_param(account_id, 'RISK_MAX_DAILY_TRADES_SHORT',
+                                   getattr(config, 'RISK_MAX_DAILY_TRADES_SHORT', 0)))
     _consec_pause = int(account_param(account_id, 'RISK_CONSECUTIVE_LOSS_PAUSE',
                                       config.RISK_CONSECUTIVE_LOSS_PAUSE))
     _cooldown = int(account_param(account_id, 'COOLDOWN_HOURS',
@@ -264,11 +294,20 @@ def cmd_risk() -> str:
     elif daily_loss >= _max_daily_loss * 0.7:
         status = "🟡 接近限额"
 
+    # 方向分桶展示
+    direction_line = f"  📊 做多：{trades_long}"
+    if _max_long > 0:
+        direction_line += f" / {_max_long}"
+    direction_line += f" | 做空：{trades_short}"
+    if _max_short > 0:
+        direction_line += f" / {_max_short}"
+
     return (
         f"🛡️ <b>风控状态</b>\n\n"
         f"状态：{status}\n"
         f"今日亏损：{daily_loss:.1f} / {_max_daily_loss:.0f}U\n"
         f"今日开仓：{trades_opened} / {_max_daily_trades} 次\n"
+        f"{direction_line}\n"
         f"连续亏损：{consec} / {_consec_pause} 次\n"
         f"持仓占用：{stake:.0f}U\n"
         f"冷却期：{_cooldown}h\n"

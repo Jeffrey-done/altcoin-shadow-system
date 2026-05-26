@@ -160,20 +160,32 @@ class TradeModel(Base):
 # ══════════════════════════════════════════════════════════════════
 
 class CandidateModel(Base):
-    """候选币表"""
+    """候选币表 — 多策略支持，同一 symbol 可被不同策略各自持有"""
     __tablename__ = 'candidates'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(32), nullable=False, index=True, unique=True)
+    symbol = Column(String(32), nullable=False, index=True)
+    strategy = Column(String(64), nullable=False, default='short_overbought', index=True)
+    direction = Column(String(8), nullable=False, default='SHORT')  # SHORT | LONG
+
     price = Column(Float, nullable=False)
     vol24h = Column(Float, default=0.0)
     pct24h = Column(Float, default=0.0)
+    score = Column(Float, default=0.0)  # 策略扫描阶段的初步评分
+
+    # 通用指标
     rsi_1d = Column(Float, default=50.0)
     rsi_4h = Column(Float, nullable=True)
     rsi_4h_peak = Column(Float, nullable=True)
     oi_change = Column(Float, default=0.0)
     funding_rate = Column(Float, default=0.0)
-    yao_score = Column(Integer, default=0)
+
+    # short_overbought 专用（其他策略可为 NULL）
+    yao_score = Column(Integer, nullable=True, default=0)
+
+    # 策略自定义元数据（JSON 序列化，存放策略独有指标）
+    metadata_json = Column(Text, nullable=True)
+
     triggered = Column(Boolean, default=False)
     trigger_type = Column(String(16), nullable=True)
     trigger_reason = Column(Text, nullable=True)
@@ -190,12 +202,25 @@ class CandidateModel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
+        Index('ix_candidates_symbol_strategy', 'symbol', 'strategy', unique=True),
         Index('ix_candidates_triggered', 'triggered'),
         Index('ix_candidates_added_at', 'added_at'),
+        Index('ix_candidates_strategy', 'strategy'),
+        Index('ix_candidates_direction', 'direction'),
     )
 
     def to_dict(self) -> dict:
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        d = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        # 解析 metadata_json 为 dict 方便消费端使用
+        if d.get('metadata_json'):
+            try:
+                import json
+                d['metadata'] = json.loads(d['metadata_json'])
+            except (ValueError, TypeError):
+                d['metadata'] = {}
+        else:
+            d['metadata'] = {}
+        return d
 
 
 # ══════════════════════════════════════════════════════════════════

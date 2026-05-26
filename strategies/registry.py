@@ -238,6 +238,7 @@ class StrategyEngine:
     def run_scan_cycle(self, data_feed: 'DataFeed', market: 'MarketSnapshot') -> List[Candidate]:
         """
         运行一轮扫描：所有活跃策略并行扫描 → 汇总候选。
+        自动注入 strategy_name 和 direction 到每个候选对象。
         """
         from strategies.base import Candidate as CandidateDTO, DataFeed, MarketSnapshot
         all_candidates: List[CandidateDTO] = []
@@ -246,6 +247,10 @@ class StrategyEngine:
             try:
                 candidates = strategy.scan(data_feed, market)
                 if candidates:
+                    # 注入策略标识到每个候选
+                    for c in candidates:
+                        c.strategy_name = strategy.name
+                        c.direction = strategy.direction.value
                     self._logger.info(
                         f"[{strategy.name}] 扫描产生 {len(candidates)} 个候选"
                     )

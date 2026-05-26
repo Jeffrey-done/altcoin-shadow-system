@@ -107,7 +107,9 @@ ALLOWED: Dict[str, Tuple[type, Callable, str]] = {
 
     # ── 风控阈值 ──
     'RISK_MAX_DAILY_LOSS': (float, _pct_validator(5, 500), '单日最大亏损 (U)'),
-    'RISK_MAX_DAILY_TRADES': (int, _int_validator(1, 20), '单日最大开仓'),
+    'RISK_MAX_DAILY_TRADES': (int, _int_validator(1, 50), '单日最大开仓'),
+    'RISK_MAX_DAILY_TRADES_LONG': (int, _int_validator(0, 50), '单日做多上限 (0=不限)'),
+    'RISK_MAX_DAILY_TRADES_SHORT': (int, _int_validator(0, 50), '单日做空上限 (0=不限)'),
     'RISK_CONSECUTIVE_LOSS_PAUSE': (int, _int_validator(2, 10), '连亏几次暂停'),
     'RISK_MAX_POSITION_PCT': (float, _pct_validator(0.1, 1.0), '最大持仓占比'),
     'COOLDOWN_HOURS': (int, _int_validator(1, 168), '止损后冷却期 (h)'),

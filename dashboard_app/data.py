@@ -45,25 +45,26 @@ logger = logging.getLogger("dashboard_app.data")
 
 def get_long_candidates() -> list:
     """
-    获取做多策略（Pre-Pump Sniffer）的候选列表。
-    优先 DB；DB 不可用时尝试独立 long_candidates.json；都失败返回 []。
+    获取做多策略（Pre-Pump Sniffer + Long Oversold）的候选列表。
+    优先 DB；DB 不可用时从 candidates JSON 过滤；都失败返回 []。
     """
     try:
         from db.compat import _is_db_ready
         if _is_db_ready():
             from db.repositories import CandidateRepo
-            all_cands = CandidateRepo.get_active(exclude_triggered=True)
-            return [c for c in all_cands if c.get('strategy') == 'prepump_sniffer']
+            return CandidateRepo.get_active(
+                exclude_triggered=True, direction='LONG')
     except Exception:
         pass
 
-    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    long_candidates_file = os.path.join(script_dir, 'long_candidates.json')
-    if os.path.exists(long_candidates_file):
-        try:
-            return load_json(long_candidates_file, [])
-        except Exception:
-            pass
+    # Fallback: 从全量 candidates JSON 按 direction/strategy 过滤
+    try:
+        candidates = load_json(CANDIDATES_FILE, [])
+        return [c for c in candidates
+                if not c.get('triggered', False)
+                and c.get('direction', '').upper() == 'LONG']
+    except Exception:
+        pass
 
     return []
 

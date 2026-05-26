@@ -102,6 +102,8 @@ class Candidate:
     price: float
     score: float = 0.0               # 初步评分（扫描阶段粗筛）
     timeframe: str = '1d'            # 触发候选的时间框架
+    strategy_name: str = ''          # 产生此候选的策略名（由 Engine 注入）
+    direction: str = ''              # SHORT | LONG（由 Engine 从策略 direction 注入）
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:

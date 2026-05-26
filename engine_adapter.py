@@ -394,62 +394,97 @@ def run_exit(check_only: bool = True):
 # ══════════════════════════════════════════════════════════════════
 
 def _persist_candidates(candidates: list):
-    """将候选写入 DB"""
+    """将候选写入 DB — 多策略支持，按 (symbol, strategy) 复合键 upsert"""
     try:
         from db.repositories import CandidateRepo
         from datetime import datetime, timezone, timedelta
         import config as cfg
+        import json as _json
 
         expire_hours = getattr(cfg, 'CANDIDATE_EXPIRE_HOURS', 12)
 
         for c in candidates:
-            CandidateRepo.upsert({
+            # 从策略注入的字段读取
+            strategy_name = getattr(c, 'strategy_name', '') or 'short_overbought'
+            direction = getattr(c, 'direction', '') or 'SHORT'
+            metadata = getattr(c, 'metadata', {}) or {}
+
+            candidate_data = {
                 'symbol': c.symbol,
+                'strategy': strategy_name,
+                'direction': direction,
                 'price': c.price,
-                'vol24h': c.metadata.get('vol24h', 0),
-                'pct24h': c.metadata.get('pct24h', 0),
-                'rsi_1d': c.metadata.get('rsi_1d', 50),
-                'oi_change': c.metadata.get('oi_change', 0),
-                'funding_rate': c.metadata.get('funding_rate', 0),
-                'yao_score': c.metadata.get('yao_score', 0),
+                'score': getattr(c, 'score', 0),
+                'vol24h': metadata.get('vol24h', 0),
+                'pct24h': metadata.get('pct24h', 0),
+                'rsi_1d': metadata.get('rsi_1d', 50),
+                'oi_change': metadata.get('oi_change', 0),
+                'funding_rate': metadata.get('funding_rate', 0),
                 'added_at': datetime.now(timezone.utc),
                 'expires_at': datetime.now(timezone.utc) + timedelta(hours=expire_hours),
-            })
+            }
+
+            # short_overbought 专用字段
+            if strategy_name == 'short_overbought':
+                candidate_data['yao_score'] = metadata.get('yao_score', 0)
+
+            # 其余 metadata 序列化存入 metadata_json
+            # 排除已经存入独立列的字段
+            _known_keys = {'vol24h', 'pct24h', 'rsi_1d', 'oi_change',
+                           'funding_rate', 'yao_score', 'direction'}
+            extra_meta = {k: v for k, v in metadata.items() if k not in _known_keys}
+            if extra_meta:
+                candidate_data['metadata_json'] = _json.dumps(
+                    extra_meta, ensure_ascii=False)
+
+            CandidateRepo.upsert(candidate_data)
     except Exception as e:
         logger.warning(f"候选写入 DB 失败（非致命）: {e}")
 
 
 def _sync_candidates_to_json(candidates: list):
-    """兼容：将候选同步写入旧 JSON 格式"""
+    """兼容：将候选同步写入旧 JSON 格式（含 strategy/direction 标签）"""
     try:
         from common import CANDIDATES_FILE, LockedJsonFile, utcnow_iso
         import config as cfg
 
         candidate_dicts = []
         for c in candidates:
+            strategy_name = getattr(c, 'strategy_name', '') or 'short_overbought'
+            direction = getattr(c, 'direction', '') or 'SHORT'
+            metadata = getattr(c, 'metadata', {}) or {}
+
             candidate_dicts.append({
                 'symbol': c.symbol,
+                'strategy': strategy_name,
+                'direction': direction,
                 'price': c.price,
-                'vol24h': c.metadata.get('vol24h', 0),
-                'pct24h': c.metadata.get('pct24h', 0),
-                'rsi_1d': c.metadata.get('rsi_1d', 50),
-                'oi_change': c.metadata.get('oi_change', 0),
-                'funding_rate': c.metadata.get('funding_rate', 0),
-                'yao_score': c.metadata.get('yao_score', 0),
+                'score': getattr(c, 'score', 0),
+                'vol24h': metadata.get('vol24h', 0),
+                'pct24h': metadata.get('pct24h', 0),
+                'rsi_1d': metadata.get('rsi_1d', 50),
+                'oi_change': metadata.get('oi_change', 0),
+                'funding_rate': metadata.get('funding_rate', 0),
+                'yao_score': metadata.get('yao_score', 0),
                 'added_at': utcnow_iso(),
                 'triggered': False,
             })
 
         with LockedJsonFile(CANDIDATES_FILE, default=[]) as (existing, save):
-            existing_syms = {c['symbol'] for c in existing}
+            # 按 (symbol, strategy) 复合键去重
+            existing_keys = {(c['symbol'], c.get('strategy', 'short_overbought'))
+                            for c in existing}
             for cd in candidate_dicts:
-                if cd['symbol'] not in existing_syms:
+                key = (cd['symbol'], cd['strategy'])
+                if key not in existing_keys:
                     existing.append(cd)
                 else:
                     # 更新已有候选的指标
                     for ex in existing:
-                        if ex['symbol'] == cd['symbol']:
-                            ex.update({k: v for k, v in cd.items() if k != 'added_at'})
+                        if ex['symbol'] == cd['symbol'] and \
+                           ex.get('strategy', 'short_overbought') == cd['strategy']:
+                            ex.update({k: v for k, v in cd.items()
+                                      if k not in ('added_at', 'triggered')})
                             break
             save(existing)
     except Exception as e:

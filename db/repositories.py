@@ -262,15 +262,28 @@ class TradeRepo:
 # ══════════════════════════════════════════════════════════════════
 
 class CandidateRepo:
-    """候选池 Repository"""
+    """候选池 Repository — 多策略支持"""
 
     @staticmethod
     def upsert(candidate_data: dict) -> dict:
-        """创建或更新候选（按 symbol 唯一）"""
+        """创建或更新候选（按 symbol + strategy 复合唯一键）"""
         with get_session() as session:
+            strategy = candidate_data.get('strategy', 'short_overbought')
+            symbol = candidate_data['symbol']
+
             existing = session.query(CandidateModel).filter(
-                CandidateModel.symbol == candidate_data['symbol']
+                and_(
+                    CandidateModel.symbol == symbol,
+                    CandidateModel.strategy == strategy,
+                )
             ).first()
+
+            # 序列化 metadata dict → metadata_json
+            if 'metadata' in candidate_data and isinstance(candidate_data['metadata'], dict):
+                import json as _json
+                candidate_data['metadata_json'] = _json.dumps(
+                    candidate_data['metadata'], ensure_ascii=False)
+                del candidate_data['metadata']
 
             if existing:
                 for key, value in candidate_data.items():
@@ -280,18 +293,30 @@ class CandidateRepo:
                 session.flush()
                 return existing.to_dict()
             else:
-                candidate = CandidateModel(**candidate_data)
+                # Ensure strategy and direction are set
+                candidate_data.setdefault('strategy', 'short_overbought')
+                candidate_data.setdefault('direction', 'SHORT')
+                candidate = CandidateModel(**{
+                    k: v for k, v in candidate_data.items()
+                    if hasattr(CandidateModel, k)
+                })
                 session.add(candidate)
                 session.flush()
                 return candidate.to_dict()
 
     @staticmethod
-    def get_active(exclude_triggered: bool = True) -> List[dict]:
-        """获取活跃候选（未触发 + 未过期）"""
+    def get_active(exclude_triggered: bool = True,
+                   strategy: Optional[str] = None,
+                   direction: Optional[str] = None) -> List[dict]:
+        """获取活跃候选（未触发 + 未过期），支持按策略/方向过滤"""
         with get_session() as session:
             query = session.query(CandidateModel)
             if exclude_triggered:
                 query = query.filter(CandidateModel.triggered == False)
+            if strategy:
+                query = query.filter(CandidateModel.strategy == strategy)
+            if direction:
+                query = query.filter(CandidateModel.direction == direction)
             # 排除过期候选
             now = _utcnow()
             query = query.filter(
@@ -303,11 +328,21 @@ class CandidateRepo:
             return [c.to_dict() for c in query.order_by(CandidateModel.added_at).all()]
 
     @staticmethod
-    def mark_triggered(symbol: str, trigger_type: str, trigger_reason: str) -> bool:
-        """标记候选已触发"""
+    def get_by_strategy(strategy_name: str, exclude_triggered: bool = True) -> List[dict]:
+        """获取指定策略的候选列表"""
+        return CandidateRepo.get_active(
+            exclude_triggered=exclude_triggered, strategy=strategy_name)
+
+    @staticmethod
+    def mark_triggered(symbol: str, trigger_type: str, trigger_reason: str,
+                       strategy: str = 'short_overbought') -> bool:
+        """标记候选已触发（按 symbol + strategy 定位）"""
         with get_session() as session:
             candidate = session.query(CandidateModel).filter(
-                CandidateModel.symbol == symbol
+                and_(
+                    CandidateModel.symbol == symbol,
+                    CandidateModel.strategy == strategy,
+                )
             ).first()
             if not candidate:
                 return False
@@ -331,19 +366,25 @@ class CandidateRepo:
             return count
 
     @staticmethod
-    def remove_by_symbol(symbol: str) -> bool:
-        """删除指定 symbol 的候选"""
+    def remove_by_symbol(symbol: str, strategy: Optional[str] = None) -> bool:
+        """删除指定 symbol 的候选（可选限定策略）"""
         with get_session() as session:
-            count = session.query(CandidateModel).filter(
+            query = session.query(CandidateModel).filter(
                 CandidateModel.symbol == symbol
-            ).delete(synchronize_session=False)
+            )
+            if strategy:
+                query = query.filter(CandidateModel.strategy == strategy)
+            count = query.delete(synchronize_session=False)
             return count > 0
 
     @staticmethod
-    def count() -> int:
-        """当前候选池大小"""
+    def count(strategy: Optional[str] = None) -> int:
+        """当前候选池大小（可选按策略过滤）"""
         with get_session() as session:
-            return session.query(func.count(CandidateModel.id)).scalar() or 0
+            query = session.query(func.count(CandidateModel.id))
+            if strategy:
+                query = query.filter(CandidateModel.strategy == strategy)
+            return query.scalar() or 0
 
 
 # ══════════════════════════════════════════════════════════════════

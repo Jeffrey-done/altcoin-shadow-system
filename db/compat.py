@@ -86,15 +86,17 @@ def _is_db_ready() -> bool:
 #  候选池
 # ══════════════════════════════════════════════════════════════════
 
-def load_candidates() -> List[Dict]:
+def load_candidates(strategy: str = None, direction: str = None) -> List[Dict]:
     """
     加载候选池。
     优先从 DB 读，DB 为空时 fallback 到 JSON。
+    支持按 strategy/direction 过滤。
     """
     if _is_db_ready():
         try:
             from db.repositories import CandidateRepo
-            candidates = CandidateRepo.get_active()
+            candidates = CandidateRepo.get_active(
+                strategy=strategy, direction=direction)
             if candidates:
                 return candidates
         except Exception as e:
@@ -104,7 +106,15 @@ def load_candidates() -> List[Dict]:
     from common import CANDIDATES_FILE, load_json
     raw = load_json(CANDIDATES_FILE, [])
     # 过滤已触发的
-    return [c for c in raw if not c.get('triggered', False)]
+    result = [c for c in raw if not c.get('triggered', False)]
+    # 按策略/方向过滤
+    if strategy:
+        result = [c for c in result
+                  if c.get('strategy', 'short_overbought') == strategy]
+    if direction:
+        result = [c for c in result
+                  if c.get('direction', 'SHORT').upper() == direction.upper()]
+    return result
 
 
 def save_candidates(candidates: List[Dict]):
@@ -116,6 +126,9 @@ def save_candidates(candidates: List[Dict]):
         try:
             from db.repositories import CandidateRepo
             for c in candidates:
+                # 确保每个候选有 strategy/direction 字段
+                c.setdefault('strategy', 'short_overbought')
+                c.setdefault('direction', 'SHORT')
                 CandidateRepo.upsert(c)
         except Exception as e:
             logger.warning(f"候选写入 DB 失败: {e}")

@@ -209,6 +209,8 @@ _STRATEGY_MAPPING = {
 _RISK_MAPPING = {
     'max_daily_loss': 'RISK_MAX_DAILY_LOSS',
     'max_daily_trades': 'RISK_MAX_DAILY_TRADES',
+    'max_daily_trades_long': 'RISK_MAX_DAILY_TRADES_LONG',
+    'max_daily_trades_short': 'RISK_MAX_DAILY_TRADES_SHORT',
     'consecutive_loss_pause': 'RISK_CONSECUTIVE_LOSS_PAUSE',
     'pause_hours': 'RISK_PAUSE_HOURS',
     'max_position_pct': 'RISK_MAX_POSITION_PCT',

@@ -126,7 +126,9 @@ TIME_STOP_MIN_PROFIT_PCT = 3   # 超时但盈利超过此 % 则不平
 #  每日风控
 # ══════════════════════════════════════════════════════════════════
 RISK_MAX_DAILY_LOSS = 30       # 单日最大亏损上限（USDT），达到后当日停止开仓
-RISK_MAX_DAILY_TRADES = 3      # 单日最大开仓次数（留出同日补位空间，避免第1笔止损后一天报废）
+RISK_MAX_DAILY_TRADES = 20     # 单日最大开仓次数（总上限，多空共享）
+RISK_MAX_DAILY_TRADES_LONG = 10   # 单日做多方向最大开仓次数（0=不限制，走总上限）
+RISK_MAX_DAILY_TRADES_SHORT = 10  # 单日做空方向最大开仓次数（0=不限制，走总上限）
 RISK_CONSECUTIVE_LOSS_PAUSE = 3  # 连续亏损 N 次后暂停 24 小时
 RISK_PAUSE_HOURS = 24          # 暂停时长（小时）
 RISK_MAX_POSITION_PCT = 0.5    # 最大持仓占余额比例（50%），同一时刻最多只把一半本金压在持仓里

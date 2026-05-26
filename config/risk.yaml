@@ -3,7 +3,9 @@
 
 global:
   max_daily_loss: 30           # 单日最大亏损上限 (USDT)
-  max_daily_trades: 3          # 单日最大开仓次数
+  max_daily_trades: 20         # 单日最大开仓次数（总上限）
+  max_daily_trades_long: 10    # 单日做多方向最大开仓次数（0=不限制）
+  max_daily_trades_short: 10   # 单日做空方向最大开仓次数（0=不限制）
   consecutive_loss_pause: 3    # 连续亏损 N 次后暂停
   pause_hours: 24              # 暂停时长
   max_position_pct: 0.5        # 最大持仓占余额比例
@@ -14,8 +16,10 @@ global:
 # accounts:
 #   acc_main:
 #     max_daily_loss: 50
-#     max_daily_trades: 5
+#     max_daily_trades: 20
+#     max_daily_trades_long: 10
+#     max_daily_trades_short: 10
 #     max_position_pct: 0.6
 #   acc_test:
 #     max_daily_loss: 10
-#     max_daily_trades: 2
+#     max_daily_trades: 5
