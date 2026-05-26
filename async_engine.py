@@ -396,7 +396,10 @@ class AsyncStrategyEngine:
 
     async def _shutdown(self):
         await self._data_feed.close()
-        self._strategy_pool.shutdown(wait=False)
+        # H-3 修复：wait=True 给正在执行的策略任务（如开仓流程）一个优雅退出窗口，
+        # 避免 wait=False 导致 worker 线程仍在运行时进程退出 → journal pending 永不 confirm。
+        # cancel_futures=True (Python 3.9+) 取消尚未开始的排队任务，只等已在运行的。
+        self._strategy_pool.shutdown(wait=True, cancel_futures=True)
         logger.info("🛑 异步策略引擎已停止")
 
 
