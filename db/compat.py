@@ -21,26 +21,17 @@ _db_available: Optional[bool] = None
 
 
 def _check_db() -> bool:
-    """检测 DB 层是否可用"""
+    """检测 DB 层是否可用（VF-3 简化：直接尝试 init_db）"""
     global _db_available
     if _db_available is not None:
         return _db_available
     try:
-        from db.connection import get_engine
-        engine = get_engine()
-        # 尝试连接
-        with engine.connect() as conn:
-            conn.execute(engine.dialect.statement_compiler(engine.dialect, None).__class__.__module__ and conn.execute.__func__ and True)
+        from db.connection import init_db
+        init_db()
         _db_available = True
-    except Exception:
-        # 简化检测：只要能 import 就认为可用（init_db 会自动建表）
-        try:
-            from db.connection import init_db
-            init_db()
-            _db_available = True
-        except Exception as e:
-            logger.warning(f"DB 层不可用，将只使用 JSON: {e}")
-            _db_available = False
+    except Exception as e:
+        logger.warning(f"DB 层不可用，将只使用 JSON: {e}")
+        _db_available = False
     return _db_available
 
 

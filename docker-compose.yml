@@ -73,7 +73,7 @@ services:
       - ALLOW_INSECURE_DASHBOARD=1
       - REDIS_URL=redis://redis:6379/0
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     command: python3 dashboard.py
 
   # 异步策略引擎（v2.0 生产级调度器，替代 scheduler）
