@@ -82,7 +82,7 @@ exchanges:
       hard_stop_loss_pct: 5.0
 
   gate:
-    enabled: true
+    enabled: false  # DEPRECATED: routing layer never supported 'gate' branch (removed 2026-05 audit)
     live_mode: false             # Gate.io 独立实盘开关
     # 账户参数
     account_balance: 100         # Gate.io 账户本金 (USDT)

@@ -69,7 +69,7 @@ short_overbought:
 #  Funding Rate 套利策略
 # ══════════════════════════════════════════════════════════════════
 funding_arb:
-  enabled: true
+  enabled: false  # DEPRECATED: removed in v4.1, retained for config schema compatibility
   version: "1.0.0"
 
   # 入场阈值
@@ -106,7 +106,7 @@ funding_arb:
 #  超卖做多策略（对冲做空风险）
 # ══════════════════════════════════════════════════════════════════
 long_oversold:
-  enabled: true
+  enabled: false  # DEPRECATED: removed in v4.1, retained for config schema compatibility
   version: "1.0.0"
 
   # 扫描过滤
