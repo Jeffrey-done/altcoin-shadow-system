@@ -137,6 +137,15 @@ if _admin_url_secret:
 else:
     print("🔐 Admin Panel 未启用（ADMIN_URL_SECRET 未设置）")
 
+# ── Prometheus 指标端点 /metrics ──────────────────────────────────
+try:
+    from monitoring.prometheus import metrics_bp
+    if metrics_bp is not None:
+        app.register_blueprint(metrics_bp)
+        print("📊 Prometheus /metrics 端点已启用 ✓")
+except Exception as _prom_e:
+    print(f"⚠️  Prometheus metrics 加载跳过: {type(_prom_e).__name__}")
+
 BATCH_BACKTEST_RESULTS_FILE = os.path.join(SCRIPT_DIR, 'batch_backtest_results.json')
 
 

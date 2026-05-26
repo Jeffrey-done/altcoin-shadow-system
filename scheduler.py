@@ -569,6 +569,7 @@ def main_loop():
         # ── 每 10 分钟持仓对账（Binance/OKX 真实持仓 vs 本地 open trades）──
         if _due_for_minutes('position_reconcile', now, 10):
             def _position_reconcile():
+                global _position_reconcile_last_alert_ts
                 try:
                     from common import load_json, TRADES_FILE
                     from live_executor import get_binance_position_amount

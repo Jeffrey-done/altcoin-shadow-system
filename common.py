@@ -102,11 +102,6 @@ TG_BOT_TOKEN, TG_CHAT_ID = load_env()
 EXECUTION_EVENTS_FILE = os.path.join(SCRIPT_DIR, 'execution_events.jsonl')
 
 
-def utc_now_iso() -> str:
-    """UTC ISO 时间戳，统一事件时间格式。"""
-    return datetime.now(timezone.utc).isoformat()
-
-
 def now_ms() -> int:
     """当前 UTC 毫秒时间戳。"""
     return int(time.time() * 1000)
@@ -141,7 +136,7 @@ def _rotate_execution_events_if_needed() -> None:
 
 def log_execution_event(event_type: str, **kwargs) -> None:
     """追加一条结构化执行事件（JSONL），失败不抛异常。"""
-    record = {'ts': utc_now_iso(), 'event_type': event_type}
+    record = {'ts': utcnow_iso(), 'event_type': event_type}
     record.update(kwargs)
     try:
         line = json.dumps(record, ensure_ascii=False) + '\n'

@@ -218,10 +218,11 @@ def get_okx(authenticated: bool = False, account_id: str = None) -> Optional[ccx
 #  Gate.io 交易所实例
 # ══════════════════════════════════════════════════════════════════
 
-# Gate.io 配置（从 config 读取，兼容未升级的 config_legacy.py）
-GATE_ENABLED = getattr(config, 'GATE_ENABLED', False)
-GATE_LIVE_MODE = getattr(config, 'GATE_LIVE_MODE', False)
-GATE_DEFAULT_LEVERAGE = getattr(config, 'GATE_DEFAULT_LEVERAGE', 10)
+# Gate.io 配置 — 已禁用（2026-05 审计：路由层从未支持 gate 分支）
+# 保留 get_gate() 函数签名以兼容可能的外部调用，但始终返回 None
+GATE_ENABLED = False
+GATE_LIVE_MODE = False
+GATE_DEFAULT_LEVERAGE = 10
 
 
 def get_gate(authenticated: bool = False, account_id: str = None) -> Optional[ccxt.gate]:
