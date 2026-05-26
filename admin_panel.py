@@ -399,8 +399,8 @@ def create_blueprint(url_secret: str) -> Blueprint:
                                    otpauth_url=''), 400
         admin_secrets.set_totp_secret(setup_secret)
         admin_secrets.enable_totp()
-        # 创建默认账户
-        admin_secrets.create_account('主账户')
+        # 初始化固定交易所账号（binance / okx / gate）
+        admin_secrets.list_accounts()
 
         # M-8: setup 成功后立即删除 token 文件，下次 setup 需要运维重新授权
         try:

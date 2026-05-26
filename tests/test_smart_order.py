@@ -79,9 +79,9 @@ class TestAlgoSelection:
         cfg = SmartOrderConfig(auto_threshold_usdt=1000)
         engine = SmartOrderEngine(cfg)
 
-        # Mock orderbook to return None (fallback to TWAP)
-        with patch.object(engine, '_get_orderbook', return_value=None):
-            algo = engine._select_algo('PEPE/USDT', 5000, 'binance')
+        # Mock depth analysis to return None (fallback to TWAP for 3000-4999)
+        with patch.object(engine, '_get_depth_analysis', return_value=None):
+            algo = engine._select_algo('PEPE/USDT', 4000, 'binance')
             assert algo == AlgoType.TWAP
 
 

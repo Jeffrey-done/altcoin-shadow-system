@@ -126,12 +126,8 @@ def get_live_exchange(account_id: Optional[str] = None):
             return cached
 
     try:
-        if account_id:
-            from admin_secrets import get_account_exchange_credentials
-            creds = get_account_exchange_credentials('binance', account_id)
-        else:
-            from admin_secrets import get_exchange_credentials
-            creds = get_exchange_credentials('binance')
+        from admin_secrets import get_exchange_credentials
+        creds = get_exchange_credentials('binance')
         api_key = creds.get('api_key', '')
         secret = creds.get('secret', '')
     except Exception as e:
@@ -559,8 +555,8 @@ def get_okx_live_exchange(account_id: Optional[str] = None):
     if account_id:
         # 多账户模式：使用指定账户的凭证
         try:
-            from admin_secrets import get_account_exchange_credentials
-            creds = get_account_exchange_credentials('okx', account_id)
+            from admin_secrets import get_exchange_credentials
+            creds = get_exchange_credentials('okx')
             api_key = creds.get('api_key', '')
             secret = creds.get('secret', '')
             passphrase = creds.get('passphrase', '')

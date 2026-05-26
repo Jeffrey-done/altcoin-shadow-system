@@ -1161,8 +1161,12 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         )
         acc_actual_stake_map[_acc_id or ''] = _acc_actual_stake
 
-        # 该账号的路由分配（PRIMARY_EXCHANGE='both' 时拆分到两所）
-        _acc_routes_preview = _resolve_exchange_routes(c.symbol, _acc_actual_stake)
+        if _is_shadow_acc:
+            _acc_routes_preview = [('shadow', _acc_actual_stake)]
+        elif _acc_id in ('binance', 'okx', 'gate'):
+            _acc_routes_preview = [(ex, stake) for ex, stake in _resolve_exchange_routes(c.symbol, _acc_actual_stake) if ex == _acc_id]
+        else:
+            _acc_routes_preview = _resolve_exchange_routes(c.symbol, _acc_actual_stake)
         _acc_live_route_sum = sum(
             s for ex, s in _acc_routes_preview if ex != 'shadow'
         ) or _acc_actual_stake
@@ -1281,6 +1285,13 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
 
             if account.get('force_shadow_route'):
                 acc_routes = [('shadow', _acc_actual)]
+            elif acc_id in ('binance', 'okx', 'gate'):
+                acc_routes = [(ex, stake) for ex, stake in _resolve_exchange_routes(c.symbol, _acc_actual) if ex == acc_id]
+                if not acc_routes:
+                    logger.info(
+                        f"  ⏩ 跳过账户 {account['name']}({acc_id}): 当前路由未选择该交易所"
+                    )
+                    continue
             else:
                 acc_routes = _resolve_exchange_routes(c.symbol, _acc_actual)
                 if not acc_routes:

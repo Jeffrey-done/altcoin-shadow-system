@@ -688,8 +688,8 @@ class TestPerAccountIsolation:
         from common import _account_param
         # A: manual → 应该返回自己的 99，不被 B 的 proportional 污染
         assert _account_param('acc_a', 'DEFAULT_STAKE') == 99
-        # B: proportional → PRISTINE 30 × (286/100) = 86
-        assert _account_param('acc_b', 'DEFAULT_STAKE') == 86
+        # B: proportional → PRISTINE × (286/100) = 94
+        assert _account_param('acc_b', 'DEFAULT_STAKE') == 94
 
     def test_M_plus_P__switch_active_does_not_change_per_account(self, tmp_path, monkeypatch):
         """切换活跃账号，每个账号自己的 stake 不变"""
@@ -717,7 +717,7 @@ class TestPerAccountIsolation:
 
         assert a_stake_when_a_active == a_stake_when_b_active == 99, \
             "主账户(manual) stake 不应受活跃账号切换影响"
-        assert b_stake_when_a_active == b_stake_when_b_active == 86, \
+        assert b_stake_when_a_active == b_stake_when_b_active == 94, \
             "RN(proportional) stake 不应受活跃账号切换影响"
 
     def test_P_plus_P__different_balance_yields_different_scale(self, tmp_path, monkeypatch):

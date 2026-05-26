@@ -594,6 +594,54 @@ def _account_param(account_id: str, key: str, fallback=None):
       - account_id=None：保留单账号语义（用 config 模块当前生效值），既兼容
         老代码也方便测试 monkey-patch config。
     """
+    exchange_key_map = {
+        'ACCOUNT_BALANCE': 'account_balance',
+        'DEFAULT_STAKE': 'default_stake',
+        'LEVERAGE': 'leverage',
+        'OKX_DEFAULT_LEVERAGE': 'leverage',
+        'RISK_MAX_DAILY_LOSS': 'risk.max_daily_loss',
+        'RISK_MAX_DAILY_TRADES': 'risk.max_daily_trades',
+        'RISK_CONSECUTIVE_LOSS_PAUSE': 'risk.consecutive_loss_pause',
+        'RISK_MAX_POSITION_PCT': 'risk.max_position_pct',
+        'COOLDOWN_HOURS': 'risk.cooldown_hours',
+        'COMPOUND_STEP': 'compound.step',
+        'COMPOUND_INCREASE': 'compound.increase',
+        'COMPOUND_MAX_STAKE': 'compound.max_stake',
+        'TP1_MULTIPLIER': 'tp_sl.tp1_multiplier',
+        'TP2_MULTIPLIER': 'tp_sl.tp2_multiplier',
+        'TP1_CLOSE_RATIO': 'tp_sl.tp1_close_ratio',
+        'HARD_STOP_LOSS_PCT': 'tp_sl.hard_stop_loss_pct',
+    }
+    if account_id in ('binance', 'okx', 'gate') and key in exchange_key_map:
+        try:
+            import runtime_config as _rt
+            cfg_key = exchange_key_map[key]
+            val = _rt.get_effective_exchange_param(account_id, cfg_key, default=None)
+            if val is not None:
+                defaults = _rt._default_exchange_settings()
+                keys = cfg_key.split('.')
+                dflt = defaults
+                for k in keys:
+                    if isinstance(dflt, dict):
+                        dflt = dflt.get(k)
+                    else:
+                        dflt = None
+                        break
+                if val != dflt:
+                    return val
+        except Exception:
+            pass
+        if fallback is not None:
+            return fallback
+        try:
+            import runtime_config as _rt
+            pristine = _rt.get_pristine_default(key)
+            if pristine is not None:
+                return pristine
+        except Exception:
+            pass
+        return None
+
     # ── 阶段 1（2026-05）每账号独立 POSITION_MODE + 独立 scale ─────────
     #
     # 设计变更：之前的 short-circuit 读"全局 config.POSITION_MODE"（=

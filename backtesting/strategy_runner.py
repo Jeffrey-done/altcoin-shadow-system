@@ -14,10 +14,10 @@
 
 用法:
   from backtesting.strategy_runner import StrategyBacktester
-  from strategies.funding_arb import FundingArbStrategy
+  from your_strategy_module import YourStrategy
 
   bt = StrategyBacktester(
-      strategy=FundingArbStrategy(),
+      strategy=YourStrategy(),
       datasets={'PEPE/USDT': df_pepe, 'DOGE/USDT': df_doge},
       initial_capital=1000,
   )

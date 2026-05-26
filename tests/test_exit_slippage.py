@@ -141,7 +141,8 @@ class TestBackfillSlippage:
             'price': 106.8, 'amount': 10.0, 'error': '',
         }
         with patch('live_executor.execute_close', return_value=fake_result), \
-             patch('live_executor.make_client_order_id', return_value='coid-1'):
+             patch('live_executor.make_client_order_id', return_value='coid-1'), \
+             patch('live_executor.get_binance_position_amount', return_value=10.0):
             trade = Trade.from_dict(load_json(trades_path)[0])
             at._perform_exchange_close(trade, 'full_close', 10.0)
 
@@ -177,7 +178,8 @@ class TestBackfillSlippage:
             'price': 94.3, 'amount': 4.95, 'error': '',
         }
         with patch('live_executor.execute_close', return_value=fake_result), \
-             patch('live_executor.make_client_order_id', return_value='coid-tp1'):
+             patch('live_executor.make_client_order_id', return_value='coid-tp1'), \
+             patch('live_executor.get_binance_position_amount', return_value=5.0):
             trade = Trade.from_dict(load_json(trades_path)[0])
             at._perform_exchange_close(trade, 'tp1_partial', 5.0)
 

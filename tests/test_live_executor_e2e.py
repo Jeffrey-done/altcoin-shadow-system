@@ -152,6 +152,10 @@ def _build_fake_binance(ticker_price=0.001, fill_price=None,
 @pytest.fixture
 def fake_binance(monkeypatch):
     """默认 mock:ticker=0.001, 成交价=0.00101(~1% 滑点),filled=500000"""
+    from live_executor import invalidate_live_exchange_cache
+    invalidate_live_exchange_cache()
+    import exchange_manager as _em
+    _em._authenticated_instances.clear()
     fake = _build_fake_binance(
         ticker_price=0.001, fill_price=0.00101, fill_amount=500000.0,
     )
@@ -161,6 +165,10 @@ def fake_binance(monkeypatch):
 
 @pytest.fixture
 def fake_okx(monkeypatch):
+    from live_executor import invalidate_live_exchange_cache
+    invalidate_live_exchange_cache()
+    import exchange_manager as _em
+    _em._authenticated_instances.clear()
     fake = _build_fake_binance(
         ticker_price=0.001, fill_price=0.001005, fill_amount=500000.0,
     )
@@ -308,6 +316,9 @@ class TestBinanceSlippageAlert:
 class TestBinanceOpenShortFailures:
     def test_exchange_connection_failure(self, live_mode, monkeypatch):
         """get_live_exchange 返回 None(凭证都缺) → 返回结构化失败"""
+        from live_executor import invalidate_live_exchange_cache
+        invalidate_live_exchange_cache()
+
         def fake_creds(*a, **kw):
             return {'api_key': '', 'secret': ''}
         import admin_secrets as _as
@@ -420,40 +431,39 @@ class TestMultiAccountRouting:
     def test_account_id_uses_per_account_credentials(
         self, live_mode, binance_creds, monkeypatch,
     ):
-        """指定 account_id → 走 get_account_exchange_credentials,而不是 active_account"""
+        """指定 exchange 名作为 account_id → 走对应交易所全局凭证"""
         captured = {}
         def fake_binance_factory(cfg):
             captured['api_key'] = cfg.get('apiKey')
             return _build_fake_binance()
         monkeypatch.setattr('ccxt.binance', fake_binance_factory)
 
-        execute_open_short('PEPE/USDT', stake=50, account_id='acc_xyz')
-        # 对应 acc_xyz 的 key(来自 binance_creds fixture 的 fake_account_creds)
-        assert captured['api_key'] == 'key-acc_xyz'
+        execute_open_short('PEPE/USDT', stake=50, account_id='binance')
+        assert captured['api_key'] == 'test-key'
 
     def test_close_with_account_id_uses_correct_credentials(
         self, live_mode, binance_creds, monkeypatch,
     ):
-        """PR #33 核心:平仓必须使用开仓那个账户的凭证"""
+        """平仓使用交易所全局凭证"""
+        from live_executor import invalidate_live_exchange_cache
+        invalidate_live_exchange_cache()
+
         captured = {'api_key': None}
         def fake_binance_factory(cfg):
             captured['api_key'] = cfg.get('apiKey')
             return _build_fake_binance()
         monkeypatch.setattr('ccxt.binance', fake_binance_factory)
 
-        execute_close_position('PEPE/USDT', 'SHORT', amount=100, account_id='acc_owner')
-        assert captured['api_key'] == 'key-acc_owner'
+        execute_close_position('PEPE/USDT', 'SHORT', amount=100, account_id='binance')
+        assert captured['api_key'] == 'test-key'
 
     def test_account_id_missing_credentials_returns_failure(
         self, live_mode, binance_creds, monkeypatch,
     ):
-        """acc_missing 账户凭证是空 → 返回失败,不 raise"""
-        # 即使 factory 被调用也不会 crash;实际上 get_live_exchange 会因为空 key
-        # 直接返回 None
+        """未知交易所→利用全局凭证走新模型"""
         monkeypatch.setattr('ccxt.binance', lambda *a, **kw: _build_fake_binance())
-        r = execute_open_short('PEPE/USDT', stake=50, account_id='acc_missing')
-        assert r['success'] is False
-        assert '连接失败' in r['error']
+        r = execute_open_short('PEPE/USDT', stake=50, account_id='unknown_exchange')
+        assert r['success'] is True
 
     def test_check_live_balance_accepts_account_id(
         self, live_mode, binance_creds, fake_binance,
@@ -611,6 +621,10 @@ class TestExecuteCloseRouter:
     def test_close_account_id_propagates(
         self, live_mode, binance_creds, monkeypatch,
     ):
+        """account_id=exchange名 → 使用交易所自身凭证"""
+        from live_executor import invalidate_live_exchange_cache
+        invalidate_live_exchange_cache()
+
         captured = {'api_key': None}
         def factory(cfg):
             captured['api_key'] = cfg.get('apiKey')
@@ -618,8 +632,8 @@ class TestExecuteCloseRouter:
         monkeypatch.setattr('ccxt.binance', factory)
 
         execute_close('PEPE/USDT', 'SHORT', 100,
-                      exchange_name='binance', account_id='acc_closer')
-        assert captured['api_key'] == 'key-acc_closer'
+                      exchange_name='binance', account_id='binance')
+        assert captured['api_key'] == 'test-key'
 
 
 # ══════════════════════════════════════════════════════════════════

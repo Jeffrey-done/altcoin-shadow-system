@@ -139,6 +139,7 @@ def _empty_v3() -> dict:
         '_version': 3,
         'admin': {},
         'accounts': {},
+        'exchange_accounts': {},
         'active_account': '',
     }
 
@@ -180,6 +181,42 @@ def _migrate_v2_to_v3(data: dict) -> dict:
         for exch_name, exch_data in exchanges.items():
             if 'settings' not in exch_data:
                 exch_data['settings'] = _default_exchange_settings()
+    return data
+
+
+def _exchange_display_name(exchange: str) -> str:
+    names = {'binance': 'Binance 账户', 'okx': 'OKX 账户', 'gate': 'Gate 账户'}
+    return names.get(exchange.lower(), f"{exchange.upper()} 账户")
+
+
+def _ensure_exchange_account(d: dict, exchange: str) -> dict:
+    exchange = exchange.lower()
+    accounts = d.setdefault('exchange_accounts', {})
+    current = accounts.setdefault(exchange, {})
+    current.setdefault('id', exchange)
+    current.setdefault('name', _exchange_display_name(exchange))
+    current.setdefault('created_at', datetime.now(timezone.utc).isoformat())
+    current.setdefault('trading_enabled', True)
+    current.setdefault('settings', _default_exchange_settings())
+    return current
+
+
+def _migrate_legacy_accounts_to_exchange_accounts(data: dict) -> dict:
+    """把旧 accounts[*].exchanges 合并为 exchange_accounts[exchange]。"""
+    data.setdefault('exchange_accounts', {})
+    for _acc_id, acc in data.get('accounts', {}).items():
+        if acc.get('system'):
+            continue
+        for exchange, exch_data in acc.get('exchanges', {}).items():
+            exchange = exchange.lower()
+            if exchange not in SUPPORTED_EXCHANGES:
+                continue
+            target = _ensure_exchange_account(data, exchange)
+            for key in ('api_key', 'secret', 'passphrase', 'updated_at'):
+                if exch_data.get(key) and not target.get(key):
+                    target[key] = exch_data[key]
+            if exch_data.get('settings'):
+                target['settings'] = _deep_merge(target.get('settings', _default_exchange_settings()), exch_data['settings'])
     return data
 
 
@@ -268,7 +305,14 @@ def _load_raw() -> dict:
     data.setdefault('_version', 3)
     data.setdefault('admin', {})
     data.setdefault('accounts', {})
+    data.setdefault('exchange_accounts', {})
     data.setdefault('active_account', '')
+
+    before = json.dumps(data.get('exchange_accounts', {}), sort_keys=True)
+    _migrate_legacy_accounts_to_exchange_accounts(data)
+    for _exchange in SUPPORTED_EXCHANGES:
+        _ensure_exchange_account(data, _exchange)
+    after = json.dumps(data.get('exchange_accounts', {}), sort_keys=True)
 
     # 确保影子账户始终存在
     if SHADOW_ACCOUNT_ID not in data['accounts']:
@@ -280,6 +324,9 @@ def _load_raw() -> dict:
         }
         if not data['active_account']:
             data['active_account'] = SHADOW_ACCOUNT_ID
+        _save_raw(data)
+
+    if before != after:
         _save_raw(data)
 
     return data
@@ -328,13 +375,18 @@ def create_account(name: str) -> str:
         raise ValueError("账户名称不能超过 50 个字符")
 
     with _locked_secrets() as (d, save):
+        exchange = name.strip().lower()
+        if exchange in SUPPORTED_EXCHANGES:
+            acc = _ensure_exchange_account(d, exchange)
+            acc['name'] = _exchange_display_name(exchange)
+            save(d)
+            return exchange
         account_id = _generate_account_id()
         d['accounts'][account_id] = {
             'name': name,
             'created_at': datetime.now(timezone.utc).isoformat(),
             'exchanges': {},
         }
-        # 如果是第一个账户，自动设为活跃
         if not d['active_account']:
             d['active_account'] = account_id
         save(d)
@@ -370,18 +422,34 @@ def list_accounts() -> list:
     """
     d = _load_raw()
     result = []
-    for acc_id, acc in d.get('accounts', {}).items():
-        exchanges = acc.get('exchanges', {})
+    for exchange in SUPPORTED_EXCHANGES:
+        acc = _ensure_exchange_account(d, exchange)
+        has_creds = bool(acc.get('api_key'))
         result.append({
-            'id': acc_id,
+            'id': exchange,
             'name': acc.get('name', ''),
             'created_at': acc.get('created_at', ''),
-            'has_binance': bool(exchanges.get('binance', {}).get('api_key')),
-            'has_okx': bool(exchanges.get('okx', {}).get('api_key')),
-            'has_gate': bool(exchanges.get('gate', {}).get('api_key')),
-            # 交易开关：默认为 True（兼容未设置该字段的旧账户）
+            'exchange': exchange,
+            'has_credentials': has_creds,
+            'has_binance': has_creds if exchange == 'binance' else False,
+            'has_okx': has_creds if exchange == 'okx' else False,
+            'has_gate': has_creds if exchange == 'gate' else False,
             'trading_enabled': acc.get('trading_enabled', True),
-            'is_system': bool(acc.get('system')),
+            'is_system': False,
+        })
+    if SHADOW_ACCOUNT_ID in d.get('accounts', {}):
+        shadow = d['accounts'][SHADOW_ACCOUNT_ID]
+        result.append({
+            'id': SHADOW_ACCOUNT_ID,
+            'name': shadow.get('name', '影子账户（系统）'),
+            'created_at': shadow.get('created_at', ''),
+            'exchange': 'shadow',
+            'has_credentials': False,
+            'has_binance': False,
+            'has_okx': False,
+            'has_gate': False,
+            'trading_enabled': shadow.get('trading_enabled', True),
+            'is_system': True,
         })
     return result
 
@@ -393,9 +461,12 @@ def is_account_trading_enabled(account_id: str) -> bool:
     if not account_id:
         return True
     d = _load_raw()
-    acc = d.get('accounts', {}).get(account_id)
-    if not acc:
+    if account_id == SHADOW_ACCOUNT_ID:
+        acc = d.get('accounts', {}).get(account_id)
+        return bool(acc and acc.get('trading_enabled', True))
+    if account_id not in SUPPORTED_EXCHANGES:
         return False
+    acc = d.get('exchange_accounts', {}).get(account_id, {})
     return acc.get('trading_enabled', True)
 
 
@@ -405,34 +476,35 @@ def set_account_trading_enabled(account_id: str, enabled: bool) -> None:
     但已有持仓继续被 tracker / realtime_monitor 监控直至平仓。
     """
     with _locked_secrets() as (d, save):
-        if account_id not in d.get('accounts', {}):
+        if account_id == SHADOW_ACCOUNT_ID:
+            if account_id not in d.get('accounts', {}):
+                raise ValueError(f"账户 {account_id} 不存在")
+            d['accounts'][account_id]['trading_enabled'] = bool(enabled)
+            save(d)
+            return
+        if account_id not in SUPPORTED_EXCHANGES:
             raise ValueError(f"账户 {account_id} 不存在")
-        d['accounts'][account_id]['trading_enabled'] = bool(enabled)
+        _ensure_exchange_account(d, account_id)['trading_enabled'] = bool(enabled)
         save(d)
 
 
 def get_active_account_id() -> str:
-    """返回当前活跃账户 ID。如果没有则返回空字符串。"""
+    """返回默认交易账号 ID。交易配置以交易所名作为账号 ID。"""
     d = _load_raw()
     active = d.get('active_account', '')
-    # 验证活跃账户确实存在
-    if active and active in d.get('accounts', {}):
+    if active in SUPPORTED_EXCHANGES:
         return active
-    # 如果活跃账户不存在，选第一个
-    accounts = d.get('accounts', {})
-    if accounts:
-        first_id = next(iter(accounts))
-        with _locked_secrets() as (d2, save):
-            d2['active_account'] = first_id
-            save(d2)
-        return first_id
-    return ''
+    for exchange in SUPPORTED_EXCHANGES:
+        acc = d.get('exchange_accounts', {}).get(exchange, {})
+        if acc.get('trading_enabled', True):
+            return exchange
+    return 'binance'
 
 
 def set_active_account(account_id: str) -> None:
     """切换活跃账户"""
     with _locked_secrets() as (d, save):
-        if account_id not in d['accounts']:
+        if account_id not in SUPPORTED_EXCHANGES and account_id != SHADOW_ACCOUNT_ID:
             raise ValueError(f"账户 {account_id} 不存在")
         d['active_account'] = account_id
         save(d)
@@ -447,9 +519,9 @@ def rename_account(account_id: str, new_name: str) -> None:
         raise ValueError("账户名称不能超过 50 个字符")
 
     with _locked_secrets() as (d, save):
-        if account_id not in d['accounts']:
+        if account_id not in SUPPORTED_EXCHANGES:
             raise ValueError(f"账户 {account_id} 不存在")
-        d['accounts'][account_id]['name'] = new_name
+        _ensure_exchange_account(d, account_id)['name'] = new_name
         save(d)
 
 
@@ -618,11 +690,9 @@ def get_exchange_credentials(exchange: str, account_id: Optional[str] = None) ->
     先查 admin_secrets.json 的对应账户；没有就回退到 os.environ（兼容旧部署）。
     """
     exchange = exchange.lower()
-    acc_id = _resolve_account_id(account_id)
 
     d = _load_raw()
-    acc = d.get('accounts', {}).get(acc_id, {})
-    exch_data = acc.get('exchanges', {}).get(exchange, {})
+    exch_data = d.get('exchange_accounts', {}).get(exchange, {})
 
     if exchange == 'binance':
         return {
@@ -651,14 +721,8 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
     if exchange not in SUPPORTED_EXCHANGES:
         raise ValueError(f"不支持的交易所: {exchange}（支持: {SUPPORTED_EXCHANGES}）")
 
-    acc_id = _resolve_account_id(account_id)
-
     with _locked_secrets() as (d, save):
-        if acc_id not in d['accounts']:
-            raise ValueError(f"账户 {acc_id} 不存在")
-
-        exchanges = d['accounts'][acc_id].setdefault('exchanges', {})
-        current = exchanges.get(exchange, {})
+        current = _ensure_exchange_account(d, exchange)
 
         for k, v in kwargs.items():
             if k == 'settings':
@@ -671,21 +735,18 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
         # 确保 settings 字段存在
         if 'settings' not in current:
             current['settings'] = _default_exchange_settings()
-
-        exchanges[exchange] = current
-        d['accounts'][acc_id]['exchanges'] = exchanges
         save(d)
 
     # H-3 修复：凭证更新后清除对应的认证实例缓存，
     # 强制下次调用时使用新凭证创建新实例
     try:
         from exchange_manager import invalidate_authenticated_cache
-        invalidate_authenticated_cache(exchange=exchange, account_id=acc_id)
+        invalidate_authenticated_cache(exchange=exchange)
     except Exception:
         pass  # exchange_manager 未加载时（测试环境）不阻塞
     try:
         from live_executor import invalidate_live_exchange_cache
-        invalidate_live_exchange_cache(exchange_name=exchange, account_id=acc_id)
+        invalidate_live_exchange_cache(exchange_name=exchange)
     except Exception:
         pass
 
@@ -693,60 +754,52 @@ def set_exchange_credentials(exchange: str, account_id: Optional[str] = None, **
 def clear_exchange_credentials(exchange: str, account_id: Optional[str] = None) -> None:
     """清空某交易所的所有凭证"""
     exchange = exchange.lower()
-    acc_id = _resolve_account_id(account_id)
 
     with _locked_secrets() as (d, save):
-        if acc_id not in d['accounts']:
+        if exchange not in d.get('exchange_accounts', {}):
             return
-        exchanges = d['accounts'][acc_id].get('exchanges', {})
-        if exchange in exchanges:
-            del exchanges[exchange]
-            d['accounts'][acc_id]['exchanges'] = exchanges
-            save(d)
+        current = _ensure_exchange_account(d, exchange)
+        for key in ('api_key', 'secret', 'passphrase'):
+            current.pop(key, None)
+        current['updated_at'] = datetime.now(timezone.utc).isoformat()
+        save(d)
 
     # H-3 修复：凭证清除后也需要清除认证实例缓存
     try:
         from exchange_manager import invalidate_authenticated_cache
-        invalidate_authenticated_cache(exchange=exchange, account_id=acc_id)
+        invalidate_authenticated_cache(exchange=exchange)
     except Exception:
         pass
     try:
         from live_executor import invalidate_live_exchange_cache
-        invalidate_live_exchange_cache(exchange_name=exchange, account_id=acc_id)
+        invalidate_live_exchange_cache(exchange_name=exchange)
     except Exception:
         pass
 
 
 def get_all_trading_accounts() -> list:
     """
-    返回所有配置了交易所凭证且交易开关打开的账户（用于多账户同步开仓）。
+    返回所有配置了凭证且交易开关打开的交易所账户。
     排除:
       - 系统影子账户（它不持有真实凭证，由 scanner 单独注入）
       - 未配置凭证的空账户
       - 交易开关被显式关闭（trading_enabled=False）的账户
 
     返回:
-        [{'id': 'acc_xxx', 'name': '主账户', 'exchanges': {'binance': {...}, 'okx': {...}}}]
+        [{'id': 'binance', 'name': 'Binance 账户', 'exchange': 'binance', 'exchanges': {'binance': {...}}}]
     """
     d = _load_raw()
     result = []
-    for acc_id, acc in d.get('accounts', {}).items():
-        # 影子账户只做纸上交易，不参与实盘同步
-        if acc.get('system'):
-            continue
-        # 交易开关：默认 True，显式 False 则跳过
+    for exchange in SUPPORTED_EXCHANGES:
+        acc = _ensure_exchange_account(d, exchange)
         if not acc.get('trading_enabled', True):
             continue
-        exchanges = acc.get('exchanges', {})
-        # 必须至少有一个交易所配置了 api_key
-        has_any_creds = any(
-            ex_data.get('api_key') for ex_data in exchanges.values()
-        )
-        if has_any_creds:
+        if acc.get('api_key'):
             result.append({
-                'id': acc_id,
+                'id': exchange,
                 'name': acc.get('name', ''),
-                'exchanges': exchanges,
+                'exchange': exchange,
+                'exchanges': {exchange: acc},
             })
     return result
 
@@ -758,8 +811,7 @@ def get_account_exchange_credentials(exchange: str, account_id: str) -> dict:
     """
     exchange = exchange.lower()
     d = _load_raw()
-    acc = d.get('accounts', {}).get(account_id, {})
-    exch_data = acc.get('exchanges', {}).get(exchange, {})
+    exch_data = d.get('exchange_accounts', {}).get(exchange, {})
 
     if exchange == 'binance':
         return {
@@ -822,11 +874,9 @@ def get_exchange_settings(exchange: str, account_id: Optional[str] = None) -> di
         max_loss = settings['risk']['max_daily_loss']  # 30
     """
     exchange = exchange.lower()
-    acc_id = _resolve_account_id(account_id)
 
     d = _load_raw()
-    acc = d.get('accounts', {}).get(acc_id, {})
-    exch_data = acc.get('exchanges', {}).get(exchange, {})
+    exch_data = d.get('exchange_accounts', {}).get(exchange, {})
     settings = exch_data.get('settings', {})
 
     # 合并默认值（确保所有字段都存在）
@@ -857,22 +907,14 @@ def set_exchange_settings(exchange: str, settings: dict,
     if exchange not in SUPPORTED_EXCHANGES:
         raise ValueError(f"不支持的交易所: {exchange}（支持: {SUPPORTED_EXCHANGES}）")
 
-    acc_id = _resolve_account_id(account_id)
-
     with _locked_secrets() as (d, save):
-        if acc_id not in d['accounts']:
-            raise ValueError(f"账户 {acc_id} 不存在")
-
-        exchanges = d['accounts'][acc_id].setdefault('exchanges', {})
-        exch_data = exchanges.setdefault(exchange, {})
+        exch_data = _ensure_exchange_account(d, exchange)
         current_settings = exch_data.get('settings', _default_exchange_settings())
 
         # 深度合并
         merged = _deep_merge(current_settings, settings)
         exch_data['settings'] = merged
         exch_data['updated_at'] = datetime.now(timezone.utc).isoformat()
-
-        exchanges[exchange] = exch_data
         save(d)
 
 
@@ -925,15 +967,11 @@ def get_live_exchanges(account_id: Optional[str] = None) -> list:
     Returns:
         ['binance', 'okx'] — 所有 live_mode=True 的交易所
     """
-    acc_id = _resolve_account_id(account_id)
     d = _load_raw()
-    acc = d.get('accounts', {}).get(acc_id, {})
-    exchanges = acc.get('exchanges', {})
-
     result = []
-    for exch_name, exch_data in exchanges.items():
+    for exch_name, exch_data in d.get('exchange_accounts', {}).items():
         settings = exch_data.get('settings', {})
-        if settings.get('live_mode', False):
+        if exch_data.get('trading_enabled', True) and settings.get('live_mode', False):
             result.append(exch_name)
     return result
 

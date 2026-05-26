@@ -1163,21 +1163,24 @@ def _enforce_live_mode_prereqs() -> dict:
     import config as _config
     changes = {}
     try:
-        from admin_secrets import get_active_account_id, get_exchange_credentials
-        acc_id = get_active_account_id()
+        from admin_secrets import get_exchange_credentials
     except Exception:
-        acc_id = ''
+        get_exchange_credentials = None
 
     def _has_binance() -> bool:
         try:
-            creds = get_exchange_credentials('binance', account_id=acc_id or None)
+            if get_exchange_credentials is None:
+                return False
+            creds = get_exchange_credentials('binance')
             return bool(creds.get('api_key')) and bool(creds.get('secret'))
         except Exception:
             return False
 
     def _has_okx() -> bool:
         try:
-            creds = get_exchange_credentials('okx', account_id=acc_id or None)
+            if get_exchange_credentials is None:
+                return False
+            creds = get_exchange_credentials('okx')
             return bool(creds.get('api_key')) and bool(creds.get('secret')) and bool(creds.get('passphrase'))
         except Exception:
             return False
@@ -1368,8 +1371,13 @@ def load_exchange_overrides(account_id: str, exchange: str) -> dict:
     """
     data = _load_raw_config()
     exchanges_data = data.get('_exchanges', {})
-    acc_exchanges = exchanges_data.get(account_id, {})
-    return acc_exchanges.get(exchange.lower(), {})
+    exchange = exchange.lower()
+    direct = exchanges_data.get(exchange, {})
+    if direct:
+        return direct
+    # 旧结构兜底：_exchanges[account_id][exchange]
+    acc_exchanges = exchanges_data.get(account_id or '', {})
+    return acc_exchanges.get(exchange, {}) if isinstance(acc_exchanges, dict) else {}
 
 
 def save_exchange_overrides(account_id: str, exchange: str, overrides: dict) -> None:
@@ -1389,10 +1397,9 @@ def save_exchange_overrides(account_id: str, exchange: str, overrides: dict) -> 
 
     with _locked_config() as (data, save):
         exchanges_data = data.setdefault('_exchanges', {})
-        acc_exchanges = exchanges_data.setdefault(account_id, {})
-        current = acc_exchanges.get(exchange, {})
+        current = exchanges_data.get(exchange, {})
         merged = _deep_merge(current, overrides)
-        acc_exchanges[exchange] = merged
+        exchanges_data[exchange] = merged
         save(data)
 
 
@@ -1405,7 +1412,10 @@ def load_all_exchange_overrides(account_id: str) -> dict:
     """
     data = _load_raw_config()
     exchanges_data = data.get('_exchanges', {})
-    return exchanges_data.get(account_id, {})
+    return {
+        exch: exchanges_data.get(exch, {})
+        for exch in SUPPORTED_EXCHANGES
+    }
 
 
 def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict:
@@ -1426,13 +1436,6 @@ def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict
         完整的交易所配置字典
     """
     exchange = exchange.lower()
-    if not account_id:
-        try:
-            import admin_secrets
-            account_id = admin_secrets.get_active_account_id()
-        except Exception:
-            account_id = ''
-
     # 层 4: 默认值
     result = _default_exchange_settings()
 
@@ -1447,20 +1450,18 @@ def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict
         pass
 
     # 层 2: admin_secrets.json settings
-    if account_id:
-        try:
-            import admin_secrets
-            secrets_settings = admin_secrets.get_exchange_settings(exchange, account_id)
-            if secrets_settings:
-                result = _deep_merge(result, secrets_settings)
-        except Exception:
-            pass
+    try:
+        import admin_secrets
+        secrets_settings = admin_secrets.get_exchange_settings(exchange)
+        if secrets_settings:
+            result = _deep_merge(result, secrets_settings)
+    except Exception:
+        pass
 
     # 层 1: runtime_config.json _exchanges 覆盖
-    if account_id:
-        runtime_overrides = load_exchange_overrides(account_id, exchange)
-        if runtime_overrides:
-            result = _deep_merge(result, runtime_overrides)
+    runtime_overrides = load_exchange_overrides(account_id or exchange, exchange)
+    if runtime_overrides:
+        result = _deep_merge(result, runtime_overrides)
 
     return result
 
