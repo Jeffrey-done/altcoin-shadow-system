@@ -208,7 +208,6 @@ SLIPPAGE_ALERT_PCT = 1.0
 #  候选池管理
 # ══════════════════════════════════════════════════════════════════
 CANDIDATE_EXPIRE_HOURS = 12    # 未触发候选过期时间（小时），超时说明超买窗口已过
-CANDIDATE_EXPIRE_DAYS = 1     # 向后兼容（不再使用，改用 HOURS）
 
 # H11: 候选确认（check_candidates）耗时控制
 # 候选池一旦扩大（比如降低 DAILY_RSI_MIN 后从 30 涨到 150+），原来的串行循环
@@ -310,11 +309,14 @@ OKX_FUNDING_ARB_MIN_RATE = -0.02      # OKX 极端负费率阈值
 OKX_CROSS_ARB_MIN_DIVERGENCE = 0.10   # 两所费率差异显著阈值（%）
 
 # ══════════════════════════════════════════════════════════════════
-#  Gate.io 交易所配置
+#  Gate.io 交易所配置 — 已移除
 # ══════════════════════════════════════════════════════════════════
-GATE_ENABLED = True                    # 是否启用 Gate.io 作为辅助/备用交易所
-GATE_LIVE_MODE = False                 # True=通过 Gate.io API 真实下单
-GATE_DEFAULT_LEVERAGE = 10             # Gate.io 默认杠杆倍数
+# Gate.io 配置已在代码审计中移除（2026-05）：
+#   - 路由层 _resolve_exchange_routes() 从未支持 'gate' 分支
+#   - GATE_LIVE_MODE 始终为 False，实际从未使用
+#   - exchange_manager.get_gate() 虽存在但从未被主流程调用
+# 如需重新启用 Gate.io，请先在 altcoin_scanner._resolve_exchange_routes() 中
+# 添加 'gate' 路由分支，再恢复此处配置。
 
 # ══════════════════════════════════════════════════════════════════
 #  每交易所独立账户配置 (v6.0)
@@ -402,42 +404,11 @@ EXCHANGE_ACCOUNTS = {
             'hard_stop_loss_pct': 5.0,
         },
     },
-    'gate': {
-        'enabled': True,
-        'live_mode': False,            # Gate.io 实盘开关
-        'account_balance': 100,        # Gate.io 账户本金 (USDT)
-        'max_open_trades': 3,          # 最大同时持仓数
-        'leverage': 10,                # Gate.io 杠杆倍数
-        'default_stake': 33,           # 自动计算: account_balance / max_open_trades
-        'slippage_alert_pct': 1.0,
-        # 风控
-        'risk': {
-            'max_daily_loss': 30,
-            'max_daily_trades': 3,
-            'consecutive_loss_pause': 3,
-            'max_position_pct': 0.5,
-            'cooldown_hours': 24,
-        },
-        # 复利
-        'compound': {
-            'enabled': True,
-            'step': 50,
-            'increase': 25,
-            'max_stake': 300,
-        },
-        # 止盈止损
-        'tp_sl': {
-            'tp1_multiplier': 0.95,
-            'tp2_multiplier': 0.92,
-            'tp1_close_ratio': 0.5,
-            'hard_stop_loss_pct': 5.0,
-        },
-    },
 }
 
 # 实盘路由配置
 EXCHANGE_ROUTING = {
-    'primary_exchange': 'binance',     # binance | okx | gate | both | auto
+    'primary_exchange': 'binance',     # binance | okx | both | auto
     'primary_fallback': 'binance',     # auto 模式下两所都有合约时选谁
     'price_divergence_max_pct': 2.0,   # 开仓前跨交易所价格偏差上限 (%)
 }
