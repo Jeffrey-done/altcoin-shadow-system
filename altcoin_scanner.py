@@ -774,6 +774,31 @@ def check_candidates():
         send_tg(f"🚫 <b>BTC过滤：暂停做空</b>\n\n{btc_reason}")
         return
 
+    # ── Regime Detection（市场状态分类）──
+    try:
+        from signals.regime import get_regime_detector, MarketRegime
+        _regime_detector = get_regime_detector()
+        if not _regime_detector._running:
+            _regime_detector.start()
+        _regime_state = _regime_detector.get_state()
+        _regime = _regime_state.regime
+        _regime_mult = _regime.short_bias  # 做空仓位乘数
+
+        if _regime == MarketRegime.CRASH:
+            logger.warning(f"  💥 Regime=CRASH: {_regime_state.reason} → 暂停所有开仓")
+            send_tg(f"💥 <b>Regime: 崩盘模式</b>\n\n{_regime_state.reason}\n暂停做空开仓")
+            return
+        elif _regime == MarketRegime.TRENDING_UP and _regime_state.confidence >= 0.7:
+            logger.info(
+                f"  📊 Regime={_regime.description} (conf={_regime_state.confidence:.0%}) "
+                f"→ 做空仓位×{_regime_mult:.1f}"
+            )
+        else:
+            logger.debug(f"  📊 Regime={_regime.description} mult={_regime_mult:.1f}")
+    except Exception as _regime_err:
+        _regime_mult = 1.0
+        logger.debug(f"Regime Detection 跳过: {_regime_err}")
+
     candidates = [Candidate.from_dict(c) for c in candidates_list]
     # pending_open 守护：重试次数上限 + 过期淘汰（避免无限重试）
     _pending_max_retries = int(getattr(config, 'PENDING_OPEN_MAX_RETRIES', 3))
@@ -1042,6 +1067,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         actual_stake = base_stake
     else:  # grade B
         actual_stake = round(base_stake * 0.5)
+
+    # Regime 仓位调节（牛市减仓、熊市加仓、崩盘为0）
+    actual_stake = max(1, round(actual_stake * _regime_mult))
 
     # ── 风控检查（全局预检）──
     # H8: 用每个账户"实际将占用的保证金总额"去做 can_open_trade 检查，
