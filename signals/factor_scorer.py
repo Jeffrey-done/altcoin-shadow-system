@@ -279,6 +279,7 @@ class FactorScorer:
         self,
         df: pd.DataFrame,
         symbol: str = "",
+        direction: str = "SHORT",
         external_data: Optional[Dict[str, pd.Series]] = None,
     ) -> FactorScoreResult:
         """
@@ -287,6 +288,9 @@ class FactorScorer:
         Args:
             df: OHLCV DataFrame [timestamp, open, high, low, close, volume].
             symbol: Trading symbol (for logging/attribution).
+            direction: Signal direction — 'SHORT' or 'LONG'.
+                - SHORT: positive z-scores (overbought) = high score
+                - LONG:  negative z-scores (oversold) = high score (auto-flipped)
             external_data: Optional external data (funding rate, OI, etc.).
 
         Returns:
@@ -311,6 +315,18 @@ class FactorScorer:
                 ic_values=ic_vals,
             )
             self._last_ortho_info = ortho_info
+
+            # Step 2.5: Direction handling
+            # Z-score interpretation:
+            #   Positive z-score = indicator above its recent mean (momentum strong, overbought)
+            #   Negative z-score = indicator below its recent mean (momentum weak, oversold)
+            #
+            # For SHORT signals: we want HIGH score when z-scores are POSITIVE (overbought)
+            #   → No flip needed, positive composite = strong short signal
+            # For LONG signals: we want HIGH score when z-scores are NEGATIVE (oversold)
+            #   → Flip signs so negative becomes positive = strong long signal
+            if direction.upper() == "LONG":
+                filtered_df = -filtered_df
 
             # Step 3: Compute/update weights
             prices = df["close"]
@@ -564,48 +580,42 @@ def _get_scorer() -> FactorScorer:
 def score_signal_multifactor(
     df: pd.DataFrame,
     symbol: str = "",
+    direction: str = "SHORT",
     external_data: Optional[Dict[str, pd.Series]] = None,
     legacy_score: Optional[float] = None,
     blend_ratio: float = 0.0,
 ) -> FactorScoreResult:
     """
-    Drop-in multi-factor scoring function for altcoin_scanner.py.
+    Drop-in multi-factor scoring function — supports both SHORT and LONG.
 
-    Can be called alongside the existing calculate_signal_score() function.
-    Optionally blends with the legacy score for gradual migration.
+    Can replace or complement the existing calculate_signal_score() function.
 
     Args:
         df: OHLCV DataFrame [timestamp, open, high, low, close, volume].
         symbol: Trading symbol identifier.
-        external_data: Optional external data dict with keys like:
-            - 'funding_rate': pd.Series
-            - 'open_interest': pd.Series
-            - 'liquidation_volume': pd.Series
-            - 'large_buy_volume': pd.Series
-            - 'large_sell_volume': pd.Series
-        legacy_score: Optional legacy score (0-100) from calculate_signal_score().
-        blend_ratio: How much to blend with legacy (0.0 = pure multifactor,
-                     1.0 = pure legacy). Useful for gradual rollout.
+        direction: 'SHORT' or 'LONG'.
+            - SHORT: overbought/overextended factors → high score
+            - LONG:  oversold/undervalued factors → high score
+        external_data: Optional external data dict.
+        legacy_score: Optional legacy score (0-100) for blending.
+        blend_ratio: 0.0 = pure multifactor, 1.0 = pure legacy.
 
     Returns:
-        FactorScoreResult with all metrics.
+        FactorScoreResult with score, grade, confidence, attribution.
 
-    Example usage in altcoin_scanner.py:
-        from signals.factor_scorer import score_signal_multifactor
+    Examples:
+        # 做空策略
+        result = score_signal_multifactor(df, symbol='PEPE/USDT', direction='SHORT')
 
-        # Get OHLCV data
-        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=200)
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        # 做多策略
+        result = score_signal_multifactor(df, symbol='DOGE/USDT', direction='LONG')
 
-        # New multi-factor score
-        result = score_signal_multifactor(df, symbol=symbol)
-
-        if result.grade in ('A', 'B'):
-            # Proceed with trade, use result.recommended_stake_multiplier
-            ...
+        # 渐进迁移（70%新 + 30%旧）
+        result = score_signal_multifactor(df, symbol=sym, direction='SHORT',
+                                          legacy_score=old_score, blend_ratio=0.3)
     """
     scorer = _get_scorer()
-    result = scorer.score(df, symbol=symbol, external_data=external_data)
+    result = scorer.score(df, symbol=symbol, direction=direction, external_data=external_data)
 
     # Optional blending with legacy score
     if legacy_score is not None and blend_ratio > 0.0:
