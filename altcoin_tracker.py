@@ -505,7 +505,9 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     from common import LockedJsonFile, TRADES_FILE
     _dedup_signal = None
     try:
-        with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=2) as (_td, _tsv):
+        # H-2 修复：平仓是关键操作，锁超时从 2s 提升到 10s
+        # 防止多笔 TP1 同时触发时因锁等待失败导致 close_in_progress 标记丢失 → 重复平仓
+        with LockedJsonFile(TRADES_FILE, default=[], lock_timeout_sec=10) as (_td, _tsv):
             for _tt in _td:
                 if _tt.get('id') == trade.id:
                     _existing = _tt.get('close_in_progress')

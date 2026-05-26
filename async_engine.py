@@ -396,7 +396,10 @@ class AsyncStrategyEngine:
 
     async def _shutdown(self):
         await self._data_feed.close()
-        self._strategy_pool.shutdown(wait=False)
+        # H-3 修复：wait=True 给正在执行的策略任务（如开仓流程）一个优雅退出窗口，
+        # 避免 wait=False 导致 worker 线程仍在运行时进程退出 → journal pending 永不 confirm。
+        # cancel_futures=True (Python 3.9+) 取消尚未开始的排队任务，只等已在运行的。
+        self._strategy_pool.shutdown(wait=True, cancel_futures=True)
         logger.info("🛑 异步策略引擎已停止")
 
 
@@ -726,7 +729,7 @@ class AsyncStrategyEngine:
         try:
             from common import load_json, TRADES_FILE
             from live_executor import get_binance_position_amount
-            from exchange_manager import get_okx
+            from live_executor import get_okx_live_exchange
 
             trades = load_json(TRADES_FILE, [])
             open_trades = [t for t in trades if t.get('status') == 'open' and t.get('exchange') in ('binance', 'okx')]
@@ -749,7 +752,9 @@ class AsyncStrategyEngine:
                 if ex == 'binance':
                     remote_amount = float(get_binance_position_amount(symbol, direction, account_id=account_id or None))
                 else:
-                    okx = get_okx(authenticated=True)
+                    # M-2 修复：使用 get_okx_live_exchange 支持 account_id 路由，
+                    # 否则多账户模式下所有 OKX 对账都走默认凭证 → 非默认账户永远报差异
+                    okx = get_okx_live_exchange(account_id=account_id or None)
                     if okx:
                         try:
                             poss = okx.fetch_positions([symbol])
