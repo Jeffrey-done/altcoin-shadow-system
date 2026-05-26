@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-策略参数集中配置 v6.0
-所有阈值、档位、止损规则统一管理，方便调优和回测。
-专注做空策略 + 风控系统。
+策略参数默认值（代码层兜底）
 
-v6.0 变更：每个交易所独立账户配置
-  - 每个交易所拥有自己的 account_balance / leverage / default_stake / 风控 / 复利 / 止盈止损
-  - 旧的全局变量保留作为向后兼容默认值（Binance 默认配置）
-  - 新增 EXCHANGE_ACCOUNTS 字典，以交易所名为 key，存放独立账户参数
+⚠️ 本文件为"最低优先级兜底"。实际生效值的合并顺序（高→低）：
+  1. runtime_config.json（admin panel 实时修改）
+  2. admin_secrets.json settings（凭证附带配置）
+  3. config/*.yaml（项目级用户配置）
+  4. 本文件 config/_defaults.py
+
+请勿直接修改本文件来调整参数！
+  - 临时调整 → admin panel (runtime_config.json)
+  - 永久调整 → config/system.yaml 或 config/strategy.yaml
+
+本文件仅在 YAML 中某个字段未定义时作为兜底值。
 """
 
 # ══════════════════════════════════════════════════════════════════
