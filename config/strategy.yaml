@@ -66,48 +66,22 @@ short_overbought:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Funding Rate 套利策略
+#  Funding Rate 套利策略（历史归档，v4.0 移除）
 # ══════════════════════════════════════════════════════════════════
+# v4.0 时存在的 funding_arb 策略已在 v4.1 整体移除。v5.x 多策略架构
+# 不再包含此策略；如需重建请新建 strategies/funding_arb/ 目录并实现 BaseStrategy。
+# 本节仅保留 enabled=false 占位，避免外部历史脚本读取时崩溃。
 funding_arb:
-  enabled: false  # DEPRECATED: removed in v4.1, retained for config schema compatibility
-  version: "1.0.0"
-
-  # 入场阈值
-  thresholds:
-    positive_rate: 0.08                # 正费率入场阈值 (%/8h)
-    negative_rate: -0.05               # 负费率入场阈值 (%/8h)
-
-  # 过滤
-  filters:
-    min_volume_24h: 2000000            # 最低 24h 成交量 (USDT)
-    min_oi_usdt: 5000000               # 最低 OI (USDT)
-    max_spread_pct: 0.1                # 最大买卖价差 %
-
-  # 仓位
-  position:
-    default_stake: 30
-    leverage: 5
-    max_open_positions: 2
-
-  # 止盈止损
-  exits:
-    hard_stop_pct: 2.0
-    take_profit_pct: 1.5
-    time_stop_hours: 24
-    min_profit_for_hold: 0.3
-
-  # 交叉验证
-  cross_validate:
-    enabled: true
-    rate_agreement_pct: 0.03
+  enabled: false  # ARCHIVED: removed in v4.1, not in v5.x StrategyRegistry
+  version: "1.0.0-archived"
 
 
 # ══════════════════════════════════════════════════════════════════
-#  超卖做多策略（对冲做空风险）
+#  超卖做多策略 (v5.x 多策略架构启用)
 # ══════════════════════════════════════════════════════════════════
 long_oversold:
-  enabled: false  # DEPRECATED: removed in v4.1, retained for config schema compatibility
-  version: "1.0.0"
+  enabled: true                        # v5.x 多策略架构启用
+  version: "5.0.0"
 
   # 扫描过滤
   scan:

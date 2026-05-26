@@ -337,6 +337,19 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
 
     返回: (allowed: bool, reason: str)
     """
+    # M3: SAFE_MODE 全局拒绝（启动配置 ERROR 触发，不依赖 daily_loss / paused_until）
+    try:
+        from safe_mode import is_safe_mode, get_safe_mode_info
+        if is_safe_mode():
+            info = get_safe_mode_info() or {}
+            sm_reason = info.get('reason', 'unknown')
+            reason = f"SAFE_MODE 激活，禁止开仓（{sm_reason}）"
+            logger.error(f"🚫 {reason}")
+            return False, reason
+    except Exception:
+        # safe_mode 模块不可用不能阻塞主流程
+        pass
+
     # 阶段 2（2026-05）：default=None 而不是 config.DEFAULT_STAKE，避免 import
     # 时把 PRISTINE 30 锁进 default。改为函数体内按账号取（含 proportional 缩放）。
     if stake is None:
@@ -627,7 +640,8 @@ def refresh_open_stake(account_id: Optional[str] = None) -> None:
 
 
 def release_partial_stake(stake: float, account_id: Optional[str] = None,
-                          trade_account_id: Optional[str] = None) -> None:
+                          trade_account_id: Optional[str] = None,
+                          trade_id: Optional[str] = None) -> None:
     """
     M-1 修复：TP1 半仓平仓后释放保证金到 total_open_stake，
     但不影响 daily_loss / consecutive_losses（这些只在最终平仓时记账）。
@@ -640,12 +654,40 @@ def release_partial_stake(stake: float, account_id: Optional[str] = None,
     （包括空字符串 ``''`` 表示 v4.3 之前的老数据 → 全局默认账户），优先使用
     ``trade_account_id``。否则在多账户环境里调 ``release_partial_stake(stake)``
     会回退到 *当前活跃账户*，把 TP1 释放的 stake 错记到错误账户上。
+
+    H1 修复：可选传入 ``trade_id`` 做交叉幂等检查 — 调用前确认 trade 的
+    ``tp1_stake_released`` 标记是否为 True；若 True 说明之前已 release，跳过。
+    （evaluate_trade 在锁内 set 标记后调用方才在出锁后调本函数，正常单次流程
+    不会触发跳过；触发的场景是重启/崩溃后的恢复路径误触发。）
     """
     # NF-4: 优先用 trade 自带的 account_id（可能是空字符串，代表全局默认）
     if account_id is None and trade_account_id is not None:
         account_id = trade_account_id
     if stake <= 0:
         return
+
+    # H1: 交叉幂等 — 检查该 trade 是否已经 release 过
+    if trade_id:
+        try:
+            from common import TRADES_FILE
+            trades_now = load_json(TRADES_FILE, [])
+            target = next((t for t in trades_now if t.get('id') == trade_id), None)
+            if target is None:
+                logger.debug(f"release_partial_stake: trade_id={trade_id} 不在 trades.json")
+            else:
+                # 若 tp1_stake_released 已为 True 且本次调用是"恢复路径"
+                # （理论上只有 evaluate_trade 在锁内刚把 False→True 的瞬间才返回 pending）
+                # 我们没法在这里区分"刚刚 set" vs "上次已 release"，所以采用更可靠的
+                # 副字段：tp1_stake_released_recorded（下方 risk_state 写完后回写）
+                if target.get('tp1_stake_released_recorded'):
+                    logger.warning(
+                        f"⚠️ release_partial_stake 已记账过 [{_resolve_account_id(account_id)}] "
+                        f"trade_id={trade_id}, 跳过防双扣"
+                    )
+                    return
+        except Exception:
+            pass
+
     with LockedJsonFile(RISK_FILE, default={}) as (data, save):
         state = _state_from_data(data, account_id)
         new_stake = state.total_open_stake - stake
@@ -660,6 +702,20 @@ def release_partial_stake(stake: float, account_id: Optional[str] = None,
             state.total_open_stake = max(0.0, new_stake)
         data = _save_state_in_lock(data, state, account_id)
         save(data)
+
+    # H1: 写入"已记账"标记，避免重启路径重复释放
+    if trade_id:
+        try:
+            from common import TRADES_FILE
+            with LockedJsonFile(TRADES_FILE, default=[]) as (trades_raw, save_t):
+                for t in trades_raw:
+                    if t.get('id') == trade_id:
+                        t['tp1_stake_released_recorded'] = True
+                        save_t(trades_raw)
+                        break
+        except Exception as _e:
+            logger.debug(f"H1 写 tp1_stake_released_recorded 失败（非致命）: {_e}")
+
     logger.info(
         f"📝 TP1 半仓释放保证金 [{_resolve_account_id(account_id)}]：-{stake:.0f}U"
     )

@@ -1,0 +1,27 @@
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    alembic/*
+    backtest.py
+    backtesting/*
+    tools/*
+    optimization/_fast_math*
+    */templates/*
+    */static/*
+    setup.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+    @overload
+precision = 1
+show_missing = False
+
+[xml]
+output = coverage.xml

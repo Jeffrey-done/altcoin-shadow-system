@@ -1249,7 +1249,7 @@ def api_signal_scores():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  System Status APIs (策略/信号/ML/事件总线/执行引擎/Gate)
+#  System Status APIs (策略/信号/ML/事件总线/执行引擎)
 # ══════════════════════════════════════════════════════════════════
 
 @app.route('/system-status')
@@ -1422,58 +1422,18 @@ def api_execution_engine():
 @app.route('/api/gate-account')
 @check_api_token
 def api_gate_account():
-    """返回 Gate.io 账号状态、余额、持仓"""
-    result = {'status': 'unavailable', 'balance': {}, 'positions': [], 'credentials': False}
-    try:
-        from admin_secrets import list_accounts, get_active_account_id
-        accounts = list_accounts()
-        active_id = get_active_account_id()
-        # 检查是否有 Gate 凭证
-        for acc in accounts:
-            if acc.get('has_gate', False):
-                result['credentials'] = True
-                result['account_id'] = acc['id']
-                result['account_name'] = acc['name']
-                break
-        # 尝试获取余额
-        if result['credentials']:
-            try:
-                from admin_secrets import get_credentials
-                gate_creds = get_credentials(result['account_id'], 'gate')
-                if gate_creds and gate_creds.get('api_key'):
-                    result['status'] = 'configured'
-                    # 尝试拉实时余额
-                    try:
-                        import ccxt
-                        gate = ccxt.gateio({
-                            'apiKey': gate_creds['api_key'],
-                            'secret': gate_creds['secret'],
-                            'options': {'defaultType': 'swap'},
-                        })
-                        balance = gate.fetch_balance({'type': 'swap'})
-                        result['balance'] = {
-                            'total': round(float(balance.get('total', {}).get('USDT', 0)), 2),
-                            'free': round(float(balance.get('free', {}).get('USDT', 0)), 2),
-                            'used': round(float(balance.get('used', {}).get('USDT', 0)), 2),
-                        }
-                        positions = gate.fetch_positions()
-                        result['positions'] = [{
-                            'symbol': p['symbol'],
-                            'side': p['side'],
-                            'contracts': p['contracts'],
-                            'unrealizedPnl': round(float(p.get('unrealizedPnl', 0)), 4),
-                            'leverage': p.get('leverage'),
-                            'entryPrice': p.get('entryPrice'),
-                        } for p in positions if p.get('contracts', 0) != 0]
-                        result['status'] = 'active'
-                    except Exception as e:
-                        result['balance_error'] = str(e)[:100]
-            except Exception:
-                pass
-    except Exception as e:
-        result['status'] = f'error: {e}'
-    result['timestamp'] = utcnow_iso()
-    return jsonify(result)
+    """Gate.io 账号端点 — v5.x 已废弃,保留以兼容前端 polling。
+
+    始终返回 status='unavailable',让前端隐藏 Gate.io 卡片。
+    """
+    return jsonify({
+        'status': 'unavailable',
+        'balance': {},
+        'positions': [],
+        'credentials': False,
+        'message': 'Gate.io 已在 v5.x 移除',
+        'timestamp': utcnow_iso(),
+    })
 
 
 # ══════════════════════════════════════════════════════════════════

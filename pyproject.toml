@@ -1,0 +1,48 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+# 排除目录
+exclude = [
+    "alembic",
+    "backtest_cache",
+    "templates",
+    "static",
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# 默认只启用最严重的几类检查（E9 = syntax error, F63/F7/F82 = undefined names）
+# CI 里 ruff check --select E9,F63,F7,F82 会用此配置作为 fallback
+select = [
+    "E9",   # syntax errors
+    "F63",  # invalid `print` statements
+    "F7",   # invalid syntax in type annotations
+    "F82",  # undefined names in __all__
+]
+
+# 这些规则历史代码里有大量违规,先不开
+ignore = [
+    "E501",  # line too long
+    "E741",  # ambiguous variable name
+    "F401",  # unused import (我们大量用 from X import Y 触发副作用)
+    "F841",  # unused local variable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811", "E402"]
+"__init__.py" = ["F401"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]

@@ -346,7 +346,8 @@ def check_main_trades(symbol: str, price: float):
             # M-1: TP1 半仓 risk 记账
             if result.pending_risk_partial:
                 _ppnl, _pstake = result.pending_risk_partial
-                pending_risk_partials.append((_ppnl, _pstake, trade.account_id))
+                # H1: 携带 trade.id 做交叉幂等
+                pending_risk_partials.append((_ppnl, _pstake, trade.account_id, trade.id))
 
             # 真实平仓动作（TP1 半仓 or 全仓）
             if result.pending_exchange_action and trade.exchange != 'shadow':
@@ -387,9 +388,14 @@ def check_main_trades(symbol: str, price: float):
         except Exception:
             pass
     # M-1: TP1 半仓 stake 释放（不影响 daily_loss / consecutive_losses）
-    for _ppnl, _pstake, _pacc in pending_risk_partials:
-        # NF-4: 同上
-        release_partial_stake(_pstake, trade_account_id=_pacc)
+    for _entry in pending_risk_partials:
+        # H1: 4 元组带 trade_id 做幂等;兼容旧 3 元组
+        if len(_entry) == 4:
+            _ppnl, _pstake, _pacc, _ptid = _entry
+            release_partial_stake(_pstake, trade_account_id=_pacc, trade_id=_ptid)
+        else:
+            _ppnl, _pstake, _pacc = _entry
+            release_partial_stake(_pstake, trade_account_id=_pacc)
     # 3) 再推送
     for msg in pending_alerts:
         send_tg(msg)
@@ -672,6 +678,45 @@ def polling_mode():
 
 
 # ══════════════════════════════════════════════════════════════════
+#  H5: REST 主动轮询降级线程
+# ══════════════════════════════════════════════════════════════════
+
+def _start_rest_fallback_thread(monitor, symbols):
+    """H5: WS 断线时启动 REST 轮询线程,持续 enqueue 价格直到 WS 恢复
+
+    监控 monitor._rest_fallback_active 标记自我退出。
+    """
+    if requests is None:
+        logger.warning("requests 未安装,无法启动 REST 降级")
+        return
+
+    def _poll():
+        logger.info(f"🔁 REST 降级轮询线程启动 ({len(symbols)} 币)")
+        poll_interval = float(getattr(config, 'WS_FALLBACK_POLL_INTERVAL_SEC', 10))
+        while getattr(monitor, '_rest_fallback_active', False) and monitor.running:
+            try:
+                r = requests.get(
+                    "https://api.binance.com/api/v3/ticker/price",
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    all_prices = {item['symbol']: float(item['price']) for item in r.json()}
+                    # 实时取当前持仓快照（持仓可能变化）
+                    current = get_all_open_symbols()
+                    for sym in current:
+                        bin_sym = sym.replace('/USDT', 'USDT').replace('/', '')
+                        if bin_sym in all_prices:
+                            on_price_update(sym, all_prices[bin_sym])
+            except Exception as e:
+                logger.debug(f"REST 降级轮询单次失败: {e}")
+            time.sleep(poll_interval)
+        logger.info("🔁 REST 降级轮询线程退出")
+
+    t = threading.Thread(target=_poll, name='rest-fallback', daemon=True)
+    t.start()
+
+
+# ══════════════════════════════════════════════════════════════════
 #  主入口
 # ══════════════════════════════════════════════════════════════════
 
@@ -727,20 +772,41 @@ def main():
 
         time.sleep(30)
 
-        # WebSocket 断线告警（仅在有持仓且确认断开时检查）
+        # H5: WS 断线降级机制（双阈值）
+        # 阶段 1（30s）：WS 断了 → 立刻降级到主动 REST 轮询（持仓不裸奔）
+        # 阶段 2（5min）：仍然断 → 升级 TG 告警 + 继续尝试重连
         if last_symbols and not monitor._connected:
             disconnect_duration = time.time() - monitor._disconnected_since
+
+            # 阶段 1：30s 即降级到 REST 轮询
+            fallback_threshold = float(getattr(config, 'WS_DISCONNECT_FALLBACK_SEC', 30))
+            if (disconnect_duration > fallback_threshold
+                    and requests is not None
+                    and not getattr(monitor, '_rest_fallback_active', False)):
+                monitor._rest_fallback_active = True
+                logger.warning(
+                    f"⚠️ WS 已断 {disconnect_duration:.0f}s,启动 REST 主动轮询降级模式"
+                )
+                _start_rest_fallback_thread(monitor, last_symbols)
+
+            # 阶段 2：5min 仍然断,推 TG 升级告警
             if disconnect_duration > config.WS_DISCONNECT_ALERT_MINUTES * 60 and not monitor._disconnect_alerted:
                 monitor._disconnect_alerted = True
                 send_tg(
                     f"🔌 <b>WebSocket 断线告警</b>\n\n"
                     f"已断开 {disconnect_duration/60:.1f} 分钟\n"
                     f"监控币种: {', '.join(last_symbols)}\n"
-                    f"正在尝试重连..."
+                    f"REST 轮询降级已激活,持仓有保护,但请检查网络。"
                 )
                 logger.error(f"WebSocket 断线超 {config.WS_DISCONNECT_ALERT_MINUTES} 分钟")
                 # 尝试重连
                 monitor.connect(list(last_symbols))
+
+            # WS 重连成功后清除 fallback 标记,worker 线程会自动退出
+            if monitor._connected and getattr(monitor, '_rest_fallback_active', False):
+                monitor._rest_fallback_active = False
+                monitor._disconnect_alerted = False
+                logger.info("✅ WS 重连成功,REST 降级模式已退出")
 
 
 if __name__ == '__main__':

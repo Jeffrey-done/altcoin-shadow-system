@@ -256,6 +256,10 @@ def evaluate_trade(trade: Trade, current_price: float) -> EvalResult:
         # M-1 修复：让上层在出锁后通过 record_trade_closed 把这部分 stake 从
         # total_open_stake 中扣减，避免 TP1+TP2 流程结束后 +50% 虚高漂移。
         # 注意 pnl 是 TP1 实际锁定的盈利（正值），不会触发连亏计数。
+        # H1 修复：在锁内把 tp1_stake_released=True 写到 trade，让任何并发的
+        # evaluate（realtime_monitor / tracker / 重启恢复）二次进入时能感知到
+        # TP1 stake 已经被记账过，不再返回 pending_risk_partial。
+        trade.tp1_stake_released = True
         result.pending_risk_partial = (round(locked_pnl, 2), round(tp1_released_stake, 4))
         result.alert_msg = (
             f"🎯 <b>第一档止盈触发（-{(1-_tp1_mult)*100:.0f}%）</b>\n\n"
@@ -882,7 +886,8 @@ def run(check_only: bool = False):
             # M-1: TP1 半仓平仓也要排队 risk 记账，避免 total_open_stake 漂移
             if result.pending_risk_partial:
                 _ppnl, _pstake = result.pending_risk_partial
-                pending_risk_partials.append((_ppnl, _pstake, trade.account_id))
+                # H1: 携带 trade.id 让 release_partial_stake 做交叉幂等
+                pending_risk_partials.append((_ppnl, _pstake, trade.account_id, trade.id))
             if result.alert_msg:
                 pending_alerts.append(result.alert_msg)
 
@@ -987,9 +992,14 @@ def run(check_only: bool = False):
         record_trade_closed(pnl_usd, stake_remaining, trade_account_id=acc_id)
 
     # M-1: TP1 半仓的 stake 释放（不影响 daily_loss / consecutive_losses）
-    for _ppnl, _pstake, _pacc in pending_risk_partials:
-        # NF-4: 同上，用 trade_account_id 而不是 ``account_id=_pacc or None``
-        release_partial_stake(_pstake, trade_account_id=_pacc)
+    for _entry in pending_risk_partials:
+        # H1: 兼容旧 3 元组 + 新 4 元组（带 trade_id 做幂等）
+        if len(_entry) == 4:
+            _ppnl, _pstake, _pacc, _ptid = _entry
+            release_partial_stake(_pstake, trade_account_id=_pacc, trade_id=_ptid)
+        else:
+            _ppnl, _pstake, _pacc = _entry
+            release_partial_stake(_pstake, trade_account_id=_pacc)
 
     # 3) 再推送 TG
     for msg in pending_alerts:

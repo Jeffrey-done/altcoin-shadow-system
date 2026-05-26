@@ -1325,12 +1325,62 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         journal_add_pending, journal_mark_confirmed, journal_mark_failed,
     )
 
+    # ── H2 修复：开仓前 Journal 预扫 ──
+    # 防御场景：上一轮下单后 trades.json 写盘前崩溃 → journal 留 pending
+    # 30 分钟兜底扫描的窗口内重启系统 → 重新触发同币开仓 → 双倍仓位
+    # 这里在写新 journal 前先扫一次同 (symbol, exchange, account) 的 pending 条目,
+    # 命中则跳过本路由（保留路由列表里的其它路由继续执行,不影响多路由场景）
+    try:
+        from common import journal_list_pending as _jlp
+        existing_pending = _jlp()
+        pending_keys = {
+            (str(p.get('symbol', '')), str(p.get('exchange', '')),
+             str(p.get('account_id', '') or ''))
+            for p in existing_pending
+        }
+    except Exception as _je:
+        logger.warning(f"H2 journal 预扫失败,本轮跳过预扫: {_je}")
+        pending_keys = set()
+
     def _prep_task(task_args):
         acc_id, acc_name, r_exchange, r_stake = task_args
         coid = make_client_order_id('sho', c.symbol, r_exchange)
         return (acc_id, acc_name, r_exchange, r_stake, coid)
 
     prepared_tasks = [_prep_task(t) for t in execution_tasks]
+
+    # H2: 过滤掉同币 pending 的路由,推 TG 警告
+    if pending_keys:
+        filtered_tasks = []
+        skipped_routes = []
+        for task in prepared_tasks:
+            acc_id, acc_name, r_exchange, r_stake, coid = task
+            key = (c.symbol, r_exchange, acc_id or '')
+            if r_exchange != 'shadow' and key in pending_keys:
+                skipped_routes.append((acc_name, r_exchange))
+                continue
+            filtered_tasks.append(task)
+        if skipped_routes:
+            logger.warning(
+                f"  ⏩ H2: {c.symbol} 跳过 {len(skipped_routes)} 个路由(同币 journal pending),"
+                f"等待 30min journal_recovery_loop 反查清理"
+            )
+            try:
+                send_tg(
+                    f"⏩ <b>开仓被 H2 预扫跳过</b>\n\n"
+                    f"币种: {tg_escape(c.symbol)}\n"
+                    f"原因: 同币 in-flight journal 仍有 pending 条目\n"
+                    f"跳过路由: {', '.join(f'[{a}]{e}' for a, e in skipped_routes)}\n\n"
+                    f"系统会在下一轮 journal_recovery 反查交易所;"
+                    f"如果发现幽灵订单会推 TG 告警。"
+                )
+            except Exception:
+                pass
+        prepared_tasks = filtered_tasks
+
+    if not prepared_tasks:
+        logger.info(f"  H2: {c.symbol} 所有路由都被 pending 跳过,本轮不开仓")
+        return False
 
     for acc_id, _acc_name, r_exchange, r_stake, coid in prepared_tasks:
         if r_exchange == 'shadow':
@@ -1449,6 +1499,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                 tp1_multiplier=float(account_param(acc_id, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER)),
                 tp2_multiplier=float(account_param(acc_id, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER)),
                 hard_stop_loss_pct=atr_stop_pct if atr_stop_pct else float(account_param(acc_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
+                hard_stop_source='atr' if atr_stop_pct else 'fixed',  # M4: 审计止损来源
                 max_hold_days=int(config.MAX_HOLD_DAYS),
             )
             opened_trades.append((trade, entry_price, route_exchange, route_stake, coid))

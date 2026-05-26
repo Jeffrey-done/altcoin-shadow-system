@@ -284,11 +284,25 @@ def _run_startup_sequence():
         logger.error(f"启动对账异常: {e}")
 
 
-    # 5. 配置一致性校验（所有账号）
+    # 5. 配置一致性校验（所有账号）— M3: ERROR 触发 SAFE_MODE
     try:
         from runtime_config import validate_cross_field_consistency, load_account_overrides, load_global_overrides
         from common import send_tg, tg_escape
         from admin_secrets import list_accounts
+        from safe_mode import set_safe_mode, get_safe_mode_info, safe_mode_reason_text
+
+        # 启动前若 SAFE_MODE 已激活，提醒运维（不自动清除）
+        existing_sm = get_safe_mode_info()
+        if existing_sm:
+            logger.error(
+                f"🚫 检测到 SAFE_MODE 已激活（{existing_sm.get('source', '')}），"
+                f"开仓被全局拒绝直到手动清除。详情：\n{safe_mode_reason_text()}"
+            )
+            send_tg(
+                "🚫 <b>启动检测到 SAFE_MODE 激活</b>\n\n"
+                f"<pre>{tg_escape(safe_mode_reason_text())}</pre>\n\n"
+                "处理：从 admin panel 修复配置后清除标记。"
+            )
 
         global_over = load_global_overrides()
         accounts = list_accounts() or []
@@ -310,7 +324,18 @@ def _run_startup_sequence():
 
         if all_errors:
             logger.error(f"启动配置一致性 ERROR:\n" + "\n".join(f"• {e}" for e in all_errors))
-            send_tg(f"🚫 <b>启动配置一致性致命错误</b>\n\n" + "\n".join(f"• {tg_escape(e)}" for e in all_errors))
+            # M3: 激活 SAFE_MODE（写文件，跨进程生效）
+            set_safe_mode(
+                reason=f"启动配置一致性校验失败（{len(all_errors)} 项 ERROR）",
+                errors=all_errors,
+                source='startup',
+            )
+            send_tg(
+                "🚫 <b>启动配置一致性致命错误 → SAFE_MODE 激活</b>\n\n"
+                "开仓将被全局拒绝直到从 admin panel 修复并清除 SAFE_MODE。\n\n"
+                + "\n".join(f"• {tg_escape(e)}" for e in all_errors[:10])
+                + (f"\n\n... 还有 {len(all_errors) - 10} 项" if len(all_errors) > 10 else "")
+            )
         if all_warnings:
             logger.warning(f"启动配置一致性 WARNING:\n" + "\n".join(f"• {w}" for w in all_warnings))
     except Exception as e:
@@ -395,6 +420,7 @@ class AsyncStrategyEngine:
                 tg.create_task(self._health_audit_loop())
                 tg.create_task(self._macro_collection_loop())
                 tg.create_task(self._journal_recovery_loop())
+                tg.create_task(self._close_retry_loop())
                 tg.create_task(self._daily_tasks_loop())
         except* Exception as eg:
             for e in eg.exceptions:
@@ -523,6 +549,22 @@ class AsyncStrategyEngine:
                 await loop.run_in_executor(self._strategy_pool, self._run_journal_recovery)
             except Exception as e:
                 logger.warning(f"Journal recovery 异常: {e}")
+
+    async def _close_retry_loop(self):
+        """每 5 分钟主动扫描 close_retry_pending 标记，重试平仓 (H4 修复)
+
+        场景：_perform_exchange_close 重试 3 次后失败会标记 close_retry_pending=True;
+        旧版只靠下一次 tracker.run() 兜底处理(60s 一次),但当 tracker 间隔较长或主循环
+        异常时,这些悬仓会长时间没人管。专门的 worker 每 5 分钟主动扫描一次,直到成功或
+        持续失败超过 12 次（1h）后升级 critical 告警让运维介入。
+        """
+        while self._running:
+            await asyncio.sleep(300)  # 5 分钟
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(self._strategy_pool, self._run_close_retry)
+            except Exception as e:
+                logger.warning(f"close_retry 异常: {e}")
 
     async def _daily_tasks_loop(self):
         """每日任务：日报(08:00)、归档(00:01)、周优化(周一09:00)"""
@@ -900,6 +942,84 @@ class AsyncStrategyEngine:
                 )
         except Exception as e:
             logger.debug(f"Journal recovery 跳过: {e}")
+
+    def _run_close_retry(self):
+        """主动扫描 close_retry_pending,重试平仓 (H4 修复)
+
+        逻辑：
+          1. 读 trades.json 找出所有 close_retry_pending=True 的 trade
+          2. 对每条 trade 调 _perform_exchange_close 重试（内部已有指数退避 3 次）
+          3. 重试成功会清除 close_retry_pending 标记;持续失败累积 retry_attempts 计数
+          4. 当某条 retry_attempts >= 12（≈1h）→ 升级 critical TG 告警
+        """
+        try:
+            from common import load_json, TRADES_FILE, LockedJsonFile, send_tg, tg_escape, utcnow_iso
+            from models import Trade
+            from altcoin_tracker import _perform_exchange_close
+
+            trades_raw = load_json(TRADES_FILE, [])
+            stuck = [t for t in trades_raw
+                     if t.get('close_retry_pending')
+                     and t.get('exchange') != 'shadow'
+                     and float(t.get('close_retry_amount', 0) or 0) > 0]
+
+            if not stuck:
+                return
+
+            logger.warning(f"🔁 close_retry: {len(stuck)} 条悬仓待重试平仓")
+
+            # 先把 retry_attempts 计数 + 1（在锁内）
+            with LockedJsonFile(TRADES_FILE, default=[]) as (raw, save):
+                changed = False
+                for t in raw:
+                    if not t.get('close_retry_pending') or t.get('exchange') == 'shadow':
+                        continue
+                    t['close_retry_attempts'] = int(t.get('close_retry_attempts', 0) or 0) + 1
+                    t['close_retry_last_attempt'] = utcnow_iso()
+                    changed = True
+                if changed:
+                    save(raw)
+
+            # 出锁后重试（_perform_exchange_close 内部抢自己的锁）
+            for t in stuck:
+                try:
+                    trade_obj = Trade.from_dict(t)
+                    action = t.get('close_retry_action', 'full_close')
+                    amount = float(t.get('close_retry_amount', 0) or 0)
+                    _perform_exchange_close(trade_obj, action, amount)
+                except Exception as _e:
+                    logger.error(f"close_retry 单条异常 {t.get('symbol')}: {_e}")
+
+            # 重试后再读一次,看哪些升级到了 critical 阈值
+            try:
+                trades_after = load_json(TRADES_FILE, [])
+                critical = [
+                    t for t in trades_after
+                    if t.get('close_retry_pending')
+                    and int(t.get('close_retry_attempts', 0) or 0) >= 12
+                ]
+                if critical:
+                    lines = [
+                        f"🚨🚨 <b>{len(critical)} 笔平仓持续失败 1h+</b>",
+                        "",
+                        "下列交易自动重试已超过 12 次（≈1 小时），需立即人工到交易所核对：",
+                        "",
+                    ]
+                    for t in critical[:10]:
+                        lines.append(
+                            f"• {tg_escape(t.get('symbol', '?'))} "
+                            f"({tg_escape(t.get('exchange', '?'))}) "
+                            f"动作={tg_escape(t.get('close_retry_action', ''))} "
+                            f"重试={t.get('close_retry_attempts', 0)} "
+                            f"err={tg_escape(str(t.get('close_retry_last_error', ''))[:80])}"
+                        )
+                    if len(critical) > 10:
+                        lines.append(f"... 还有 {len(critical) - 10} 笔")
+                    send_tg("\n".join(lines))
+            except Exception as _se:
+                logger.debug(f"close_retry critical 告警失败: {_se}")
+        except Exception as e:
+            logger.warning(f"close_retry 整体异常: {e}", exc_info=True)
 
     def _run_auto_optimize(self):
         """自动回测优化建议"""

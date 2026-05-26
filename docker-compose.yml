@@ -48,9 +48,18 @@ services:
   # ══════════════════════════════════════════════════════════════════
 
   # Redis — 事件总线 + 缓存层
+  # M11 修复（v5.x）：
+  #   - 加 appendonly yes,事件总线消息断电不丢失
+  #   - maxmemory 从 128mb 提到 256mb,空间换稳定性（事件量大时不会驱逐）
+  #   - allkeys-lru 仍保留作为兜底（避免 OOM,但 AOF 已经持久化）
   redis:
     image: redis:7-alpine
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     ports:
       - "127.0.0.1:6379:6379"
     volumes:

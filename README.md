@@ -1,24 +1,32 @@
-# 🔴 Altcoin Shadow Short System
+# 🔴🟢 Altcoin Shadow Multi-Strategy System
 
-全自动小币种做空影子交易系统 — 7×24 小时运行，自动扫描超买信号、开仓、止盈止损、风控管理。
+全自动小币种**多空双向**影子交易系统 — 7×24 小时运行，并行运行做空 + 做多策略，自动扫描信号、开仓、止盈止损、风控管理。
 
 ## 系统架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Scheduler (调度器)                         │
-│  每小时整点: scan_daily()  │  每小时30分: check_candidates()      │
-│  每小时15分: tracker()     │  每天8:00 UTC: 日报  │  周一9:00: 优化 │
+│                  AsyncStrategyEngine (异步引擎 v2.0)               │
+│  scan_loop / confirm_loop / tracker_loop                         │
+│  + reconcile / health_audit / journal_recovery / close_retry     │
+│  + macro_collection / daily_tasks                                │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                   │
-│  [实时] hot_scanner ──→ 标记热门币 ──→ scan_daily 优先处理        │
-│  [实时] realtime_monitor ──→ WebSocket 止盈止损（<100ms延迟）      │
-│  [实时] tg_bot ──→ Telegram 交互指令                              │
+│  [策略] short_overbought  (RSI 超买做空)                          │
+│  [策略] long_oversold     (RSI 超卖做多)                          │
+│  [策略] prepump_sniffer   (Pre-pump 做多)                         │
+│                                                                   │
+│  [实时] hot_scanner       ──→ WS 标记热门币 ──→ scan 优先处理     │
+│  [实时] realtime_monitor  ──→ WS 止盈止损（<100ms 延迟，断线降级到主动轮询）│
+│  [实时] tg_bot            ──→ Telegram 交互指令                   │
 │                                                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> 系统当前仅做空（`short_overbought` 策略）。文档中出现的 funding_arb / low_risk 已在 v4.1 移除，仅保留做空策略。
+> **v5.x 多策略架构**：系统同时运行做空与做多策略，由 `StrategyRegistry` 自动发现并按
+> `strategies/<name>/strategy.py` 加载。每个策略实现 `BaseStrategy` 抽象，
+> 共享同一套订单执行 / 风控 / 监控 / 仓位簿子系统。要禁用某个策略，
+> 把 `config/strategy.yaml` 对应键设为 `enabled: false` 即可。
 
 ## ⚠️ 从 v4.0 升级到 v4.1
 
@@ -126,13 +134,14 @@ docker-compose up -d
 ## 文件结构
 
 ```
-├── scheduler.py           # 定时任务调度器（入口）
-├── altcoin_scanner.py     # 全市场扫描 + 候选确认 + 开仓
-├── altcoin_tracker.py     # 持仓追踪 + 止盈止损评估 + 日报
-├── realtime_monitor.py    # WebSocket 实时止盈止损
+├── async_engine.py        # 异步策略引擎（v2.0 入口，asyncio 主进程）
+├── engine_adapter.py      # 新/旧引擎桥接 + 兼容写盘格式
+├── altcoin_scanner.py     # 全市场扫描 + 候选确认 + 开仓（旧路径，仍用作 fallback）
+├── altcoin_tracker.py     # 持仓追踪 + 止盈止损评估 + 平仓执行
+├── realtime_monitor.py    # WebSocket 实时止盈止损（断线降级主动轮询）
 ├── hot_scanner.py         # 全市场快速预筛（标记热门币）
-├── risk_control.py        # 风控模块（冷却期/对账/仓位限制）
-├── signal_score.py        # 信号评分系统
+├── risk_control.py        # 风控模块（按账号隔离 / 冷却期 / 对账 / 仓位限制）
+├── signal_score.py        # 信号评分系统（线性兜底）
 ├── exchange_manager.py    # 交易所管理（Binance + OKX 交叉验证）
 ├── tg_bot.py              # Telegram Bot 交互指令
 ├── dashboard.py           # Web 仪表盘（Flask + SocketIO）
@@ -140,10 +149,29 @@ docker-compose up -d
 ├── health_check.py        # 健康检查
 ├── weekly_report.py       # 策略周报
 ├── backtest.py            # 回测引擎
-├── config.py              # 所有策略参数集中配置
-├── common.py              # 公共工具（日志/TG推送/原子写/锁）
+├── common.py              # 公共工具（日志/TG推送/原子写/锁/journal）
 ├── models.py              # 数据模型（Trade/Candidate）
-├── live_executor.py       # 实盘下单执行器（LIVE_MODE=True 时）
+├── live_executor.py       # 实盘下单执行器（多空双向 + Binance/OKX）
+├── journal_recovery.py    # In-flight journal 反查（防幽灵仓位）
+│
+├── strategies/            # 多策略 OOP 框架
+│   ├── base.py                  # BaseStrategy / Signal / Candidate 抽象
+│   ├── registry.py              # StrategyRegistry + StrategyEngine
+│   ├── short_overbought/        # RSI 超买做空策略
+│   ├── long_oversold/           # RSI 超卖做多策略
+│   └── prepump_sniffer/         # Pre-pump 做多策略
+│
+├── signals/               # 信号 + 因子 + 多因子评分
+├── ml/                    # XGBoost 信号预测（可选）
+├── macro/                 # 宏观数据采集 + 过滤
+├── risk/                  # 组合风控 / VaR / ATR 动态止损
+├── execution/             # 订单簿监控 / smart-order / WS-order
+├── monitoring/            # Prometheus /metrics
+├── backtesting/           # 新回测子系统（事件驱动 + 蒙特卡洛 + walk-forward）
+├── db/                    # SQLAlchemy 模型 + 仓储 + JSON 兼容层
+├── alembic/               # 数据库 schema 迁移
+├── config/                # YAML 配置 + 默认值兜底
+├── tools/                 # 诊断脚本 / 回测脚本 / 数据迁移
 │
 ├── altcoin_shadow_trades.json   # 交易记录（主数据文件）
 ├── altcoin_candidates.json      # 候选池
@@ -151,7 +179,7 @@ docker-compose up -d
 │
 ├── templates/             # Dashboard HTML 模板
 ├── static/                # Dashboard 前端资源
-├── tests/                 # 测试用例（45个）
+├── tests/                 # 测试用例
 ├── Dockerfile             # Docker 构建文件
 └── docker-compose.yml     # Docker 编排
 ```
@@ -175,13 +203,13 @@ cp .env.example .env
 # 编辑 .env 填入 TG_BOT_TOKEN / TG_CHAT_ID / BINANCE_API_KEY（可选）
 
 # 启动调度器（自动启动所有后台服务）
-python3 scheduler.py
+python3 async_engine.py
 ```
 
 调度器会自动启动：
 - 快速预筛 WebSocket 线程
 - TG Bot 轮询线程
-- 所有定时任务
+- 所有定时任务（scan / confirm / tracker / journal_recovery / close_retry / 日报 / 归档 / 周优化）
 
 ### 独立启动 Dashboard
 
