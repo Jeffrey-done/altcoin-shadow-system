@@ -29,6 +29,7 @@ from common import (
 from models import Candidate, Trade
 from risk_control import can_open_trade, record_trade_opened, is_in_cooldown
 from signal_score import calculate_signal_score, check_btc_filter
+from signals.factor_scorer import score_signal_multifactor
 from exchange_manager import (
     cross_validate_funding, cross_validate_oi,
     okx_has_swap, cross_validate_price,
@@ -673,20 +674,41 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
         if _expired():
             return ('skip', f'timeout_after_okx_cv (>{per_candidate_timeout_sec:.0f}s)')
 
-    score_result = calculate_signal_score(
-        rsi_1d=c.rsi_1d,
-        rsi_4h=rsi_4h,
-        rsi_4h_peak=rsi_4h_peak,
-        pct_24h=c.pct24h,
-        oi_change=c.oi_change,
-        funding_rate=c.funding_rate,
-        yao_score=c.yao_score,
-        trigger_type='abandon' if trigger_abandon else '4h_rsi',
-        abandon_oi_declining=abandon_oi,
-        btc_24h_pct=btc_pct,
-        cross_validate_bonus=cross_validate_bonus,
-        vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
-    )
+    # ── 多因子评分（替代旧4×25评分）──
+    try:
+        ohlcv_raw = exchange.fetch_ohlcv(c.symbol, '1h', limit=200)
+        import pandas as _pd
+        _df_score = _pd.DataFrame(ohlcv_raw, columns=['timestamp','open','high','low','close','volume'])
+        _mf = score_signal_multifactor(_df_score, symbol=c.symbol, direction='SHORT')
+        score_result = {
+            "score": round(_mf.score),
+            "grade": _mf.grade,
+            "stake": 0,  # 实际 stake 由下方 compound_stake 决定
+            "details": {"multifactor": True, "confidence": _mf.confidence,
+                        "agreement": _mf.factor_agreement, "n_factors": _mf.n_factors_used},
+            "reason": f"MF score={_mf.score:.0f} conf={_mf.confidence:.2f} top={_mf.top_factors[0][0] if _mf.top_factors else 'N/A'}",
+        }
+        logger.info(
+            f"  📊 多因子评分: {c.symbol} score={_mf.score:.0f}[{_mf.grade}] "
+            f"conf={_mf.confidence:.2f} agree={_mf.factor_agreement:.0%} "
+            f"stake×{_mf.recommended_stake_multiplier:.2f}"
+        )
+    except Exception as _mf_err:
+        logger.warning(f"  ⚠️ 多因子评分失败({c.symbol}): {_mf_err}，fallback 旧评分")
+        score_result = calculate_signal_score(
+            rsi_1d=c.rsi_1d,
+            rsi_4h=rsi_4h,
+            rsi_4h_peak=rsi_4h_peak,
+            pct_24h=c.pct24h,
+            oi_change=c.oi_change,
+            funding_rate=c.funding_rate,
+            yao_score=c.yao_score,
+            trigger_type='abandon' if trigger_abandon else '4h_rsi',
+            abandon_oi_declining=abandon_oi,
+            btc_24h_pct=btc_pct,
+            cross_validate_bonus=cross_validate_bonus,
+            vol_divergence_bonus=vol_divergence.get("score_bonus", 0),
+        )
 
     if score_result["grade"] == "SKIP":
         c.rsi_4h = rsi_4h
