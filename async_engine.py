@@ -394,6 +394,7 @@ class AsyncStrategyEngine:
                 tg.create_task(self._exchange_sync_loop())
                 tg.create_task(self._health_audit_loop())
                 tg.create_task(self._macro_collection_loop())
+                tg.create_task(self._journal_recovery_loop())
                 tg.create_task(self._daily_tasks_loop())
         except* Exception as eg:
             for e in eg.exceptions:
@@ -507,6 +508,21 @@ class AsyncStrategyEngine:
                 await loop.run_in_executor(self._strategy_pool, self._run_macro_collection)
             except Exception as e:
                 logger.warning(f"宏观采集异常: {e}")
+
+    async def _journal_recovery_loop(self):
+        """每 30 分钟扫描 in-flight journal，检测幽灵仓位
+
+        补充启动时的一次性扫描：覆盖"运行中崩溃后自动恢复"的场景。
+        如果发现 pending 条目超过 30 分钟仍未 confirm，说明下单进程可能
+        已经崩溃但订单在交易所端成交了 → 触发告警。
+        """
+        while self._running:
+            await asyncio.sleep(1800)  # 30 分钟
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(self._strategy_pool, self._run_journal_recovery)
+            except Exception as e:
+                logger.warning(f"Journal recovery 异常: {e}")
 
     async def _daily_tasks_loop(self):
         """每日任务：日报(08:00)、归档(00:01)、周优化(周一09:00)"""
@@ -871,6 +887,19 @@ class AsyncStrategyEngine:
             journal_cleanup_failed(retain_hours=72)
         except Exception as e:
             logger.warning(f"归档异常: {e}")
+
+    def _run_journal_recovery(self):
+        """定期扫描 in-flight journal 检测幽灵仓位（补充启动时的一次性扫描）"""
+        try:
+            from journal_recovery import recover_inflight
+            stats = recover_inflight()
+            if stats.get('ghost', 0) > 0:
+                logger.critical(
+                    f"🚨 Journal recovery 发现 {stats['ghost']} 个幽灵订单！"
+                    f"（已推送 TG 告警，需人工处理）"
+                )
+        except Exception as e:
+            logger.debug(f"Journal recovery 跳过: {e}")
 
     def _run_auto_optimize(self):
         """自动回测优化建议"""
