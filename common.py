@@ -642,18 +642,28 @@ account_param = _account_param
 
 def get_compound_stake(account_id: str = None) -> float:
     """
-    自动复利：根据累计已实现盈亏动态调整单笔保证金。
+    B+D 仓位自动计算：base_stake = account_balance / max_open_trades，
+    然后根据累计盈亏复利增长。
 
-    M6 更新：改为平滑线性衰减（避免离散跳变造成风控账面错位）。
-      - 亏损时（total_pnl <= 0）仍然固定 DEFAULT_STAKE，不加仓
-      - 盈利时：stake = DEFAULT_STAKE + (total_pnl / COMPOUND_STEP) * COMPOUND_INCREASE
-        而不是 (total_pnl // COMPOUND_STEP) * COMPOUND_INCREASE
-      - 上限仍为 COMPOUND_MAX_STAKE
+    计算逻辑：
+      1. base_stake = account_balance / max_open_trades（等分仓位）
+      2. 如果有累计盈利且复利开启：
+         stake = base_stake + (total_pnl / COMPOUND_STEP) * COMPOUND_INCREASE
+      3. 上限 = min(COMPOUND_MAX_STAKE, balance × RISK_MAX_POSITION_PCT)
 
-    多账号修复：所有复利参数（AUTO_COMPOUND_ENABLED / DEFAULT_STAKE /
-    COMPOUND_STEP / COMPOUND_INCREASE / COMPOUND_MAX_STAKE）现在都先查
-    指定账号的 runtime_config.json 覆盖，没有再 fallback 到全局 config，
-    这样不同账号可以有独立的复利曲线。
+    调用方在外层还会乘以：
+      - 评分系数：A级=1.0, B级=0.5（altcoin_scanner.py）
+      - regime系数：牛市0.3, 震荡1.0, 熊市1.5, 崩盘0.0（signals/regime.py）
+
+    示例（account_balance=100, max_open_trades=3）：
+      base_stake = 100 ÷ 3 = 33U
+      A级 + 熊市 = 33 × 1.0 × 1.5 = 50U（强信号+好环境，加仓）
+      B级 + 震荡 = 33 × 0.5 × 1.0 = 17U（弱信号，减仓）
+      A级 + 牛市 = 33 × 1.0 × 0.3 = 10U（强信号但环境不利，大幅减仓）
+      任何 + 崩盘 = 0U（不开）
+
+    多账号修复：所有参数都先查指定账号的 runtime_config.json 覆盖，
+    没有再 fallback 到全局 config，这样不同账号可以有独立的复利曲线。
 
     参数:
       account_id: 指定账户 ID；None 使用当前活跃账户
@@ -662,13 +672,20 @@ def get_compound_stake(account_id: str = None) -> float:
     if account_id is None:
         account_id = get_current_account_id()
 
+    # B+D 核心：base_stake = account_balance / max_open_trades
+    _balance = float(_account_param(account_id, 'ACCOUNT_BALANCE',
+                                    getattr(config, 'ACCOUNT_BALANCE', 100)))
+    _max_open = int(_account_param(account_id, 'MAX_OPEN_TRADES',
+                                   getattr(config, 'MAX_OPEN_TRADES', 3)))
+    _max_open = max(_max_open, 1)  # 防止除零
+
+    base_stake = _balance / _max_open
+
     enabled = _account_param(account_id, 'AUTO_COMPOUND_ENABLED',
                              getattr(config, 'AUTO_COMPOUND_ENABLED', True))
-    default_stake = _account_param(account_id, 'DEFAULT_STAKE',
-                                   getattr(config, 'DEFAULT_STAKE', 50))
 
     if not enabled:
-        return default_stake
+        return round(base_stake)
 
     trades = load_json(TRADES_FILE, [])
     trades = filter_trades_by_account(trades, account_id)
@@ -679,7 +696,7 @@ def get_compound_stake(account_id: str = None) -> float:
     )
 
     if total_pnl <= 0:
-        return default_stake
+        return round(base_stake)
 
     step = max(int(_account_param(account_id, 'COMPOUND_STEP',
                                   getattr(config, 'COMPOUND_STEP', 50))), 1)
@@ -690,12 +707,10 @@ def get_compound_stake(account_id: str = None) -> float:
 
     # 平滑复利：用比例代替整数步数，stake 随 total_pnl 连续增长
     ratio = total_pnl / step
-    stake = default_stake + ratio * increase
+    stake = base_stake + ratio * increase
 
     # 动态 cap：min(COMPOUND_MAX_STAKE, balance × RISK_MAX_POSITION_PCT)
     # 防止复利增长超过本金承载能力导致风控永久拒绝开仓
-    _balance = float(_account_param(account_id, 'ACCOUNT_BALANCE',
-                                    getattr(config, 'ACCOUNT_BALANCE', 100)))
     _pos_pct = float(_account_param(account_id, 'RISK_MAX_POSITION_PCT',
                                     getattr(config, 'RISK_MAX_POSITION_PCT', 0.5)))
     dynamic_cap = min(max_stake, _balance * _pos_pct)

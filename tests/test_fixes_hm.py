@@ -343,7 +343,8 @@ class TestM6CompoundSmoothing:
         monkeypatch.setattr(config, 'AUTO_COMPOUND_ENABLED', True)
         monkeypatch.setattr(config, 'COMPOUND_STEP', 50)
         monkeypatch.setattr(config, 'COMPOUND_INCREASE', 25)
-        monkeypatch.setattr(config, 'DEFAULT_STAKE', 50)
+        monkeypatch.setattr(config, 'ACCOUNT_BALANCE', 150)
+        monkeypatch.setattr(config, 'MAX_OPEN_TRADES', 3)
         monkeypatch.setattr(config, 'COMPOUND_MAX_STAKE', 300)
 
         def set_total_pnl(total):
@@ -359,21 +360,23 @@ class TestM6CompoundSmoothing:
         assert s_51 - s_49 <= 2, f"平滑应该只差约 1U，实际 {s_51 - s_49}U"
 
     def test_compound_no_increase_on_loss(self, isolated_files, mock_config, monkeypatch):
-        """总盈亏 <= 0 → 返回 DEFAULT_STAKE"""
+        """总盈亏 <= 0 → 返回 base_stake (account_balance / max_open_trades)"""
         monkeypatch.setattr(config, 'AUTO_COMPOUND_ENABLED', True)
-        monkeypatch.setattr(config, 'DEFAULT_STAKE', 50)
+        monkeypatch.setattr(config, 'ACCOUNT_BALANCE', 150)
+        monkeypatch.setattr(config, 'MAX_OPEN_TRADES', 3)
 
         atomic_write_json(isolated_files['trades'], [{
             'status': 'closed', 'tp1_locked_pnl': 0, 'pnl': -20, 'account_id': '',
         }])
-        assert get_compound_stake('') == 50
+        assert get_compound_stake('') == 50  # 150 / 3 = 50
 
     def test_compound_respects_cap(self, isolated_files, mock_config, monkeypatch):
         """复利上限应生效"""
         monkeypatch.setattr(config, 'AUTO_COMPOUND_ENABLED', True)
         monkeypatch.setattr(config, 'COMPOUND_STEP', 50)
         monkeypatch.setattr(config, 'COMPOUND_INCREASE', 25)
-        monkeypatch.setattr(config, 'DEFAULT_STAKE', 50)
+        monkeypatch.setattr(config, 'ACCOUNT_BALANCE', 150)
+        monkeypatch.setattr(config, 'MAX_OPEN_TRADES', 3)
         monkeypatch.setattr(config, 'COMPOUND_MAX_STAKE', 100)
 
         atomic_write_json(isolated_files['trades'], [{

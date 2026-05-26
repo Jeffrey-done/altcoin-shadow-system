@@ -15,8 +15,11 @@ v6.0 变更：每个交易所独立账户配置
 # ══════════════════════════════════════════════════════════════════
 ACCOUNT_BALANCE = 100          # 默认账户本金（USDT）— 向后兼容
 LEVERAGE = 10                  # 默认杠杆倍数（向后兼容，对应 Binance）
-DEFAULT_STAKE = 30             # 默认单笔保证金（USDT）
-# 注意：DEFAULT_STAKE 必须 <= ACCOUNT_BALANCE * RISK_MAX_POSITION_PCT，否则风控会永远拒绝开仓
+MAX_OPEN_TRADES = 3            # 最大同时持仓数（用于自动计算 base_stake）
+DEFAULT_STAKE = 33             # 自动计算: ACCOUNT_BALANCE / MAX_OPEN_TRADES（向后兼容保留）
+# B+D 仓位模式：base_stake = account_balance / max_open_trades
+# 实际开仓 = base_stake × 评分系数(A=1.0, B=0.5) × regime系数(牛市0.3~熊市1.5)
+# 注意：总敞口永远 ≤ 可用保证金（3 笔 × 33U = 99U 上限）
 
 # ── 仓位模式（v5.1 新增）──────────────────────────────────────────
 # 'manual':       手动模式（向后兼容）。DEFAULT_STAKE / RISK_MAX_DAILY_LOSS /
@@ -39,7 +42,7 @@ LIVE_MODE = False              # False=影子交易（纸上模拟） True=真�
 #   1. 纸上交易至少2周，胜率>50%，盈亏比>1.5
 #   2. .env 里配置了 BINANCE_API_KEY 和 BINANCE_SECRET
 #   3. Binance 账户已开通合约并设置好杠杆
-#   4. 从小仓位开始（先改 DEFAULT_STAKE=20）
+#   4. 从小仓位开始（先改 account_balance 或 max_open_trades 调节）
 
 # ══════════════════════════════════════════════════════════════════
 #  扫描过滤
@@ -340,8 +343,9 @@ EXCHANGE_ACCOUNTS = {
         'enabled': True,
         'live_mode': False,            # Binance 实盘开关（对应旧 LIVE_MODE）
         'account_balance': 100,        # Binance 账户本金 (USDT)
+        'max_open_trades': 3,          # 最大同时持仓数
         'leverage': 10,                # Binance 杠杆倍数
-        'default_stake': 30,           # Binance 单笔保证金 (USDT)
+        'default_stake': 33,           # 自动计算: account_balance / max_open_trades
         'slippage_alert_pct': 1.0,     # 滑点告警阈值 (%)
         # 风控
         'risk': {
@@ -370,8 +374,9 @@ EXCHANGE_ACCOUNTS = {
         'enabled': True,
         'live_mode': False,            # OKX 实盘开关（对应旧 OKX_LIVE_MODE）
         'account_balance': 100,        # OKX 账户本金 (USDT)
+        'max_open_trades': 3,          # 最大同时持仓数
         'leverage': 10,                # OKX 杠杆倍数
-        'default_stake': 30,           # OKX 单笔保证金 (USDT)
+        'default_stake': 33,           # 自动计算: account_balance / max_open_trades
         'slippage_alert_pct': 1.0,
         'cross_validate': False,       # 是否用作交叉验证数据源
         # 风控
@@ -401,8 +406,9 @@ EXCHANGE_ACCOUNTS = {
         'enabled': True,
         'live_mode': False,            # Gate.io 实盘开关
         'account_balance': 100,        # Gate.io 账户本金 (USDT)
+        'max_open_trades': 3,          # 最大同时持仓数
         'leverage': 10,                # Gate.io 杠杆倍数
-        'default_stake': 30,           # Gate.io 单笔保证金 (USDT)
+        'default_stake': 33,           # 自动计算: account_balance / max_open_trades
         'slippage_alert_pct': 1.0,
         # 风控
         'risk': {

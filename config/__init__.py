@@ -146,6 +146,7 @@ _SYSTEM_MAPPING = {
     'scheduler.check_candidates_budget_sec': 'CHECK_CANDIDATES_BUDGET_SEC',
     'scheduler.check_candidates_per_candidate_sec': 'CHECK_CANDIDATES_PER_CANDIDATE_SEC',
     'scheduler.check_candidates_parallelism': 'CHECK_CANDIDATES_PARALLELISM',
+    'exchanges.binance.max_open_trades': 'MAX_OPEN_TRADES',
     'exchanges.binance.leverage': 'LEVERAGE',
     'exchanges.binance.slippage_alert_pct': 'SLIPPAGE_ALERT_PCT',
     'exchanges.routing.primary_exchange': 'PRIMARY_EXCHANGE',

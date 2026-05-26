@@ -26,9 +26,10 @@ exchanges:
   binance:
     enabled: true
     # 账户参数（独立于其他交易所）
-    account_balance: 100         # 该交易所账户本金 (USDT)
+    account_balance: 100         # 该交易所账户本金 (USDT) — 你只需设这一个
+    max_open_trades: 3           # 最大同时持仓数
     leverage: 10                 # 杠杆倍数
-    default_stake: 30            # 单笔保证金 (USDT)
+    # default_stake: 30          # ← 已废弃，系统自动计算: account_balance / max_open_trades
     slippage_alert_pct: 1.0      # 滑点告警阈值 (%)
     # 风控参数（每个交易所独立风控）
     risk:
@@ -56,8 +57,9 @@ exchanges:
     cross_validate: false        # 是否用作交叉验证数据源
     # 账户参数
     account_balance: 100         # OKX 账户本金 (USDT)
+    max_open_trades: 3           # 最大同时持仓数
     leverage: 10                 # OKX 杠杆倍数
-    default_stake: 30            # 单笔保证金 (USDT)
+    # default_stake: 30          # ← 已废弃，系统自动计算
     slippage_alert_pct: 1.0
     # 风控参数
     risk:
@@ -84,8 +86,9 @@ exchanges:
     live_mode: false             # Gate.io 独立实盘开关
     # 账户参数
     account_balance: 100         # Gate.io 账户本金 (USDT)
+    max_open_trades: 3           # 最大同时持仓数
     leverage: 10                 # Gate.io 杠杆倍数
-    default_stake: 30            # 单笔保证金 (USDT)
+    # default_stake: 30          # ← 已废弃，系统自动计算
     slippage_alert_pct: 1.0
     # 风控参数
     risk:
