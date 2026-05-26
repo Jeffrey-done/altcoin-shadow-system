@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 """
+⚠️  已废弃 — 请使用 async_engine.py 作为唯一入口
+
+本文件(scheduler.py)的全部功能已被 async_engine.py v2.0 完全替代，包括：
+  - 全部启动初始化（journal 恢复、风控对账、配置校验）
+  - 全部周期任务（扫描、确认、追踪、对账、审计、日报、归档）
+  - 优雅退出、fallback 机制、配置热加载
+
+迁移方式：
+  docker-compose.yml 中将 command 从 python3 scheduler.py 改为 python3 async_engine.py
+
+本文件保留仅为向后兼容和紧急回退，计划在下一个大版本中移除。
+────────────────────────────────────────────────────────────────
+
 定时任务调度器 — 替代 crontab
 在 Docker 容器内按计划执行所有策略模块。
 
@@ -390,6 +403,17 @@ def _mark_done(name: str, now: datetime):
 def main_loop():
     global _health_audit_fail_streak, _health_audit_last_alert_ts, _position_reconcile_last_alert_ts
     """主调度循环，每分钟检查一次；任务用'上次执行+间隔'判断，避免漏跑。"""
+    import warnings
+    warnings.warn(
+        "scheduler.py 已废弃，请迁移到 async_engine.py。"
+        "本文件将在下一个大版本中移除。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    logger.warning(
+        "⚠️  scheduler.py 已废弃！请将 Docker 入口改为 python3 async_engine.py。"
+        "本入口将在下一个版本中移除。"
+    )
     logger.info("=== 调度器启动 v6.0 (StrategyEngine 集成) ===")
     logger.info("  频率: scan_daily=1h | check_candidates=配置 | tracker=10min")
     logger.info(f"  引擎模式: {'新引擎(engine_adapter)' if os.environ.get('USE_NEW_ENGINE', 'true').lower() in ('1','true','yes') else '旧引擎(altcoin_scanner)'}")
