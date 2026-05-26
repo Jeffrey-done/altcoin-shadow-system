@@ -8,7 +8,10 @@ import sys
 from unittest.mock import MagicMock
 
 # 将项目根目录加入 sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _PROJECT_ROOT)
+# tools/ 子目录（诊断/迁移工具脚本）
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'tools'))
 
 # 在导入项目模块之前 mock 掉 ccxt（测试环境没有安装）
 sys.modules.setdefault('ccxt', MagicMock())
