@@ -694,9 +694,26 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
         if _expired():
             return ('skip', f'timeout_after_okx_cv (>{per_candidate_timeout_sec:.0f}s)')
 
+    # ── ATR 动态止损（替代固定 5% 硬止损）──
+    _atr_stop_pct = None
+    try:
+        from risk.atr_stop import get_dynamic_stop_pct
+        # 复用下方多因子评分拉取的 OHLCV（先拉，后面共享）
+    except ImportError:
+        pass
+
     # ── 多因子评分（替代旧4×25评分）──
     try:
         ohlcv_raw = exchange.fetch_ohlcv(c.symbol, '1h', limit=200)
+
+        # ATR 动态止损计算（复用 OHLCV 数据，不多一次 API 调用）
+        try:
+            from risk.atr_stop import get_dynamic_stop_pct
+            _atr_stop_pct = get_dynamic_stop_pct(ohlcv_raw)
+            logger.debug(f"  📐 ATR动态止损 {c.symbol}: {_atr_stop_pct:.1f}%")
+        except Exception as _atr_err:
+            logger.debug(f"  ATR止损计算失败（用固定值）: {_atr_err}")
+
         import pandas as _pd
         _df_score = _pd.DataFrame(ohlcv_raw, columns=['timestamp','open','high','low','close','volume'])
         _mf = score_signal_multifactor(_df_score, symbol=c.symbol, direction='SHORT')
@@ -762,6 +779,7 @@ def _evaluate_candidate(exchange, c, btc_pct: float, open_symbols: set,
         'okx_cv_info': okx_cv_info,
         'score_result': score_result,
         'eval_elapsed_sec': round(elapsed, 2),
+        'atr_stop_pct': _atr_stop_pct,
     })
 
 
@@ -1099,6 +1117,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     cross_validate_bonus = payload['cross_validate_bonus']
     okx_cv_info = payload['okx_cv_info']
     score_result = payload['score_result']
+    atr_stop_pct = payload.get('atr_stop_pct')  # None = fallback to config
 
     # 根据评分决定仓位（结合自动复利）
     # 注意：这是 active 账号的 base_stake，用于"展示+回退"。每个账号实际开仓 stake
@@ -1429,7 +1448,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                 account_id=acc_id,
                 tp1_multiplier=float(account_param(acc_id, 'TP1_MULTIPLIER', config.TP1_MULTIPLIER)),
                 tp2_multiplier=float(account_param(acc_id, 'TP2_MULTIPLIER', config.TP2_MULTIPLIER)),
-                hard_stop_loss_pct=float(account_param(acc_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
+                hard_stop_loss_pct=atr_stop_pct if atr_stop_pct else float(account_param(acc_id, 'HARD_STOP_LOSS_PCT', config.HARD_STOP_LOSS_PCT)),
                 max_hold_days=int(config.MAX_HOLD_DAYS),
             )
             opened_trades.append((trade, entry_price, route_exchange, route_stake, coid))
