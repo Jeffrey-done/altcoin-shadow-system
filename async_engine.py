@@ -29,10 +29,9 @@ import signal
 import subprocess
 import sys
 import time
-import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -73,6 +72,9 @@ class AsyncEngineConfig:
     # aiohttp
     aiohttp_timeout_sec: float = 10.0
     aiohttp_max_connections: int = 30       # 从 20 提升到 30
+
+    # 缓存
+    cache_max_entries: int = 500            # AsyncDataFeed 缓存最大条目数（LRU 淘汰）
 
 
 # 全局开关
@@ -199,11 +201,19 @@ class AsyncDataFeed:
         if key in self._cache:
             data, expire = self._cache[key]
             if time.time() < expire:
+                # LRU：命中时移到末尾（Python 3.7+ dict 保持插入序）
+                del self._cache[key]
+                self._cache[key] = (data, expire)
                 return data
             del self._cache[key]
         return None
 
     def _set_cache(self, key: str, data: Any, ttl: int = 60):
+        # 超过 maxsize 时淘汰最旧的条目（dict 头部 = 最久未访问）
+        max_entries = self._config.cache_max_entries
+        while len(self._cache) >= max_entries:
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
         self._cache[key] = (data, time.time() + ttl)
 
 
