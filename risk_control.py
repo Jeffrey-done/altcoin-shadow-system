@@ -418,6 +418,28 @@ def can_open_trade(stake: float = None, strategy: str = 'short',
             data = _save_state_in_lock(data, state, account_id)
             save(data)
 
+    # 5. Portfolio VaR 尾部风险检查（锁外执行，不阻塞 risk_state 写入）
+    try:
+        from risk.portfolio_var import check_portfolio_risk
+        from common import load_json, TRADES_FILE
+
+        _open_trades = load_json(TRADES_FILE, [])
+        _open_trades = [t for t in _open_trades if t.get('status') == 'open']
+
+        _var_result = check_portfolio_risk(
+            open_trades=_open_trades,
+            new_stake=stake,
+            new_symbol='',  # symbol not available here, conservative check
+            new_leverage=int(getattr(config, 'LEVERAGE', 10)),
+            account_balance=realized_bal,
+        )
+        if not _var_result.allowed:
+            logger.warning(f"🚫 {_var_result.reason}")
+            return False, _var_result.reason
+    except Exception as _var_err:
+        # VaR 检查失败不阻塞开仓（降级为警告）
+        logger.debug(f"Portfolio VaR 检查跳过: {_var_err}")
+
     return True, "OK"
 
 
