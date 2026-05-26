@@ -1309,7 +1309,7 @@ def get_current_values() -> dict:
 # 优先级（高→低）：
 #   1. runtime_config.json _exchanges 段（admin panel 实时修改）
 #   2. admin_secrets.json 中的 settings 字段
-#   3. config_legacy.py EXCHANGE_ACCOUNTS 字典
+#   3. config/_defaults.py EXCHANGE_ACCOUNTS 字典
 #   4. _default_exchange_settings() 兜底默认值
 
 def _default_exchange_settings() -> dict:
@@ -1413,7 +1413,7 @@ def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict
     合并优先级（高→低）：
       1. runtime_config.json _exchanges 段覆盖
       2. admin_secrets.json 中的 per-exchange settings
-      3. config_legacy.py EXCHANGE_ACCOUNTS 字典
+      3. config/_defaults.py EXCHANGE_ACCOUNTS 字典
       4. 默认值
 
     Args:
@@ -1434,7 +1434,7 @@ def get_effective_exchange_config(exchange: str, account_id: str = None) -> dict
     # 层 4: 默认值
     result = _default_exchange_settings()
 
-    # 层 3: config_legacy.py EXCHANGE_ACCOUNTS
+    # 层 3: config/_defaults.py EXCHANGE_ACCOUNTS
     try:
         import config
         exchange_accounts = getattr(config, 'EXCHANGE_ACCOUNTS', {})

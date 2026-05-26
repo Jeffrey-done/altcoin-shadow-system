@@ -6,7 +6,7 @@ YAML 分层配置管理
   1. 环境变量（DATABASE_URL 等）
   2. runtime_config.json（admin panel 动态修改）
   3. config/*.yaml（项目级默认值）
-  4. 代码内置默认值（config_legacy.py）
+  4. 代码内置默认值（config/_defaults.py）
 
 集成说明:
   - 所有旧代码 `import config` 仍然正常工作（本包 re-export 全部常量）
@@ -24,15 +24,15 @@ from typing import Any, Dict, Optional
 import yaml
 
 # ══════════════════════════════════════════════════════════════════
-#  关键：从 config_legacy.py 导入全部常量，保证向后兼容
+#  关键：从 config/_defaults.py 导入全部常量，保证向后兼容
 #  所有旧代码 `import config; config.LEVERAGE` 仍然正常工作
 # ══════════════════════════════════════════════════════════════════
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_legacy_path = os.path.join(_SCRIPT_DIR, 'config_legacy.py')
+_legacy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_defaults.py')
 
 if os.path.exists(_legacy_path):
     import importlib.util
-    _spec = importlib.util.spec_from_file_location('config_legacy', _legacy_path)
+    _spec = importlib.util.spec_from_file_location('config._defaults', _legacy_path)
     _legacy_module = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_legacy_module)
     # 将所有公开属性注入本模块
@@ -137,10 +137,16 @@ _SYSTEM_MAPPING = {
     'account.live_mode': 'LIVE_MODE',
     'account.position_mode': 'POSITION_MODE',
     'account.baseline_balance': 'BASELINE_BALANCE',
+    'account.shadow_parallel': 'SHADOW_PARALLEL',
     'compound.enabled': 'AUTO_COMPOUND_ENABLED',
     'compound.step': 'COMPOUND_STEP',
     'compound.increase': 'COMPOUND_INCREASE',
     'compound.max_stake': 'COMPOUND_MAX_STAKE',
+    'candidates.expire_hours': 'CANDIDATE_EXPIRE_HOURS',
+    'candidates.check_open_exec_timeout_sec': 'CHECK_CANDIDATES_OPEN_EXEC_TIMEOUT_SEC',
+    'candidates.check_hard_timeout_sec': 'CHECK_CANDIDATES_HARD_TIMEOUT_SEC',
+    'auto_optimize.enabled': 'AUTO_OPTIMIZE_ENABLED',
+    'auto_optimize.day': 'AUTO_OPTIMIZE_DAY',
     'scheduler.task_timeout_seconds': 'TASK_TIMEOUT_SECONDS',
     'scheduler.check_candidates_interval_minutes': 'CHECK_CANDIDATES_INTERVAL_MINUTES',
     'scheduler.check_candidates_budget_sec': 'CHECK_CANDIDATES_BUDGET_SEC',
@@ -155,6 +161,13 @@ _SYSTEM_MAPPING = {
     'backtest.slippage_pct': 'BACKTEST_SLIPPAGE_PCT',
     'backtest.fee_pct': 'BACKTEST_FEE_PCT',
     'backtest.default_days': 'BATCH_BACKTEST_DAYS',
+    'backtest.correlation_threshold': 'BATCH_CORRELATION_THRESHOLD',
+    'archive.days': 'TRADES_ARCHIVE_DAYS',
+    'notifications.ws_disconnect_alert_minutes': 'WS_DISCONNECT_ALERT_MINUTES',
+    'weekly_report.enabled': 'WEEKLY_REPORT_ENABLED',
+    'weekly_report.roi_grade_a': 'WEEKLY_ROI_GRADE_A',
+    'weekly_report.roi_grade_b': 'WEEKLY_ROI_GRADE_B',
+    'weekly_report.roi_grade_c': 'WEEKLY_ROI_GRADE_C',
 }
 
 _STRATEGY_MAPPING = {

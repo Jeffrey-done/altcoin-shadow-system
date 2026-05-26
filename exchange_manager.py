@@ -323,7 +323,7 @@ def get_exchange_config(exchange: str, account_id: str = None) -> dict:
     获取指定交易所的独立账户配置（leverage, stake, risk 等）。
 
     这是获取交易所配置的推荐统一入口。
-    优先级：runtime_config > admin_secrets > config_legacy > 默认值
+    优先级：runtime_config > admin_secrets > config/_defaults > 默认值
 
     Args:
         exchange: 交易所名称 ('binance', 'okx', 'gate')
@@ -345,8 +345,8 @@ def get_exchange_config(exchange: str, account_id: str = None) -> dict:
         from runtime_config import get_effective_exchange_config
         return get_effective_exchange_config(exchange, account_id)
     except Exception as e:
-        logger.debug(f"get_exchange_config fallback to config_legacy: {e}")
-        # Fallback：从 config_legacy 读取
+        logger.debug(f"get_exchange_config fallback to config/_defaults: {e}")
+        # Fallback：从 config/_defaults 读取
         try:
             exchange_accounts = getattr(config, 'EXCHANGE_ACCOUNTS', {})
             return exchange_accounts.get(exchange.lower(), {})

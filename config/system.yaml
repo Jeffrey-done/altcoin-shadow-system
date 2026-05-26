@@ -19,7 +19,7 @@ account:
 #    1. runtime_config.json（admin panel 实时修改）
 #    2. admin_secrets.json settings（凭证附带配置）
 #    3. 本文件 config/system.yaml（项目级默认）
-#    4. config_legacy.py EXCHANGE_ACCOUNTS（代码层兜底）
+#    4. config/_defaults.py EXCHANGE_ACCOUNTS（代码层兜底）
 #  修改本文件后重启服务即可生效；无需改代码。
 # ══════════════════════════════════════════════════════════════════
 exchanges:
@@ -116,6 +116,24 @@ exchanges:
     primary_fallback: binance    # auto 模式下两所都有合约时选谁
     price_divergence_max_pct: 2.0
 
+# 候选池管理
+candidates:
+  expire_hours: 12                       # 未触发候选过期时间（小时）
+  check_open_exec_timeout_sec: 45        # 开仓执行阶段总超时（秒）
+  check_hard_timeout_sec: 120            # 候选确认函数级硬超时（秒）
+
+# 自动优化
+auto_optimize:
+  enabled: true
+  day: 0                                 # 周几运行（0=周一）
+
+# 复利（全局默认，交易所级覆盖见 exchanges 段）
+compound:
+  enabled: true
+  step: 50
+  increase: 25
+  max_stake: 300
+
 # 调度器
 scheduler:
   task_timeout_seconds: 600
@@ -145,6 +163,7 @@ backtest:
   slippage_pct: 0.1
   fee_pct: 0.04
   default_days: 90
+  correlation_threshold: 0.7             # 高于此值的币对避免同时开仓
   symbols:
     - PEPE/USDT
     - DOGE/USDT
@@ -154,6 +173,18 @@ backtest:
     - WIF/USDT
     - PEOPLE/USDT
     - ORDI/USDT
+    - FET/USDT
+    - RNDR/USDT
+    - INJ/USDT
+    - SEI/USDT
+    - SUI/USDT
+    - APT/USDT
+    - ARB/USDT
+    - OP/USDT
+    - NEAR/USDT
+    - FIL/USDT
+    - RUNE/USDT
+    - TIA/USDT
 
 # 周报
 weekly_report:
