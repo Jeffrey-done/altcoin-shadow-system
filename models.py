@@ -96,10 +96,13 @@ class Trade:
     take_profit_2: float = 0.0       # TP2 价格
     tp1_triggered: bool = False
     tp1_locked_pnl: float = 0.0      # TP1 锁定的已实现盈利
+    tp1_stake_released: bool = False # H1: TP1 半仓 stake 是否已从 risk 扣减（防双扣）
     stake_remaining: float = config.DEFAULT_STAKE
 
     # 硬止损
     hard_stop_price: Optional[float] = None   # 无条件止损价
+    hard_stop_pct: float = 0.0        # M4: 实际使用的硬止损百分比（ATR 动态值或 config.HARD_STOP_LOSS_PCT）
+    hard_stop_source: str = 'fixed'   # M4: 'atr' | 'fixed' — 用于审计止损来源
 
     # 移动止损
     best_pnl_pct: float = 0.0
@@ -159,6 +162,7 @@ class Trade:
                      tp1_multiplier: Optional[float] = None,
                      tp2_multiplier: Optional[float] = None,
                      hard_stop_loss_pct: Optional[float] = None,
+                     hard_stop_source: str = 'fixed',
                      max_hold_days: Optional[int] = None) -> Trade:
         """工厂方法：创建做空交易（带杠杆 + 硬止损）
 
@@ -167,6 +171,9 @@ class Trade:
             直接传入作为 Trade.id 的一部分，保证 journal / trade / 交易所三端一致。
           ref_price_at_order: 下单前的 ticker 参考价（用于事后分析滑点成本）
           slippage_pct: 实际滑点百分比（abs(price - ref_price)/ref_price * 100）
+          hard_stop_loss_pct: 硬止损百分比；None 时取 config.HARD_STOP_LOSS_PCT
+          hard_stop_source: 'atr' | 'fixed' — M4 修复：调用方传入 ATR 动态值时
+            应同时把 source 设为 'atr',方便审计、weekly_report 拆分统计止损来源。
         """
         import secrets as _secrets
         from common import get_current_account_id
@@ -202,6 +209,8 @@ class Trade:
             take_profit_2=round(price * tp2_multiplier, 6),
             stake_remaining=stake,
             hard_stop_price=hard_stop,
+            hard_stop_pct=round(hard_stop_loss_pct, 4),
+            hard_stop_source=hard_stop_source,
             max_hold_days=max_hold_days,
             exchange=exchange,
             live_order_id=live_order_id,
@@ -246,8 +255,11 @@ class Trade:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  已废弃：FundingTrade / LowRiskTrade
+#  历史归档：FundingTrade / LowRiskTrade
 # ══════════════════════════════════════════════════════════════════
-# 这两个策略在 v4.1 之前被整体移除（见 README：当前仅做空策略）。
-# 保留的 Python 源码和 config 已废弃字段都已清理。
-# 如果需要旧数据的归档读取，字段在历史 commit 中仍可查阅。
+# 这两个策略在 v4.0 时存在，v4.1 整体移除。当前 v5.x 多策略架构
+# 是基于 BaseStrategy + StrategyRegistry 重新打开的，目录在 strategies/。
+# 当前内置策略：
+#   - short_overbought  (SHORT 方向)
+#   - long_oversold     (LONG 方向)
+#   - prepump_sniffer   (LONG 方向)

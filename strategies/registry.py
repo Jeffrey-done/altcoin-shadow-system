@@ -24,9 +24,15 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Type, TYPE_CHECKING
 
 from strategies.base import BaseStrategy
+
+if TYPE_CHECKING:
+    # 仅用于类型注解,运行时不需要(避免循环 import)
+    from strategies.base import (
+        DataFeed, MarketSnapshot, Candidate, Signal, ExitSignal,
+    )
 
 logger = logging.getLogger("strategy_registry")
 

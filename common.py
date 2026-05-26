@@ -336,6 +336,9 @@ def load_json(filepath: str, default: Any = None) -> Any:
             lock_fd.close()
 
 
+_LOCKED_JSON_UNSET = object()  # H7: 区分"未传"和"显式 None"的哨兵
+
+
 class LockedJsonFile:
     """
     上下文管理器：对 JSON 文件加排他锁，确保 read-modify-write 原子性。
@@ -346,16 +349,27 @@ class LockedJsonFile:
             # data 是读取到的 JSON 数据
             # 修改 data ...
             save(data)  # 调用 save 写回文件（仍在锁保护下）
+
+    H7 修复：默认 lock_timeout_sec=10s（不再 None=无限等）。理由：
+      - 历史多处调用没传 timeout，一旦某进程异常持锁会让其它进程永久阻塞
+      - 10s 对正常 RMW 场景绰绰有余（实际 < 100ms），异常场景可让上游
+        感知错误并 fallback / 报警，而不是让 scheduler 整个卡死
+      - 显式传 None 仍然走"无限等"老语义（用于初始化/迁移这类必须等的场景）
     """
+    DEFAULT_LOCK_TIMEOUT_SEC = 10.0  # H7
 
     def __init__(self, filepath: str, default: Any = None,
-                 lock_timeout_sec: float | None = None,
+                 lock_timeout_sec=_LOCKED_JSON_UNSET,
                  lock_name: str | None = None):
         self.filepath = filepath
         self.default = default if default is not None else []
         self.lockfile = filepath + '.lock'
         self.lock_fd = None
-        self.lock_timeout_sec = lock_timeout_sec
+        # H7: 区分"未传"vs"显式 None"
+        if lock_timeout_sec is _LOCKED_JSON_UNSET:
+            self.lock_timeout_sec = self.DEFAULT_LOCK_TIMEOUT_SEC
+        else:
+            self.lock_timeout_sec = lock_timeout_sec
         self.lock_name = lock_name or filepath
 
     def __enter__(self):

@@ -185,7 +185,7 @@ OKX_OI_CHANGE_MIN = 0.20      # OKX OI 变化阈值（20%，比币安低因为OK
 OKX_CROSS_VALIDATE_ENABLED = False    # hotfix: 暂时关闭 OKX 交叉验证，避免候选确认阻塞
 OKX_CROSS_VALIDATE_BONUS = 8         # 交叉验证通过时额外加分（满分100中）
 
-# OKX 实盘交易（目前仅做空策略，默认关闭）
+# OKX 实盘交易（多策略架构下空头/多头都通过 OKX_LIVE_MODE 控制；默认关闭）
 OKX_LIVE_MODE = False          # True=通过 OKX API 真实下单（需配置 OKX_API_KEY/SECRET/PASSPHRASE）
 OKX_DEFAULT_LEVERAGE = 10      # OKX 默认杠杆倍数
 
@@ -303,6 +303,9 @@ TRADES_ARCHIVE_FILE = 'altcoin_trades_archive.json'
 #  WebSocket 断线告警
 # ══════════════════════════════════════════════════════════════════
 WS_DISCONNECT_ALERT_MINUTES = 5  # WebSocket断线超过N分钟告警
+WS_DISCONNECT_FALLBACK_SEC = 30  # H5: WS 断线超过 N 秒立即降级到主动 REST 轮询模式
+                                 # （5 分钟才告警的旧时序仅作 escalation,不再让持仓裸奔）
+WS_FALLBACK_POLL_INTERVAL_SEC = 10  # 降级模式下的 REST 轮询间隔（秒）
 
 # ══════════════════════════════════════════════════════════════════
 #  OKX 费率相关（用于交叉验证，仅数据源，非交易参数）

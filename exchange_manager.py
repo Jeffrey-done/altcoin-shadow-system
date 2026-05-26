@@ -36,7 +36,8 @@ logger = setup_logger("exchange_manager")
 # 公共数据实例（无认证，单例复用）
 _binance_instance: Optional[ccxt.binance] = None
 _okx_instance: Optional[ccxt.okx] = None
-_gate_instance: Optional[ccxt.gate] = None
+# _gate_instance: Gate.io 已在 v5.x 移除,保留变量名仅作 git blame 锚点
+_gate_instance = None  # type: ignore[assignment]
 
 # 认证实例缓存：key = (exchange_name, account_id)
 _authenticated_instances: Dict[tuple, ccxt.Exchange] = {}
@@ -103,9 +104,10 @@ def make_exchange(
         return ccxt.binance(cfg)
     if name == 'okx':
         return ccxt.okx(cfg)
+    # Gate.io 已在 v5.x 移除路由,但保留 ccxt 实例化路径(若上游传入 'gate' 仅为读市场数据)
     if name == 'gate':
         return ccxt.gate(cfg)
-    raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx' / 'gate'）")
+    raise ValueError(f"未知交易所: {name}（支持: 'binance' / 'okx'）")
 
 
 def get_binance(authenticated: bool = False, account_id: str = None) -> ccxt.binance:
@@ -218,75 +220,11 @@ def get_okx(authenticated: bool = False, account_id: str = None) -> Optional[ccx
 #  Gate.io 交易所实例
 # ══════════════════════════════════════════════════════════════════
 
-# Gate.io 配置 — 已禁用（2026-05 审计：路由层从未支持 gate 分支）
-# 保留 get_gate() 函数签名以兼容可能的外部调用，但始终返回 None
-GATE_ENABLED = False
-GATE_LIVE_MODE = False
-GATE_DEFAULT_LEVERAGE = 10
-
-
-def get_gate(authenticated: bool = False, account_id: str = None) -> Optional[ccxt.gate]:
-    """
-    获取 Gate.io 交易所实例。
-
-    如果 Gate.io 未启用或连接失败，返回 None（优雅降级）。
-
-    Args:
-        authenticated: 是否需要认证实例
-        account_id: 指定账户 ID
-    """
-    global _gate_instance
-    if not GATE_ENABLED:
-        return None
-
-    if not authenticated:
-        if _gate_instance is None:
-            try:
-                _gate_instance = make_exchange(
-                    'gate',
-                    default_type='swap',
-                    extra_options={'defaultSettle': 'usdt'},
-                )
-            except Exception as e:
-                logger.warning(f"Gate.io 初始化失败: {e}")
-                return None
-        return _gate_instance
-
-    # 认证版本：按 account_id 缓存
-    cache_key = ('gate', account_id or '_active')
-    with _auth_cache_lock:
-        if cache_key in _authenticated_instances:
-            return _authenticated_instances[cache_key]
-
-    try:
-        from admin_secrets import get_exchange_credentials
-        creds = get_exchange_credentials('gate', account_id=account_id)
-        api_key = creds.get('api_key', '')
-        secret = creds.get('secret', '')
-    except Exception as e:
-        logger.debug(f"admin_secrets Gate.io 不可用，fallback 到环境变量: {e}")
-        import os
-        api_key = os.environ.get('GATE_API_KEY', '')
-        secret = os.environ.get('GATE_SECRET', '')
-
-    if not api_key or not secret:
-        logger.warning("Gate.io API 凭证未配置")
-        return None
-
-    try:
-        instance = make_exchange(
-            'gate',
-            api_key=api_key,
-            secret=secret,
-            default_type='swap',
-            extra_options={'defaultSettle': 'usdt'},
-        )
-        with _auth_cache_lock:
-            _authenticated_instances[cache_key] = instance
-        return instance
-    except Exception as e:
-        logger.warning(f"Gate.io 认证实例创建失败: {e}")
-        return None
+# Gate.io 已在 v5.x 删除（2026-05 审计：路由层从未支持 gate 分支，凭证管理也未走主流程）
+# - admin_secrets.SUPPORTED_EXCHANGES 仍保留 'gate' 字段以兼容历史 admin_secrets.json
+#   schema,读到时会忽略,不会影响系统运行
+# - 如需重启 Gate.io 支持,需先在 altcoin_scanner._resolve_exchange_routes()
+#   添加 'gate' 路由分支,再恢复本节代码（参考 git history v4.x commits）
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -312,7 +250,9 @@ def get_exchange(name: str, authenticated: bool = False,
     elif name == 'okx':
         return get_okx(authenticated=authenticated, account_id=account_id)
     elif name == 'gate':
-        return get_gate(authenticated=authenticated, account_id=account_id)
+        # M8: Gate.io 已移除,返回 None 让上层走"不可用"分支
+        logger.debug("Gate.io 已在 v5.x 移除,返回 None")
+        return None
     else:
         logger.warning(f"未知交易所: {name}")
         return None
@@ -383,32 +323,13 @@ def invalidate_authenticated_cache(exchange: str = None, account_id: str = None)
 
 
 def gate_has_swap(symbol: str) -> bool:
-    """检查 Gate.io 是否有该币种的永续合约"""
-    gate = get_gate()
-    if not gate:
-        return False
-    try:
-        gate.load_markets()
-        # Gate.io swap symbol 格式: BTC/USDT:USDT
-        gate_symbol = f"{symbol}:USDT" if ':' not in symbol else symbol
-        return gate_symbol in gate.markets
-    except Exception:
-        return False
+    """M8: Gate.io 已移除,始终返回 False"""
+    return False
 
 
 def get_gate_funding_rate(symbol: str) -> Optional[float]:
-    """获取 Gate.io 当前资金费率（%/8h）"""
-    gate = get_gate()
-    if not gate:
-        return None
-    try:
-        gate_symbol = f"{symbol}:USDT" if ':' not in symbol else symbol
-        info = gate.fetch_funding_rate(gate_symbol)
-        rate = float(info.get('fundingRate', 0)) * 100  # 转为百分比
-        return rate
-    except Exception as e:
-        logger.debug(f"Gate.io 费率获取失败 ({symbol}): {e}")
-        return None
+    """M8: Gate.io 已移除,始终返回 None"""
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════
