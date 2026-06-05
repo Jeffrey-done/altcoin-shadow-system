@@ -37,6 +37,68 @@ if TYPE_CHECKING:
 logger = logging.getLogger("strategy_registry")
 
 
+def _flatten_strategy_config(cfg: dict, valid_keys: set) -> dict:
+    """把 config/strategy.yaml 的分层配置映射到策略参数的扁平 key。"""
+    special = {
+        ('rsi', 'period'): 'rsi_period',
+        ('rsi', 'daily_min'): 'daily_rsi_min',
+        ('rsi', 'daily_max'): 'daily_rsi_max',
+        ('rsi', 'h4_enter'): 'h4_rsi_enter',
+        ('rsi', 'h4_drop'): 'h4_rsi_drop',
+        ('rsi', 'h4_rise'): 'h4_rsi_rise',
+        ('rsi', 'h4_peak_lookback'): 'h4_rsi_peak_lookback',
+        ('abandon', 'body_drop_pct'): 'abandon_body_drop_pct',
+        ('abandon', 'consecutive'): 'abandon_consecutive',
+        ('abandon', 'oi_drop_pct'): 'abandon_oi_drop_pct',
+        ('btc_filter', 'enabled'): 'btc_filter_enabled',
+        ('btc_filter', 'crash_threshold'): 'btc_crash_threshold',
+        ('btc_filter', 'pump_threshold'): 'btc_pump_threshold',
+        ('okx_cross', 'enabled'): 'okx_cross_validate_enabled',
+        ('okx_cross', 'bonus'): 'okx_cross_validate_bonus',
+    }
+    out = {}
+
+    def walk(node, path=()):
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            next_path = path + (key,)
+            if not path and key in ('enabled', 'version'):
+                continue
+            if isinstance(value, dict):
+                walk(value, next_path)
+                continue
+            candidates = [special.get(next_path), key, '_'.join(next_path)]
+            for param_key in candidates:
+                if param_key and param_key in valid_keys:
+                    out[param_key] = value
+                    break
+
+    walk(cfg or {})
+    return out
+
+
+def _apply_yaml_config(strategy: BaseStrategy) -> bool:
+    """应用 config/strategy.yaml 中的 enabled 与参数覆盖。"""
+    try:
+        from config import get_strategy_config
+        cfg = get_strategy_config(strategy.name) or {}
+    except Exception as exc:
+        logger.debug(f"读取策略配置失败 {strategy.name}: {exc}")
+        cfg = {}
+
+    try:
+        valid_keys = set(strategy.get_params().keys())
+        overrides = _flatten_strategy_config(cfg, valid_keys)
+        if overrides:
+            strategy.set_params(overrides)
+            logger.info(f"策略参数覆盖: {strategy.name} {sorted(overrides.keys())}")
+    except Exception as exc:
+        logger.warning(f"策略参数覆盖失败 {strategy.name}: {exc}")
+
+    return bool(cfg.get('enabled', True))
+
+
 class StrategyRegistry:
     """
     策略注册中心 — 单例模式管理所有策略实例。
@@ -183,7 +245,8 @@ class StrategyRegistry:
                     logger.warning(f"策略目录 '{item}' 的 strategy_class 不是 BaseStrategy 子类，跳过")
                     continue
 
-                self.register(instance)
+                enabled = _apply_yaml_config(instance)
+                self.register(instance, enabled=enabled)
                 count += 1
             except Exception as e:
                 logger.error(f"加载策略 '{item}' 失败: {e}")
@@ -272,16 +335,38 @@ class StrategyEngine:
         for strategy in self.registry.get_active():
             strategy_candidates = [
                 c for c in candidates
-                if c.get('strategy', strategy.name) == strategy.name
+                if c.get('strategy', 'short_overbought') == strategy.name
             ]
 
             for c_data in strategy_candidates:
                 try:
+                    metadata = dict(c_data.get('metadata') or {})
+                    if c_data.get('metadata_json') and not metadata:
+                        try:
+                            import json as _json
+                            metadata.update(_json.loads(c_data.get('metadata_json') or '{}'))
+                        except Exception:
+                            pass
+                    for _key in (
+                        'rsi_1d', 'rsi_4h', 'rsi_4h_peak', 'pct24h', 'pct_24h',
+                        'vol24h', 'vol_24h', 'oi_change', 'funding_rate', 'yao_score',
+                    ):
+                        if _key in c_data:
+                            metadata.setdefault(_key, c_data[_key])
+                    if 'pct24h' in metadata and 'pct_24h' not in metadata:
+                        metadata['pct_24h'] = metadata['pct24h']
+                    if 'pct_24h' in metadata and 'pct24h' not in metadata:
+                        metadata['pct24h'] = metadata['pct_24h']
+                    if 'vol24h' in metadata and 'vol_24h' not in metadata:
+                        metadata['vol_24h'] = metadata['vol24h']
+                    if 'vol_24h' in metadata and 'vol24h' not in metadata:
+                        metadata['vol24h'] = metadata['vol_24h']
+
                     candidate = CandidateDTO(
                         symbol=c_data['symbol'],
                         price=c_data.get('price', 0),
                         score=c_data.get('score', 0),
-                        metadata=c_data.get('metadata', {}),
+                        metadata=metadata,
                     )
                     signal = strategy.confirm(candidate, data_feed)
                     if signal:

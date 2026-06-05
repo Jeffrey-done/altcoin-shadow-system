@@ -220,6 +220,79 @@ class Trade:
             slippage_pct=round(slippage_pct, 4),
         )
 
+
+    @classmethod
+    def create_directional(cls, symbol: str, direction: str, price: float, reason: str = '',
+                           stake: float = config.DEFAULT_STAKE,
+                           leverage: int = config.LEVERAGE,
+                           exchange: str = 'shadow',
+                           live_order_id: Optional[str] = None,
+                           client_order_id: Optional[str] = None,
+                           ref_price_at_order: Optional[float] = None,
+                           slippage_pct: float = 0.0,
+                           account_id: Optional[str] = None,
+                           strategy: str = '',
+                           hard_stop_loss_pct: Optional[float] = None,
+                           tp1_pct: Optional[float] = None,
+                           tp2_pct: Optional[float] = None,
+                           max_hold_hours: Optional[int] = None) -> Trade:
+        """工厂方法：按方向创建交易（支持 SHORT / LONG）。"""
+        import secrets as _secrets
+        from common import get_current_account_id
+
+        direction_upper = (direction or 'SHORT').upper()
+        if direction_upper not in ('SHORT', 'LONG'):
+            direction_upper = 'SHORT'
+
+        if hard_stop_loss_pct is None:
+            hard_stop_loss_pct = config.HARD_STOP_LOSS_PCT
+        if tp1_pct is None:
+            tp1_pct = abs(1 - config.TP1_MULTIPLIER) * 100
+        if tp2_pct is None:
+            tp2_pct = abs(1 - config.TP2_MULTIPLIER) * 100
+
+        notional = stake * leverage
+        if direction_upper == 'LONG':
+            hard_stop = round(price * (1 - hard_stop_loss_pct / 100), 6)
+            tp1_price = round(price * (1 + tp1_pct / 100), 6)
+            tp2_price = round(price * (1 + tp2_pct / 100), 6)
+        else:
+            hard_stop = round(price * (1 + hard_stop_loss_pct / 100), 6)
+            tp1_price = round(price * (1 - tp1_pct / 100), 6)
+            tp2_price = round(price * (1 - tp2_pct / 100), 6)
+
+        ex_tag = exchange[:2].upper() if exchange != 'shadow' else 'SH'
+        ts_ms = int(time.time() * 1000)
+        rand = _secrets.token_hex(3)
+        trade_id = f"ENG-{direction_upper}-{symbol.replace('/USDT', '').replace('/', '')}-{ex_tag}-{ts_ms}-{rand}"
+        max_hold_days = max(1, int(((max_hold_hours or (config.MAX_HOLD_DAYS * 24)) + 23) // 24))
+
+        return cls(
+            id=trade_id,
+            symbol=symbol,
+            direction=direction_upper,
+            entry_price=price,
+            stake=stake,
+            leverage=leverage,
+            notional=notional,
+            shares=round(notional / price, 4) if price > 0 else 0,
+            reason=reason,
+            strategy=strategy or ('long_oversold' if direction_upper == 'LONG' else 'short_overbought'),
+            take_profit_1=tp1_price,
+            take_profit_2=tp2_price,
+            stake_remaining=stake,
+            hard_stop_price=hard_stop,
+            hard_stop_pct=round(hard_stop_loss_pct, 4),
+            hard_stop_source='fixed',
+            max_hold_days=max_hold_days,
+            exchange=exchange,
+            live_order_id=live_order_id,
+            account_id=account_id if account_id is not None else get_current_account_id(),
+            client_order_id=client_order_id or '',
+            ref_price_at_order=ref_price_at_order if ref_price_at_order else price,
+            slippage_pct=round(slippage_pct, 4),
+        )
+
     @property
     def notional_remaining(self) -> float:
         """剩余名义仓位"""

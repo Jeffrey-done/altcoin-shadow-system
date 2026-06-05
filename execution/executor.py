@@ -119,14 +119,16 @@ class OrderExecutor:
         t0 = time.monotonic()
 
         if cfg.dry_run:
+            fill_price = float(signal.metadata.get('entry_ref_price') or signal.metadata.get('price') or 0)
+            fill_amount = round(signal.stake * signal.leverage / fill_price, 4) if fill_price > 0 else 0.0
             return ExecutionResult(
                 success=True,
                 exchange='shadow',
                 symbol=signal.symbol,
                 direction=signal.direction.value,
                 order_id='DRY_RUN',
-                fill_price=0.0,
-                fill_amount=0.0,
+                fill_price=fill_price,
+                fill_amount=fill_amount,
                 stake=signal.stake,
                 account_id=account_id,
                 latency_ms=0.0,

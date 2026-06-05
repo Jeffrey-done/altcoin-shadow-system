@@ -111,6 +111,45 @@ long_oversold:
     default_stake: 20
     leverage: 5
 
+# ══════════════════════════════════════════════════════════════════
+#  Pre-Pump 嗅探做多策略
+# ══════════════════════════════════════════════════════════════════
+prepump_sniffer:
+  enabled: true
+  version: "1.0.0"
+
+  scan:
+    vol_min: 500000
+    price_max: 1.0
+    price_change_max: 5.0
+
+  anomaly:
+    vol_spike_ratio: 2.0
+    price_calm_pct: 3.0
+    oi_spike_pct: 2.5
+    funding_shift: 0.015
+    bb_squeeze_pctile: 55.0
+    signal_threshold: 3
+
+  breakout:
+    breakout_lookback: 12
+    breakout_pct: 0.3
+    breakout_vol_mult: 1.2
+    breakout_wait_bars: 18
+
+  exits:
+    tp1_pct: 6.0
+    tp2_pct: 18.0
+    tp1_close_ratio: 0.5
+    hard_stop_pct: 5.5
+    trail_activate_pct: 8.0
+    trail_retrace_ratio: 0.35
+    max_hold_hours: 36
+
+  position:
+    default_stake: 30
+    leverage: 5
+
 
 # ══════════════════════════════════════════════════════════════════
 #  宏观信号整合（multi-signal + Crypto-Market-Monitor）

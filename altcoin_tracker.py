@@ -506,7 +506,7 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
 
     # 去重保护：在锁内写入 close_in_progress，防止 tracker 和 realtime_monitor 同时发单
     # 两个进程都看到 close_in_progress==null → 都发市价单 → 仓位过度平仓
-    from common import LockedJsonFile, TRADES_FILE
+    from common import LockedJsonFile
     _dedup_signal = None
     try:
         # H-2 修复：平仓是关键操作，锁超时从 2s 提升到 10s
@@ -685,7 +685,7 @@ def _perform_exchange_close(trade: Trade, action: str, close_amount: float) -> N
     )
 
     # TP1 成功后，切换为阶段二保护单：取消旧单 -> 挂保本/移动止损 + TP2
-    if action == 'tp1_partial' and trade.exchange == 'binance':
+    if action == 'tp1_partial' and trade.exchange == 'binance' and trade.direction == 'SHORT':
         try:
             _cancel = cancel_binance_open_orders(trade.symbol, account_id=acc_id)
             if not _cancel.get('success'):
@@ -838,7 +838,7 @@ def run(check_only: bool = False):
         # ── 自动补挂：实盘持仓缺保护单的补挂 ──
         from live_executor import place_binance_short_protection_split
         for trade in open_trades:
-            if trade.exchange == 'shadow':
+            if trade.exchange != 'binance' or trade.direction != 'SHORT':
                 continue
             if trade.protect_stop_algo_id and trade.protect_tp_algo_id:
                 continue

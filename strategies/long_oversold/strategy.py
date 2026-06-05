@@ -154,6 +154,7 @@ class LongOversoldStrategy(BaseStrategy):
                 return None
 
             closes_4h = [k[4] for k in klines_4h]
+            current_price = closes_4h[-1] if closes_4h else candidate.price
             rsi_4h = self._calc_rsi(closes_4h, params.rsi_period)
 
             # 计算 4h RSI 谷值
@@ -215,7 +216,12 @@ class LongOversoldStrategy(BaseStrategy):
                 f"超卖反弹: RSI(1d)={meta.get('rsi_1d', 0):.0f}, "
                 f"4h RSI 从{rsi_trough:.0f}回升到{rsi_4h:.0f} (+{rsi_rise:.0f})"
             ),
-            metadata={'rsi_4h': rsi_4h, 'rsi_trough': rsi_trough, 'rsi_rise': rsi_rise},
+            metadata={
+                'entry_ref_price': current_price,
+                'rsi_4h': rsi_4h,
+                'rsi_trough': rsi_trough,
+                'rsi_rise': rsi_rise,
+            },
         )
 
         logger.info(

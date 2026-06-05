@@ -640,10 +640,9 @@ class AsyncStrategyEngine:
             macro_result = await loop.run_in_executor(
                 self._strategy_pool, self._check_macro_filter)
             if macro_result and not macro_result.get('allowed', True):
-                logger.warning(f"[新引擎] 宏观过滤暂停做空: {macro_result.get('reason', '')}")
-                from common import send_tg
-                send_tg(f"🚫 <b>宏观过滤：暂停做空</b>\n\n{macro_result.get('reason', '')}")
-                return
+                logger.warning(
+                    f"[新引擎] 宏观过滤暂停做空: {macro_result.get('reason', '')}；LONG 信号仍继续评估"
+                )
 
             # 加载候选池
             from db.compat import load_candidates
@@ -719,6 +718,12 @@ class AsyncStrategyEngine:
         _score_bonus = macro_result.get('score_bonus', 0) if macro_result else 0
 
         for signal in signals:
+            signal_direction = getattr(signal.direction, 'value', signal.direction)
+            is_short_signal = signal_direction == 'SHORT'
+            if is_short_signal and macro_result and not macro_result.get('allowed', True):
+                logger.info(f"  🚫 宏观过滤拒绝做空 {signal.symbol}: {macro_result.get('reason', '')}")
+                continue
+
             # 1. 冷却期
             in_cd, cd_reason = is_in_cooldown(signal.symbol)
             if in_cd:
@@ -726,7 +731,7 @@ class AsyncStrategyEngine:
                 continue
 
             # 2. 单笔风控
-            allowed, reason = can_open_trade(stake=signal.stake)
+            allowed, reason = can_open_trade(stake=signal.stake, direction=signal_direction)
             if not allowed:
                 logger.info(f"  🚫 风控拒绝 {signal.symbol}: {reason}")
                 continue
@@ -744,10 +749,10 @@ class AsyncStrategyEngine:
                 if suggested < signal.stake:
                     signal.stake = suggested
 
-            # 5. 宏观调节
-            if _stake_mult != 1.0:
+            # 5. 宏观调节（仅 SHORT）
+            if is_short_signal and _stake_mult != 1.0:
                 signal.stake = round(signal.stake * _stake_mult)
-            if _score_bonus != 0:
+            if is_short_signal and _score_bonus != 0:
                 signal.score = max(0, min(100, signal.score + _score_bonus))
 
             # 6. 执行开仓
@@ -755,7 +760,7 @@ class AsyncStrategyEngine:
             if result.success:
                 opened_count += 1
                 _record_trade_opened(signal, result)
-                risk_record(stake=signal.stake)
+                risk_record(stake=signal.stake, direction=signal_direction)
                 logger.info(f"  ✅ 开仓 {signal.symbol} | score={signal.score} | stake={signal.stake}U")
             else:
                 logger.error(f"  ❌ 开仓失败 {signal.symbol}: {result.error}")
