@@ -12,6 +12,7 @@
   - v5.0: 多账户同步开仓（所有配置了凭证的账户毫秒级并行下单）
 """
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict
@@ -809,6 +810,17 @@ def check_candidates():
         logger.info("候选池为空，跳过")
         return
 
+    # 旧版确认器只实现 short_overbought 做空语义；多策略候选池里 LONG 候选
+    # 必须留给新引擎处理，避免 fallback/手动 CLI 把做多候选误开成空单。
+    candidates_list = [
+        c for c in candidates_list
+        if (c.get('strategy') or 'short_overbought') == 'short_overbought'
+        and (c.get('direction') or 'SHORT') == 'SHORT'
+    ]
+    if not candidates_list:
+        logger.info("候选池无 short_overbought 做空候选，旧版确认器跳过")
+        return
+
     # ── BTC 趋势过滤（全局开关）──
     btc_allowed, btc_pct, btc_reason = check_btc_filter()
     if not btc_allowed:
@@ -1054,7 +1066,7 @@ def check_candidates():
                     c2.trigger_type = '4h_rsi'
                     c2.trigger_reason = f"4h RSI从{p2.get('rsi_4h_peak', 0):.0f}回落至{p2.get('rsi_4h', 0)}"
             break
-        ok = _open_position_for_candidate(c, payload, btc_pct, exchange)
+        ok = _open_position_for_candidate(c, payload, btc_pct, exchange, _regime_mult)
         # 不论开仓成功与否，本轮已尝试执行，清理 pending 标记
         c.pending_open = False
         c.pending_opened_at = None
@@ -1082,7 +1094,7 @@ def _save_candidates_back(candidates):
         save_candidates(list(by_symbol.values()))
 
 
-def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> bool:
+def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange, regime_mult: float = 1.0) -> bool:
     """
     H11 串行开仓阶段：
       - 风控预检（单/多账户）
@@ -1119,7 +1131,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
         actual_stake = round(base_stake * 0.5)
 
     # Regime 仓位调节（牛市减仓、熊市加仓、崩盘为0）
-    actual_stake = max(1, round(actual_stake * _regime_mult))
+    actual_stake = max(1, round(actual_stake * regime_mult))
 
     # ── 风控检查（全局预检）──
     # H8: 用每个账户"实际将占用的保证金总额"去做 can_open_trade 检查，
@@ -1159,6 +1171,7 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             _acc_base_stake if score_result["grade"] == "A"
             else round(_acc_base_stake * 0.5)
         )
+        _acc_actual_stake = max(1, round(_acc_actual_stake * regime_mult))
         acc_actual_stake_map[_acc_id or ''] = _acc_actual_stake
 
         if _is_shadow_acc:
@@ -1178,17 +1191,16 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
             _acc_shadow_route if _is_shadow_acc else _acc_live_route_sum
         )
 
-        _ok, _rsn = can_open_trade(_acc_check_stake, account_id=_acc_id)
+        _ok, _rsn = can_open_trade(_acc_check_stake, direction='SHORT', account_id=_acc_id)
         acc_allowed_map[_acc_id or ''] = (_ok, _rsn)
         if _ok:
             any_allowed = True
-            break
-        if not first_reason:
+        elif not first_reason:
             first_reason = _rsn
-    logger.info(f"  [DBG] precheck pass {c.symbol}: at least one account allowed")
     if not any_allowed:
         logger.warning(f"  🚫 所有账户都拒绝 {c.symbol}: {first_reason}")
         return False
+    logger.info(f"  [DBG] precheck pass {c.symbol}: at least one account allowed")
 
     # ── 触发开仓 ──
     logger.info(f"  [DBG] fetching price {c.symbol}")
@@ -1300,10 +1312,10 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
                     )
                     continue
 
-            logger.info(f"  [DBG] account loop {acc_name if 'acc_name' in locals() else account.get('name','?')} ({acc_id}) routes={acc_routes}")
+            logger.info(f"  [DBG] account loop {account.get('name', '?')} ({acc_id}) routes={acc_routes}")
             acc_stake_total = sum(s for _ex, s in acc_routes)
             # H15: 不在 TRADES_FILE 锁内再次跑 can_open_trade（该函数会读 trades，可能自锁阻塞）。
-            acc_allowed, acc_risk_reason = acc_allowed_map.get(acc_id or '', (True, ''))
+            acc_allowed, acc_risk_reason = acc_allowed_map.get(acc_id or '', (False, '风控预检未覆盖该账户'))
             logger.info(f"  [DBG] prechecked can_open_trade acc={acc_id} allowed={acc_allowed} reason={acc_risk_reason}")
             if not acc_allowed:
                 logger.info(
@@ -1676,9 +1688,9 @@ def _open_position_for_candidate(c, payload: dict, btc_pct: float, exchange) -> 
     for trade, entry_price, route_exchange, route_stake, _coid in opened_trades:
         if route_exchange == 'shadow' and getattr(config, 'SHADOW_PARALLEL', False):
             # Shadow 平行模式：使用独立的命名空间记录开仓，避免占用实盘风控额度
-            record_trade_opened(route_stake, account_id='shadow_parallel')
+            record_trade_opened(route_stake, direction='SHORT', account_id='shadow_parallel')
         else:
-            record_trade_opened(route_stake, account_id=trade.account_id or None)
+            record_trade_opened(route_stake, direction='SHORT', account_id=trade.account_id or None)
 
         logger.info(
             f"  ✅ 已开空单 [{route_exchange}]: {c.symbol} @ {entry_price} | "

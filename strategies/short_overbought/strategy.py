@@ -233,6 +233,7 @@ class ShortOverboughtStrategy(BaseStrategy):
             trigger_type=trigger_type,
             reason=reason,
             metadata={
+                'entry_ref_price': candidate.price,
                 'rsi_4h': rsi_4h,
                 'rsi_4h_peak': rsi_4h_peak,
                 'score_details': score_result['details'],

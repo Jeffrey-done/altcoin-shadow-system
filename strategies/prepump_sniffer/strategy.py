@@ -193,6 +193,7 @@ class PrePumpSnifferStrategy(BaseStrategy):
             trigger_type='prepump_breakout',
             reason=reason,
             metadata={
+                'entry_ref_price': current_price,
                 'anomaly_score': score,
                 'anomaly_details': details,
                 'breakout_pct': breakout_pct,

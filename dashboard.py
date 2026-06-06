@@ -36,6 +36,7 @@ M1 修复（2026-05）— 模块拆分
 import eventlet
 eventlet.monkey_patch(thread=False)
 
+import hmac
 import json
 import os
 import sys

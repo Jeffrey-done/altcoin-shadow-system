@@ -176,12 +176,9 @@ def run_confirm():
         macro_result = check_macro_filter()
 
         if not macro_result.allowed:
-            logger.warning(f"[新引擎] 宏观过滤暂停做空: {macro_result.reason}")
-            from common import send_tg
-            send_tg(f"🚫 <b>宏观过滤：暂停做空</b>\n\n{macro_result.reason}")
-            return
+            logger.warning(f"[新引擎] 宏观过滤暂停做空: {macro_result.reason}；LONG 信号仍继续评估")
 
-        # 宏观信号的仓位乘数和评分 bonus 会在下面信号循环中应用
+        # 宏观信号的仓位乘数和评分 bonus 仅应用于 SHORT 信号
         _macro_stake_mult = macro_result.stake_multiplier
         _macro_score_bonus = macro_result.score_bonus
         if _macro_stake_mult != 1.0 or _macro_score_bonus != 0:
@@ -203,14 +200,36 @@ def run_confirm():
         opened_count = 0
 
         for signal in signals:
-            # 1. 单笔风控
+            signal_direction = getattr(signal.direction, 'value', signal.direction)
+            is_short_signal = signal_direction == 'SHORT'
+            if is_short_signal and not macro_result.allowed:
+                logger.info(f"  🚫 宏观过滤拒绝做空 {signal.symbol}: {macro_result.reason}")
+                continue
+
+            # 1. 宏观信号调节（仓位乘数 + 评分加减分，仅 SHORT）。
+            # 必须在风控前执行，否则 bearish 环境放大后的 stake 可能绕过准入检查。
+            if is_short_signal and _macro_stake_mult != 1.0:
+                old_stake = signal.stake
+                signal.stake = round(signal.stake * _macro_stake_mult)
+                if signal.stake != old_stake:
+                    logger.info(
+                        f"  📡 宏观仓位调节 {signal.symbol}: "
+                        f"{old_stake}U → {signal.stake}U (×{_macro_stake_mult:.1f})"
+                    )
+            if is_short_signal and _macro_score_bonus != 0:
+                signal.score = max(0, min(100, signal.score + _macro_score_bonus))
+
+            # 2. 单笔风控
             from risk_control import can_open_trade
-            allowed, reason = can_open_trade(stake=signal.stake)
+            allowed, reason = can_open_trade(
+                stake=signal.stake,
+                direction=signal_direction,
+            )
             if not allowed:
                 logger.info(f"  🚫 单笔风控拒绝 {signal.symbol}: {reason}")
                 continue
 
-            # 2. 组合风控
+            # 3. 组合风控
             check = portfolio_risk.check_new_position(
                 symbol=signal.symbol,
                 stake=signal.stake,
@@ -220,7 +239,7 @@ def run_confirm():
                 logger.info(f"  🚫 组合风控拒绝 {signal.symbol}: {check.reason}")
                 continue
 
-            # 3. Kelly 仓位调整
+            # 4. Kelly 仓位调整
             if 'suggested_stake' in check.adjustments:
                 suggested = check.adjustments['suggested_stake']
                 if suggested < signal.stake:
@@ -229,26 +248,14 @@ def run_confirm():
                     )
                     signal.stake = suggested
 
-            # 3.5 宏观信号调节（仓位乘数 + 评分加减分）
-            if _macro_stake_mult != 1.0:
-                old_stake = signal.stake
-                signal.stake = round(signal.stake * _macro_stake_mult)
-                if signal.stake != old_stake:
-                    logger.info(
-                        f"  📡 宏观仓位调节 {signal.symbol}: "
-                        f"{old_stake}U → {signal.stake}U (×{_macro_stake_mult:.1f})"
-                    )
-            if _macro_score_bonus != 0:
-                signal.score = max(0, min(100, signal.score + _macro_score_bonus))
-
-            # 4. 冷却期检查
+            # 5. 冷却期检查
             from risk_control import is_in_cooldown
             in_cd, cd_reason = is_in_cooldown(signal.symbol)
             if in_cd:
                 logger.info(f"  🚫 冷却期 {signal.symbol}: {cd_reason}")
                 continue
 
-            # 5. 执行开仓
+            # 6. 执行开仓
             result = executor.execute_signal(signal)
             if result.success:
                 opened_count += 1
@@ -256,7 +263,13 @@ def run_confirm():
                 _record_trade_opened(signal, result)
                 # 更新风控
                 from risk_control import record_trade_opened as risk_record
-                risk_record(stake=signal.stake)
+                risk_record(stake=signal.stake, direction=signal_direction)
+                open_trades.append({
+                    'symbol': signal.symbol,
+                    'stake': signal.stake,
+                    'stake_remaining': signal.stake,
+                    'direction': signal_direction,
+                })
                 logger.info(
                     f"  ✅ 开仓成功 {signal.symbol} | score={signal.score} | "
                     f"stake={signal.stake}U | {signal.reason}"
@@ -415,8 +428,8 @@ def _persist_candidates(candidates: list):
                 'direction': direction,
                 'price': c.price,
                 'score': getattr(c, 'score', 0),
-                'vol24h': metadata.get('vol24h', 0),
-                'pct24h': metadata.get('pct24h', 0),
+                'vol24h': metadata.get('vol24h', metadata.get('vol_24h', 0)),
+                'pct24h': metadata.get('pct24h', metadata.get('pct_24h', 0)),
                 'rsi_1d': metadata.get('rsi_1d', 50),
                 'oi_change': metadata.get('oi_change', 0),
                 'funding_rate': metadata.get('funding_rate', 0),
@@ -460,8 +473,8 @@ def _sync_candidates_to_json(candidates: list):
                 'direction': direction,
                 'price': c.price,
                 'score': getattr(c, 'score', 0),
-                'vol24h': metadata.get('vol24h', 0),
-                'pct24h': metadata.get('pct24h', 0),
+                'vol24h': metadata.get('vol24h', metadata.get('vol_24h', 0)),
+                'pct24h': metadata.get('pct24h', metadata.get('pct_24h', 0)),
                 'rsi_1d': metadata.get('rsi_1d', 50),
                 'oi_change': metadata.get('oi_change', 0),
                 'funding_rate': metadata.get('funding_rate', 0),
@@ -492,53 +505,42 @@ def _sync_candidates_to_json(candidates: list):
 
 
 def _record_trade_opened(signal, result):
-    """记录开仓到 DB + JSON"""
+    """记录开仓到 DB + JSON，确保两边使用同一个 trade.id。"""
+    from models import Trade
+
+    trade = Trade.create_directional(
+        symbol=signal.symbol,
+        direction=getattr(signal.direction, 'value', signal.direction),
+        price=result.fill_price or 0,
+        reason=signal.reason,
+        stake=signal.stake,
+        leverage=signal.leverage,
+        exchange=result.exchange or 'shadow',
+        live_order_id=result.order_id,
+        client_order_id=result.client_order_id,
+        account_id=result.account_id or '',
+        strategy=signal.strategy_name,
+        hard_stop_loss_pct=signal.hard_stop_pct,
+        tp1_pct=signal.tp1_pct,
+        tp2_pct=signal.tp2_pct,
+        max_hold_hours=signal.max_hold_hours,
+    )
+
+    # 写 DB：只传 DB schema 支持的字段，避免 dataclass 兼容字段导致 ORM 构造失败。
     try:
         from db.repositories import TradeRepo
-        from datetime import datetime, timezone
-        from models import Trade
+        from db.models import TradeModel
 
-        # 写 DB
-        trade_data = {
-            'id': f"ENG-{signal.symbol.replace('/', '')}-{int(time.time()*1000)}",
-            'symbol': signal.symbol,
-            'direction': signal.direction.value,
-            'strategy': signal.strategy_name,
-            'status': 'open',
-            'entry_price': result.fill_price or 0,
-            'stake': signal.stake,
-            'leverage': signal.leverage,
-            'notional': signal.stake * signal.leverage,
-            'shares': (signal.stake * signal.leverage / result.fill_price) if result.fill_price > 0 else 0,
-            'exchange': result.exchange,
-            'account_id': result.account_id,
-            'client_order_id': result.client_order_id,
-            'live_order_id': result.order_id,
-            'reason': signal.reason,
-            'opened_at': datetime.now(timezone.utc),
-            'created_at': datetime.now(timezone.utc),
-            'updated_at': datetime.now(timezone.utc),
-        }
+        db_fields = {c.name for c in TradeModel.__table__.columns}
+        trade_data = {k: v for k, v in trade.to_dict().items() if k in db_fields}
         TradeRepo.create(trade_data)
     except Exception as e:
         logger.warning(f"交易写入 DB 失败（非致命）: {e}")
 
     # 兼容：同步写旧 JSON
     try:
-        from common import TRADES_FILE, LockedJsonFile, utcnow_iso
-        from models import Trade
-        import config as cfg
+        from common import TRADES_FILE, LockedJsonFile
 
-        trade = Trade.create_short(
-            symbol=signal.symbol,
-            price=result.fill_price or 0,
-            reason=signal.reason,
-            stake=signal.stake,
-            leverage=signal.leverage,
-            exchange=result.exchange or 'shadow',
-            live_order_id=result.order_id,
-            client_order_id=result.client_order_id,
-        )
         with LockedJsonFile(TRADES_FILE, default=[]) as (trades, save):
             trades.append(trade.to_dict())
             save(trades)
