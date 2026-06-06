@@ -724,36 +724,36 @@ class AsyncStrategyEngine:
                 logger.info(f"  🚫 宏观过滤拒绝做空 {signal.symbol}: {macro_result.get('reason', '')}")
                 continue
 
-            # 1. 冷却期
+            # 1. 宏观调节（仅 SHORT）。必须在风控前执行，确保放大后的 stake 也受限。
+            if is_short_signal and _stake_mult != 1.0:
+                signal.stake = round(signal.stake * _stake_mult)
+            if is_short_signal and _score_bonus != 0:
+                signal.score = max(0, min(100, signal.score + _score_bonus))
+
+            # 2. 冷却期
             in_cd, cd_reason = is_in_cooldown(signal.symbol)
             if in_cd:
                 logger.info(f"  🚫 冷却期 {signal.symbol}: {cd_reason}")
                 continue
 
-            # 2. 单笔风控
+            # 3. 单笔风控
             allowed, reason = can_open_trade(stake=signal.stake, direction=signal_direction)
             if not allowed:
                 logger.info(f"  🚫 风控拒绝 {signal.symbol}: {reason}")
                 continue
 
-            # 3. 组合风控
+            # 4. 组合风控
             check = portfolio_risk.check_new_position(
                 symbol=signal.symbol, stake=signal.stake, open_positions=open_trades)
             if not check.approved:
                 logger.info(f"  🚫 组合风控拒绝 {signal.symbol}: {check.reason}")
                 continue
 
-            # 4. Kelly 仓位调整
+            # 5. Kelly 仓位调整
             if 'suggested_stake' in check.adjustments:
                 suggested = check.adjustments['suggested_stake']
                 if suggested < signal.stake:
                     signal.stake = suggested
-
-            # 5. 宏观调节（仅 SHORT）
-            if is_short_signal and _stake_mult != 1.0:
-                signal.stake = round(signal.stake * _stake_mult)
-            if is_short_signal and _score_bonus != 0:
-                signal.score = max(0, min(100, signal.score + _score_bonus))
 
             # 6. 执行开仓
             result = executor.execute_signal(signal)
@@ -761,6 +761,12 @@ class AsyncStrategyEngine:
                 opened_count += 1
                 _record_trade_opened(signal, result)
                 risk_record(stake=signal.stake, direction=signal_direction)
+                open_trades.append({
+                    'symbol': signal.symbol,
+                    'stake': signal.stake,
+                    'stake_remaining': signal.stake,
+                    'direction': signal_direction,
+                })
                 logger.info(f"  ✅ 开仓 {signal.symbol} | score={signal.score} | stake={signal.stake}U")
             else:
                 logger.error(f"  ❌ 开仓失败 {signal.symbol}: {result.error}")
